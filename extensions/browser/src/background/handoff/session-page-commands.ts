@@ -17,6 +17,26 @@ export const LEAVE_PREVIOUS_VIDEO: Extract<PageCommand, { kind: "end_handoff" }>
   resume: { kind: "exactly", resume: "paused" },
 };
 
+/**
+ * Вернуть видео странице по кнопке «Return» заглушки (решение 236): позиция ТЕНИ (линия времени страницы,
+ * а не наша — часы плеера туда уже привели тень), страница играет дальше.
+ */
+export const RETURN_PLAYING_AT_SHADOW: Extract<PageCommand, { kind: "end_handoff" }> = {
+  kind: "end_handoff",
+  position: { kind: "shadow_position" },
+  resume: { kind: "exactly", resume: "playing" },
+};
+
+/**
+ * Зритель закрыл окно плеера без прощального `return_to_page` (решение 238 → решение 51): видео остаётся на
+ * позиции тени и НА ПАУЗЕ — иначе страница заиграла бы сама за спиной человека, который только что закрыл окно.
+ */
+export const RETURN_PAUSED_AT_SHADOW: Extract<PageCommand, { kind: "end_handoff" }> = {
+  kind: "end_handoff",
+  position: { kind: "shadow_position" },
+  resume: { kind: "exactly", resume: "paused" },
+};
+
 export function disconnectQuietly(port: FramePort): void {
   try {
     port.disconnect();

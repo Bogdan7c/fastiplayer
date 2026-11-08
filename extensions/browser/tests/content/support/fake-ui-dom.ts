@@ -2,6 +2,7 @@
 import type { PageUiRect } from "../../../src/shared/entry-contract.ts";
 import type { PointerMoveEvent, PointerSource } from "../../../src/content/page-ui/overlay-button-controller.ts";
 import type { UiDocument, UiElement, UiEvent, UiEventListener, UiHostElement, UiShadowRoot } from "../../../src/content/page-ui/ui-dom.ts";
+import type { PlaceholderGeometryChange, PlaceholderGeometrySignals } from "../../../src/content/page-ui/placeholder-geometry.ts";
 
 export class FakeUiEvent implements UiEvent {
   stopped = false;
@@ -146,6 +147,30 @@ export class FakePointer implements PointerSource {
   liveListeners(): number { return this.moveListeners.size + this.lostListeners.size; }
   move(x: number, y: number, target: unknown = null): void { for (const listener of [...this.moveListeners]) listener({ x, y, target }); }
   lose(): void { for (const listener of [...this.lostListeners]) listener(); }
+}
+
+/** Фейковые сигналы «видео могло сдвинуться» для заглушки: считают подписки, тест шлёт сигналы сам. */
+export class FakeGeometrySignals implements PlaceholderGeometrySignals {
+  readonly watchers = new Map<object, Set<(change: PlaceholderGeometryChange) => void>>();
+  watch(element: object, onChange: (change: PlaceholderGeometryChange) => void): () => void {
+    const set = this.watchers.get(element) ?? new Set();
+    set.add(onChange);
+    this.watchers.set(element, set);
+    return () => void set.delete(onChange);
+  }
+  /** Живые подписки на все элементы. */
+  liveWatchers(): number { return [...this.watchers.values()].reduce((sum, set) => sum + set.size, 0); }
+  emit(change: PlaceholderGeometryChange): void { for (const set of this.watchers.values()) for (const listener of [...set]) listener(change); }
+}
+
+/** Фейковый элемент страницы, над которым рисуется заглушка. */
+export class FakeVideoTarget {
+  isConnected = true;
+  rect: PageUiRect;
+  constructor(rect: PageUiRect) {
+    this.rect = rect;
+  }
+  getBoundingClientRect(): PageUiRect { return this.rect; }
 }
 
 /** Ответ, который тест завершает сам, когда захочет (для гонки «мышь ушла раньше ответа»). */

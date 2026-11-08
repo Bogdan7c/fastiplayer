@@ -233,7 +233,14 @@ export type HandoffEndCause =
    * Счётчик копий (page/forward-byte-meter.ts, решение 200) отказал: страница льёт байты сверх
    * предела. Тень снята нами, но это вина страницы, и причина `page_flood` доходит до модели вкладки.
    */
-  | "page_flood";
+  | "page_flood"
+  /**
+   * Сломался собственный плеер страницы (решение 237, сессия 11a): у переданного MSE-элемента ошибка
+   * (`error`), которая держится дольше допуска, или страница вскоре после ошибки бросила источник.
+   * Фон кончает сеанс как «вкладка ушла» (`tab_gone{page_player_failed}`): плеер доигрывает скачанное.
+   * Владелец правила — `page/page-player-failure-watch.ts`.
+   */
+  | "page_player_failed";
 
 /**
  * Вид нативного HLS по элементу в момент передачи (10a3):
@@ -345,6 +352,20 @@ export const PAGE_FLOOD_NOTICE_KIND = "page_flood";
 export interface PageFloodNotice {
   readonly kind: typeof PAGE_FLOOD_NOTICE_KIND;
   readonly over_budget: PageEventBudgetKind;
+}
+
+/** Вид просьбы зрителя «Return» с заглушки (сессия 11a, решение 236): она НЕ входит в `PageEvent`. */
+export const VIEWER_RETURN_REQUEST_KIND = "viewer_return_requested";
+
+/**
+ * Зритель нажал «Return» на заглушке поверх переданного видео (решение 236): вернуть видео странице на
+ * позиции тени, страница играет дальше, окно плеера закрывается молча (4010). Шлёт ТОЛЬКО изолированный
+ * мир по порту участка 2 той передачи, на которой стоит заглушка, и только на настоящий клик человека
+ * (`isTrusted`). MAIN-мир подделать её не может: всё, что он шлёт, проходит `parsePageEvent`, а там
+ * такого вида нет. Груза нет: порт сам называет передачу.
+ */
+export interface ViewerReturnRequest {
+  readonly kind: typeof VIEWER_RETURN_REQUEST_KIND;
 }
 
 // ---------------------------------------------------------------------------------------------

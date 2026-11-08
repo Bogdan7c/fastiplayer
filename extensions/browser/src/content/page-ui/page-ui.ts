@@ -1,4 +1,5 @@
-// Сборка слоя страницы: общий слой + плашка + кнопка поверх видео + слежение за настройкой + зонд.
+// Сборка слоя страницы: общий слой + плашка + кнопка поверх видео + заглушка над переданным видео (11a) +
+// слежение за настройкой + зонд.
 // Все внешние миры (DOM, мышь, таймеры, хранилище, фон) приходят зависимостями: сборка проверяется в
 // node:test целиком, без браузера. Настоящие переходники — в `page-ui-entry.ts`.
 import type { OverlayButtonPressedMessage, PageUiProbe, VideoAtPoint } from "../../shared/entry-contract.ts";
@@ -9,6 +10,11 @@ import { createBannerView } from "./banner-view.ts";
 import type { ViewportSize } from "./button-placement.ts";
 import { createOverlayButtonController, type OverlayButtonTimers, type PointerSource } from "./overlay-button-controller.ts";
 import { createOverlayButtonView } from "./overlay-button-view.ts";
+import type { HandedOffVideoSink } from "../handed-off-video-listener.ts";
+import type { ViewerReturnDelivery } from "../relay.ts";
+import { createPlaceholderController } from "./placeholder-controller.ts";
+import type { PlaceholderGeometrySignals } from "./placeholder-geometry.ts";
+import { createPlaceholderView } from "./placeholder-view.ts";
 import { watchOverlaySetting } from "./overlay-setting-watch.ts";
 import type { UiDocument } from "./ui-dom.ts";
 import { createUiLayer } from "./ui-layer.ts";
@@ -26,6 +32,10 @@ export interface PageUiDependencies {
   readonly readSettings: () => Promise<EntrySettings>;
   readonly onLocalStorageChanged: (listener: (changes: Readonly<Record<string, { readonly newValue?: unknown }>>) => void) => () => void;
   readonly note: (message: string, error: unknown) => void;
+  /** Сигналы «видео могло сдвинуться» для заглушки. */
+  readonly placeholderSignals: PlaceholderGeometrySignals;
+  /** Просьба «Return» с заглушки — фону через пограничника. */
+  readonly requestViewerReturn: () => ViewerReturnDelivery;
 }
 
 export interface PageUi {
@@ -33,6 +43,8 @@ export interface PageUi {
   readonly onMessage: (message: unknown, sender: MessageSenderFacts) => void;
   /** Что показано сейчас — читается с экрана, не из «намерений» (для стенда). */
   readonly probe: () => PageUiProbe;
+  /** Куда якорь изолированного мира сообщает о переданном видео (заглушка). */
+  readonly handedOffVideo: HandedOffVideoSink;
 }
 
 export function createPageUi(dependencies: PageUiDependencies): PageUi {
@@ -48,6 +60,13 @@ export function createPageUi(dependencies: PageUiDependencies): PageUi {
     sendPressed: dependencies.sendPressed,
     note: dependencies.note,
   });
+  const placeholder = createPlaceholderController({
+    view: createPlaceholderView(dependencies.document, layer),
+    signals: dependencies.placeholderSignals,
+    timers: dependencies.timers,
+    requestViewerReturn: dependencies.requestViewerReturn,
+    note: dependencies.note,
+  });
   watchOverlaySetting({
     readSettings: dependencies.readSettings,
     onLocalStorageChanged: dependencies.onLocalStorageChanged,
@@ -56,6 +75,7 @@ export function createPageUi(dependencies: PageUiDependencies): PageUi {
   });
   return {
     onMessage: createBannerMessageListener({ ownExtensionId: dependencies.ownExtensionId, isTopFrame: dependencies.isTopFrame, banner }),
-    probe: () => ({ banner: banner.shownId(), overlay_button: button.measureButton() }),
+    probe: () => ({ banner: banner.shownId(), overlay_button: button.measureButton(), placeholder: placeholder.probe() }),
+    handedOffVideo: placeholder,
   };
 }

@@ -21,6 +21,8 @@ import { ProtectedMediaRelease } from "./protected-media-release.ts";
 import { captureRandomFill, createDocumentTag, type RandomWindow } from "./document-tag.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
+import { captureAnchorEventOriginals, HandedOffVideoAnchor } from "./handed-off-video-anchor.ts";
+import { pagePlayerFailureWatchStarterFor } from "./page-player-failure-watch.ts";
 import { NextVideoGuard } from "./next-video-guard.ts";
 import type { HeldShadowStarter, PlayWatchSeam, ShadowStarter } from "./handoff-seam.ts";
 import type { HandoffTap } from "./handoff-tap.ts";
@@ -77,6 +79,8 @@ export interface PageBridge {
   readonly drmMarks: DrmMarks;
   /** «Видео под указателем» (10c); `null` — окружение не даёт оригиналов, вход по указателю выключен. */
   readonly pointerVideo: PointerVideo | null;
+  /** Якорь переданного видео для заглушки (11a); `null` — окружение без оригиналов событий. */
+  readonly anchor: HandedOffVideoAnchor | null;
   /** Обёртка `Worker` стоит (Chromium с хуком воркера). */
   readonly workersWrapped: boolean;
   readonly documentTag: string;
@@ -124,6 +128,8 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     reportOddity,
     documentEvents: win,
   });
+  const anchor = createAnchor(win, dom, reportOddity);
+  const watchPagePlayerFailure = pagePlayerFailureWatchStarterFor(win, (element) => dom.hasPlaybackFailureError(element), dependencies.now);
   const controller: HandoffController = new HandoffController({
     registry,
     candidates,
@@ -136,6 +142,8 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     protection: drmMarks,
     nextVideo,
     ...(dependencies.handoffTap === undefined ? {} : { tap: dependencies.handoffTap }),
+    ...(anchor === null ? {} : { anchor }),
+    ...(watchPagePlayerFailure === null ? {} : { watchPagePlayerFailure }),
   });
   // Защищённый MediaSource отпускает журнал (память), а передаваемый элемент при DRM отдаётся странице.
   const protectedRelease = new ProtectedMediaRelease(drmMarks, dom, candidates, reportOddity);
@@ -165,6 +173,11 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
         controller.connect(port);
       },
       onMessage: (message) => {
+        // Имя события якоря (11a): местное дело миров, контроллеру и фону не нужно.
+        if (message.kind === "watch_handed_off_video") {
+          anchor?.setEventName(message.event_name);
+          return;
+        }
         if (!isPointerQuery(message)) {
           controller.handle(message);
           return;
@@ -179,7 +192,17 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     },
     reportOddity,
   );
-  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, pointerVideo, workersWrapped: workerCapture.wrapped, documentTag };
+  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, pointerVideo, anchor, workersWrapped: workerCapture.wrapped, documentTag };
+}
+
+/** Якорь переданного видео на оригиналах, снятых сейчас (document_start); нет оригиналов — `null`, заглушки нет. */
+function createAnchor(win: PageBridgeWindow, dom: DomReaders, reportOddity: (message: string) => void): HandedOffVideoAnchor | null {
+  try {
+    return new HandedOffVideoAnchor({ events: captureAnchorEventOriginals(win), ownWindow: win, isConnected: (element) => dom.isConnected(element), reportOddity });
+  } catch {
+    reportOddity("handed-off video anchor is unavailable");
+    return null;
+  }
 }
 
 /** Что нужно сборке «видео под указателем» от остального моста. */

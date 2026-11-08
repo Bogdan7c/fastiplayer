@@ -60,6 +60,13 @@ export interface DomReaders {
   isLooping(element: object): boolean;
   /** `videoWidth` и `videoHeight` настоящего элемента (0 — размер кадра ещё неизвестен). */
   videoSizeOf(element: object): { readonly width: number; readonly height: number };
+  /**
+   * У настоящего элемента ошибка ВОСПРОИЗВЕДЕНИЯ (сессия 11a): `error.code` — `MEDIA_ERR_NETWORK` или
+   * `MEDIA_ERR_DECODE`. По ней сторож видит сломавшийся плеер страницы. `MEDIA_ERR_SRC_NOT_SUPPORTED` сюда
+   * не входит: его браузер ставит и тогда, когда страница сама убирает источник (`src = ""`), а это честное
+   * «страница забрала видео» (решение 179), а не поломка. `false` и там, где геттера нет.
+   */
+  hasPlaybackFailureError(element: object): boolean;
   /** У элемента есть ключи (`mediaKeys !== null`); `false` и там, где геттера нет (не защищённый контекст). */
   hasMediaKeys(element: object): boolean;
   /** Имя хоста документа (`location.hostname`; "" — нет). */
@@ -85,6 +92,8 @@ export interface DomWindow extends VisibilityWindow {
   readonly HTMLVideoElement: { readonly prototype: object };
   /** Нет в старых/фейковых окнах — тогда тип `<source>` не читается. */
   readonly HTMLSourceElement?: { readonly prototype: object };
+  /** Нет в фейковых окнах — тогда код ошибки читается обычным свойством. */
+  readonly MediaError?: { readonly prototype: object };
   readonly MediaStream?: { readonly prototype: object };
   readonly Blob?: { readonly prototype: object };
   readonly innerWidth: number;
@@ -167,6 +176,11 @@ function toElementArray(list: unknown): Element[] {
   return elements;
 }
 
+/** `MediaError.MEDIA_ERR_NETWORK`: сеть оборвала уже доступный ресурс (для MSE — `endOfStream("network")`). */
+const MEDIA_ERR_NETWORK = 2;
+/** `MediaError.MEDIA_ERR_DECODE`: браузер не смог декодировать куски (битые байты, `endOfStream("decode")`). */
+const MEDIA_ERR_DECODE = 3;
+
 /** Снять оригинальные чтения DOM. Зовётся один раз на document_start. */
 export function captureDomReaders(win: DomWindow): DomReaders {
   const documentQuery = findMethod(win.Document.prototype, "querySelectorAll");
@@ -189,6 +203,9 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const muted = findGetter(mediaPrototype, "muted");
   const volume = findGetter(mediaPrototype, "volume");
   const loop = findGetter(mediaPrototype, "loop");
+  const mediaError = findOptionalGetter(mediaPrototype, "error");
+  // Оригинальный геттер `MediaError.prototype.code`: страница не подменит ответ «какая ошибка».
+  const mediaErrorCode = findOptionalGetter(win.MediaError?.prototype, "code");
   // Нет в небезопасном контексте (http): там ключей быть не может.
   const mediaKeys = findOptionalGetter(mediaPrototype, "mediaKeys");
   const visibility = captureVisibilityReaders(win);
@@ -252,6 +269,13 @@ export function captureDomReaders(win: DomWindow): DomReaders {
       const width = videoWidth(element);
       const height = videoHeight(element);
       return { width: typeof width === "number" ? width : 0, height: typeof height === "number" ? height : 0 };
+    },
+    hasPlaybackFailureError: (element) => {
+      if (mediaError === undefined) return false;
+      const error = mediaError(element);
+      if (error == null) return false;
+      const code = mediaErrorCode !== undefined ? mediaErrorCode(error) : (error as { readonly code?: unknown }).code;
+      return code === MEDIA_ERR_NETWORK || code === MEDIA_ERR_DECODE;
     },
     hasMediaKeys: (element) => mediaKeys !== undefined && mediaKeys(element) != null,
     documentHostName: () => {

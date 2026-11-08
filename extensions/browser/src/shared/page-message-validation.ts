@@ -11,6 +11,7 @@ import {
   ARM_NEXT_VIDEO_KIND,
   HELD_VIDEO_REPORT_KIND,
   PAGE_FLOOD_NOTICE_KIND,
+  VIEWER_RETURN_REQUEST_KIND,
   type ArmNextVideoRequest,
   type CandidateMedia,
   type CandidatesReply,
@@ -24,6 +25,7 @@ import {
   type PageFloodNotice,
   type UnsupportedMediaForm,
   type VideoCandidate,
+  type ViewerReturnRequest,
 } from "./handoff-contract.ts";
 import { REFERRER_POLICIES, type ReferrerPolicyName } from "./referrer-policy.ts";
 import {
@@ -140,7 +142,7 @@ const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
   "untracked_worker_media_source",
   "started_before_script",
 ];
-const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood"];
+const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood", "page_player_failed"];
 const HLS_STREAM_KINDS: readonly HlsStreamKind[] = ["vod", "live"];
 
 type PlainRecord = Readonly<Record<string, unknown>>;
@@ -467,6 +469,15 @@ export function parsePageFloodNotice(value: unknown): PageFloodNotice | undefine
   return hasExactKeys(value, ["kind", "over_budget"]) && isOneOf(overBudget, PAGE_EVENT_BUDGET_KINDS)
     ? { kind: PAGE_FLOOD_NOTICE_KIND, over_budget: overBudget }
     : undefined;
+}
+
+/**
+ * Разбор просьбы зрителя «Return» (решение 236) — только для ФОНА, на порту участка 2. Как и донесение о
+ * флуде, её рождает изолированный мир; сообщения MAIN-мира проходят только `parsePageEvent`, где её нет.
+ */
+export function parseViewerReturnRequest(value: unknown): ViewerReturnRequest | undefined {
+  if (!isPlainRecord(value) || value["kind"] !== VIEWER_RETURN_REQUEST_KIND) return undefined;
+  return hasExactKeys(value, ["kind"]) ? { kind: VIEWER_RETURN_REQUEST_KIND } : undefined;
 }
 
 // ------------------------------------------------------------------ кандидаты видео

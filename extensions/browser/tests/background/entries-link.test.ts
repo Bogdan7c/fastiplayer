@@ -372,6 +372,9 @@ describe("вход по ссылке: конец сеанса", () => {
 
   it("любой другой конец (страница забрала, ушла, сбой, отказ старта, авария плеера или сокета) — вкладка уже человека: не закрывается, но забывается", async () => {
     const ends: HandoffSessionEnd[] = [
+      // «Return» с заглушки (решение 236): видео играет дальше на этой вкладке.
+      { kind: "returned_by_viewer" },
+      { kind: "page_gone", reason: "page_player_failed" },
       { kind: "page_took_video_back" },
       { kind: "page_gone", reason: "navigated_away" },
       { kind: "page_side_failure" },
@@ -512,6 +515,18 @@ describe("вход по ссылке на настоящем владельце 
     port.deliver({ kind: "handoff_ended", cause: "returned" });
     await flushPromises();
     assert.deepEqual(real.tabs.log.closed, [TAB]);
+  });
+
+  it("зритель нажал «Return» на заглушке: видео играет на вкладке входа, и она остаётся открытой", async () => {
+    const real = setupReal();
+    const { socket, port } = await startThroughEntry(real);
+    port.deliver({ kind: "viewer_return_requested" });
+    port.deliver({ kind: "handoff_ended", cause: "returned" });
+    await flushPromises();
+    assert.equal(socket.closedWithCode, 4010);
+    assert.deepEqual(real.world.ended.map((end) => end.kind), ["returned_by_viewer"]);
+    assert.deepEqual(real.tabs.log.order, [], "ни активации исходной, ни закрытия");
+    assert.deepEqual(real.entry.ownedTabIds(), [], "вкладка уже человека");
   });
 
   it("страница сама забрала видео (element_released): вкладка остаётся открытой", async () => {

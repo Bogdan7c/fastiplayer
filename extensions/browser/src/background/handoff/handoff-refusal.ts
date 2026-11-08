@@ -43,6 +43,9 @@ export function refusalOfSessionEnd(end: HandoffSessionEnd): TabRefusal | undefi
     case "player_ended":
       // Переполнение очереди — страница не слушает «полон» (гигантские сегменты), тот же флуд.
       return end.cause.kind === "queue_overflow" ? { kind: "page_flood" } : undefined;
+    // «Return» зрителя (решение 236) — его выбор, а не вина страницы: попапу показывать нечего.
+    case "returned_by_viewer":
+      return undefined;
     default:
       return undefined;
   }

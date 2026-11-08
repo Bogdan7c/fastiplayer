@@ -273,6 +273,19 @@ export function createFakePage(pageOptions: FakePageOptions = {}) {
     #volume = 1;
     #readyState = 0;
     #networkState: number = NETWORK_STATE.EMPTY;
+    /** Ошибка элемента (`MediaError` браузера; фейку хватает «есть / нет»). Алгоритм загрузки её сбрасывает. */
+    #error: object | null = null;
+    get error(): object | null {
+      return this.#error;
+    }
+    /**
+     * Тестовый помощник: браузер поймал ошибку элемента — `error` и доверенное событие. По умолчанию
+     * `MEDIA_ERR_DECODE` (3, битые куски); 4 (`MEDIA_ERR_SRC_NOT_SUPPORTED`) — ответ браузера на `src = ""`.
+     */
+    testFail(code: number = 3): void {
+      this.#error = { code };
+      this.dispatchEvent(trustedEvent("error"));
+    }
     /** Как отражение URL-атрибута: нет атрибута — "", пустой атрибут — адрес документа. */
     get src(): string {
       if (this.#srcAttribute === null) return "";
@@ -413,6 +426,7 @@ export function createFakePage(pageOptions: FakePageOptions = {}) {
     }
     /** «Алгоритм загрузки» стандарта в той части, что видна тени. */
     #loadAlgorithm(): void {
+      this.#error = null;
       if (this.#networkState !== NETWORK_STATE.EMPTY) queueMicrotask(() => this.dispatchEvent(trustedEvent("emptied")));
       this.#paused = true;
       this.#currentTime = 0;

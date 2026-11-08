@@ -23,13 +23,17 @@ export const INACTIVE_NEXT_VIDEO_GUARD = {
   now: () => 0,
 };
 
-export function startHarness(options: { memoryBudgetBytes?: number; page?: FakePage; workerHook?: WorkerHookSource; scriptArrival?: ScriptArrival } = {}): BridgeHarness {
+export function startHarness(
+  options: { memoryBudgetBytes?: number; page?: FakePage; workerHook?: WorkerHookSource; scriptArrival?: ScriptArrival; useWindowClock?: boolean } = {},
+): BridgeHarness {
   const page = options.page ?? createFakePage();
   const shadow = new FakeShadow();
   const debugLines: string[] = [];
   const bridge = startPageBridge(page.win, {
     startShadow: shadow.starter,
     ...INACTIVE_NEXT_VIDEO_GUARD,
+    // Часы окна под управлением теста (`page.clock`): нужны сторожам, считающим время по тикам плеера.
+    ...(options.useWindowClock === true ? { now: () => page.clock.nowMs } : {}),
     debugSink: (line) => debugLines.push(line),
     scriptArrival: options.scriptArrival ?? "at_document_start",
     ...(options.memoryBudgetBytes === undefined ? {} : { memoryBudgetBytes: options.memoryBudgetBytes }),

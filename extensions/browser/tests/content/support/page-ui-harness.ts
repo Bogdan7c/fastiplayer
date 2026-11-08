@@ -3,7 +3,8 @@ import type { OverlayButtonPressedMessage, VideoAtPoint } from "../../../src/sha
 import { ENTRY_SETTINGS_KEY, parseEntrySettings } from "../../../src/shared/entry-settings.ts";
 import { createPageUi, type PageUi } from "../../../src/content/page-ui/page-ui.ts";
 import { createFakeClock, type FakeClock } from "../../background/support.ts";
-import { FakePointer, FakeUiDocument, flushMicrotasks } from "./fake-ui-dom.ts";
+import type { ViewerReturnDelivery } from "../../../src/content/relay.ts";
+import { FakeGeometrySignals, FakePointer, FakeUiDocument, flushMicrotasks } from "./fake-ui-dom.ts";
 
 export const OWN_EXTENSION_ID = "fastiplayer-extension-id";
 export const VIDEO_AT_POINT: VideoAtPoint = {
@@ -26,6 +27,12 @@ export interface PageUiHarness {
   answer: { next: () => Promise<VideoAtPoint | null> };
   /** Живые подписки на `storage.onChanged`. */
   readonly storageListeners: Set<(changes: Record<string, { newValue?: unknown }>) => void>;
+  /** Сигналы «видео сдвинулось» для заглушки (тест зовёт их сам). */
+  readonly signals: FakeGeometrySignals;
+  /** Сколько раз заглушка просила «Return» у пограничника. */
+  readonly returnRequests: { count: number };
+  /** Что ответит пограничник на следующую просьбу «Return». */
+  returnDelivery: { next: ViewerReturnDelivery };
   /** Записать настройку так, как это делает страница настроек: хранилище + событие. */
   changeOverlaySetting(enabled: boolean): void;
   /** Прогнать часы вперёд и дать отработать промисам. */
@@ -48,6 +55,9 @@ export async function setupPageUi(options: PageUiHarnessOptions = {}): Promise<P
   const asked: { x: number; y: number }[] = [];
   const answer = { next: (): Promise<VideoAtPoint | null> => Promise.resolve(VIDEO_AT_POINT) };
   const storageListeners = new Set<(changes: Record<string, { newValue?: unknown }>) => void>();
+  const signals = new FakeGeometrySignals();
+  const returnRequests = { count: 0 };
+  const returnDelivery: { next: ViewerReturnDelivery } = { next: "sent" };
   let stored: unknown = options.overlayEnabled === undefined ? undefined : { overlay_button: options.overlayEnabled };
 
   const ui = createPageUi({
@@ -73,6 +83,11 @@ export async function setupPageUi(options: PageUiHarnessOptions = {}): Promise<P
       return () => void storageListeners.delete(listener);
     },
     note: (message) => void options.notes?.push(message),
+    placeholderSignals: signals,
+    requestViewerReturn: () => {
+      returnRequests.count += 1;
+      return returnDelivery.next;
+    },
   });
   await flushMicrotasks();
 
@@ -85,6 +100,9 @@ export async function setupPageUi(options: PageUiHarnessOptions = {}): Promise<P
     asked,
     answer,
     storageListeners,
+    signals,
+    returnRequests,
+    returnDelivery,
     changeOverlaySetting(enabled) {
       stored = { overlay_button: enabled };
       for (const listener of [...storageListeners]) listener({ [ENTRY_SETTINGS_KEY]: { newValue: stored } });

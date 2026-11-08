@@ -23,6 +23,11 @@ export type HandoffSessionEnd =
   /** Договорённая версия протокола не знает такого источника (HLS при протоколе 1.0): видео остаётся у страницы. */
   | { readonly kind: "source_needs_newer_player"; readonly form: UnsupportedMediaForm }
   | { readonly kind: "returned_to_page" }
+  /**
+   * Зритель нажал «Return» на заглушке поверх видео (решение 236): тень снята на её позиции, страница играет
+   * дальше, сокет закрыт кодом 4010 сразу, без дописывания очереди и без `tab_gone`.
+   */
+  | { readonly kind: "returned_by_viewer" }
   | { readonly kind: "stream_rejected" }
   | { readonly kind: "player_ended"; readonly cause: SocketEndCause }
   | { readonly kind: "page_stream_problem"; readonly problem: PageStreamProblem };

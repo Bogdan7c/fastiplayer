@@ -7,12 +7,30 @@ import { browserApi } from "../../shared/browser-api.ts";
 import { PAGE_UI_PROBE_FUNCTION_NAME } from "../../shared/entry-contract.ts";
 import type { OverlayButtonPressedMessage, VideoAtPoint } from "../../shared/entry-contract.ts";
 import { readEntrySettings } from "../../shared/entry-settings.ts";
+import type { HandedOffVideoSink } from "../handed-off-video-listener.ts";
+import type { ViewerReturnDelivery } from "../relay.ts";
 import { createDocumentPointerSource } from "./document-pointer-source.ts";
+import { createBrowserGeometrySignals } from "./placeholder-geometry.ts";
 import { createPageUi } from "./page-ui.ts";
 import { createRealUiDocument } from "./real-ui-document.ts";
 
-/** Подключить слой страницы к этому документу; зовётся один раз при загрузке контент-скрипта. */
-export function installPageUi(videoAtPoint: (x: number, y: number) => Promise<VideoAtPoint | null>): void {
+/** Что слою страницы нужно от пограничника (relay.ts). */
+export interface PageUiRelayPorts {
+  readonly videoAtPoint: (x: number, y: number) => Promise<VideoAtPoint | null>;
+  readonly requestViewerReturn: () => ViewerReturnDelivery;
+}
+
+/** Отметка для разработчика (журнала в продукте нет). */
+function noteForDeveloper(message: string, error: unknown): void {
+  console.debug(`[fastiplayer] ${message}:`, error);
+}
+
+/**
+ * Подключить слой страницы к этому документу; зовётся один раз при загрузке контент-скрипта. Возвращает,
+ * куда якорь сообщает о переданном видео (заглушка, 11a).
+ */
+export function installPageUi(relay: PageUiRelayPorts): HandedOffVideoSink {
+  const { videoAtPoint } = relay;
   const pageUi = createPageUi({
     document: createRealUiDocument(document),
     viewportSize: () => ({ width: window.innerWidth, height: window.innerHeight }),
@@ -35,7 +53,9 @@ export function installPageUi(videoAtPoint: (x: number, y: number) => Promise<Vi
       browserApi.storage.onChanged.addListener(handler);
       return () => browserApi.storage.onChanged.removeListener(handler);
     },
-    note: (message, error) => console.debug(`[fastiplayer] ${message}:`, error),
+    note: noteForDeveloper,
+    placeholderSignals: createBrowserGeometrySignals(window, noteForDeveloper),
+    requestViewerReturn: relay.requestViewerReturn,
   });
   browserApi.runtime.onMessage.addListener((message: unknown, sender) => pageUi.onMessage(message, sender));
 
@@ -46,4 +66,5 @@ export function installPageUi(videoAtPoint: (x: number, y: number) => Promise<Vi
     enumerable: false,
     writable: false,
   });
+  return pageUi.handedOffVideo;
 }

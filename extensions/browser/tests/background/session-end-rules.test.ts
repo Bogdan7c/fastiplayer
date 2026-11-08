@@ -1,0 +1,49 @@
+// Чистые правила концов сеанса 11a (session-end-rules.ts): каждое — на всех своих ветках.
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, tabGoneReasonForPagePlayerFailure } from "../../src/background/handoff/session-end-rules.ts";
+import { END_WITHOUT_PLAYER, RETURN_PAUSED_AT_SHADOW } from "../../src/background/handoff/session-page-commands.ts";
+import type { SocketEndCause } from "../../src/background/handoff/session-socket.ts";
+import { closeReasonFromCode, PROTOCOL_VERSION_1_0, PROTOCOL_VERSION_1_2, PROTOCOL_VERSION_1_3, SESSION_CLOSE_CODES } from "../../src/protocol/index.ts";
+
+const closedWith = (code: number): SocketEndCause => ({ kind: "player_closed", code, reason: closeReasonFromCode(code) });
+
+describe("чем снять тень после конца сокета (решение 238)", () => {
+  it("окно закрыто зрителем, заменено другой вкладкой или плеер выходит — пауза на позиции тени", () => {
+    for (const code of [4000, 4001, 4006]) assert.deepEqual(endCommandAfterPlayerSocketEnd(closedWith(code)), RETURN_PAUSED_AT_SHADOW, String(code));
+    assert.deepEqual(RETURN_PAUSED_AT_SHADOW.resume, { kind: "exactly", resume: "paused" });
+    assert.deepEqual(RETURN_PAUSED_AT_SHADOW.position, { kind: "shadow_position" });
+  });
+
+  it("аварии и прочие коды — как прежде, «как тень»", () => {
+    const others: SocketEndCause[] = [
+      closedWith(1006),
+      closedWith(1000),
+      closedWith(4003),
+      closedWith(4999),
+      { kind: "attach_timeout" },
+      { kind: "queue_overflow" },
+      { kind: "player_protocol_violation", detail: "x" },
+      { kind: "page_message_rejected", detail: "x" },
+    ];
+    for (const cause of others) assert.deepEqual(endCommandAfterPlayerSocketEnd(cause), END_WITHOUT_PLAYER, JSON.stringify(cause));
+  });
+});
+
+describe("причина tab_gone для сломавшегося плеера страницы (решение 237)", () => {
+  it("1.3 знает page_player_failed; 1.2 и 1.0 получают navigated_away", () => {
+    assert.equal(tabGoneReasonForPagePlayerFailure(PROTOCOL_VERSION_1_3), "page_player_failed");
+    assert.equal(tabGoneReasonForPagePlayerFailure({ major: 1, minor: 7 }), "page_player_failed", "новее 1.3 — тоже знает");
+    assert.equal(tabGoneReasonForPagePlayerFailure(PROTOCOL_VERSION_1_2), "navigated_away");
+    assert.equal(tabGoneReasonForPagePlayerFailure(PROTOCOL_VERSION_1_0), "navigated_away");
+  });
+});
+
+describe("закрытие сокета после подтверждённого снятия тени", () => {
+  it("«Return» — 4010 сразу; отказ поколения — 4003 после очереди; возврат плеера — 1000", () => {
+    assert.deepEqual(closingAfterConfirmedEnd({ kind: "returned_by_viewer" }), { kind: "close_now", code: SESSION_CLOSE_CODES.viewer_returned_to_page });
+    assert.equal(SESSION_CLOSE_CODES.viewer_returned_to_page, 4010);
+    assert.deepEqual(closingAfterConfirmedEnd({ kind: "stream_rejected" }), { kind: "deliver_queue_then_close", reason: "protocol_violation" });
+    assert.deepEqual(closingAfterConfirmedEnd({ kind: "returned_to_page" }), { kind: "close_now", code: 1000 });
+  });
+});

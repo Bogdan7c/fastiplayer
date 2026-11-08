@@ -18,6 +18,10 @@
 // - тень молчит дольше предела пульса → снять «как тень» и 4003 (решение 180, Д-2);
 // - страница превысила бюджет событий (донесение изолированного мира `page_flood`, решение 200) или
 //   назвала адрес файла, который правило запрещает (решение 199) → снять «как тень» и 4003.
+// Сессия 11a: «Return» с заглушки (донесение изолированного мира `viewer_return_requested`, решение 236) →
+// снять тень на её позиции, страница играет, сокет 4010 сразу; сломался плеер страницы
+// (`handoff_ended{page_player_failed}`, решение 237) → как уход вкладки; окно закрыто зрителем без прощания
+// → пауза (решение 238). Правила — в session-end-rules.ts.
 // Конец сообщается владельцу ровно один раз (`onFinished`), нужда связи освобождается ровно один раз.
 //
 // Переезд на следующее видео (сессия 09c2, решения 201, 204): реклама кончилась или её пропустили, а
@@ -37,7 +41,7 @@ import type {
   PlayerWindow,
   VideoRef,
 } from "../../shared/handoff-contract.ts";
-import { parsePageEvent, parsePageFloodNotice } from "../../shared/page-message-validation.ts";
+import { parsePageEvent, parsePageFloodNotice, parseViewerReturnRequest } from "../../shared/page-message-validation.ts";
 import {
   PROTOCOL_VERSION_1_0,
   SESSION_CLOSE_CODES,
@@ -74,7 +78,8 @@ import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.
 import type { ChosenVideo } from "./video-choice.ts";
 import { createVideoRelocation } from "./video-relocation.ts";
 import { describeRefusal, describeSocketEnd, playerWindowOf } from "./session-outcome-words.ts";
-import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO } from "./session-page-commands.ts";
+import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
+import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, tabGoneReasonForPagePlayerFailure } from "./session-end-rules.ts";
 
 /** Элемент очереди открывает новое поколение (`generation_started`). */
 function startsGeneration(item: OutgoingItem): boolean {
@@ -267,20 +272,27 @@ export function startHandoffSession(
     endOnPageSide("protocol_violation", end);
   }
 
-  /**
-   * Тень снята по нашему `end_handoff` (или страница не ответила вовремя) — закрыть сокет.
-   * Возврат по просьбе плеера (`return_to_page`) — обычное 1000: конец решил и объяснил сам плеер.
-   * Отказ текущего поколения (плеер не смог играть, решение владельца 09a2) — 4003 «Stream error —
-   * video returned to the page»: иначе окно гасло бы молча, а видео уже играет страница.
-   */
+  /** Тень снята по нашему `end_handoff` (или страница не ответила вовремя) — закрыть сокет (session-end-rules.ts). */
   function completeEnding(): void {
     const end = pendingEnd ?? { kind: "returned_to_page" };
-    if (end.kind === "stream_rejected") {
-      socket?.closeAfterDeliveringQueue("protocol_violation");
-    } else {
-      socket?.close(NORMAL_CLOSE_CODE);
-    }
+    const closing = closingAfterConfirmedEnd(end);
+    if (closing.kind === "deliver_queue_then_close") socket?.closeAfterDeliveringQueue(closing.reason);
+    else socket?.close(closing.code);
     finish(end);
+  }
+
+  /**
+   * «Return» зрителя (решение 236). Только в `active`: в `ending` уже идёт другой конец (первый побеждает),
+   * между роликами и при переезде заглушки нет. Окно закрывается СРАЗУ, не дожидаясь страницы: иначе оно
+   * играло бы вместе со страницей, пока та возвращает видео.
+   */
+  function returnForViewer(): void {
+    if (phase !== "active") {
+      dependencies.noteForDeveloper(`viewer return ignored in phase ${phase}`);
+      return;
+    }
+    endHandoff(RETURN_PLAYING_AT_SHADOW, { kind: "returned_by_viewer" });
+    socket?.close(SESSION_CLOSE_CODES.viewer_returned_to_page);
   }
 
   // ---------------------------------------------------------------- старт
@@ -422,6 +434,7 @@ export function startHandoffSession(
       // Единственное, что приходит сюда не из MAIN-мира: своё донесение изолированного мира.
       const flood = parsePageFloodNotice(message);
       if (flood !== undefined) endForPageFault({ kind: "page_flood", overBudget: flood.over_budget });
+      else if (parseViewerReturnRequest(message) !== undefined) returnForViewer();
       return;
     }
     switch (event.kind) {
@@ -486,11 +499,13 @@ export function startHandoffSession(
     }
     // В `moving` это прежняя тень: мы сами её сняли. В `between_videos` тени уже нет.
     if (phase !== "active") return;
-    if (cause === "element_released") {
+    // Сломавшийся плеер страницы (решение 237) переезд решает так же: ошибка рекламы перед фильмом — не конец.
+    if (cause === "element_released" || cause === "page_player_failed") {
       if (relocation.nextVideoExpectedAfterLoss()) {
         waitForNextVideo();
         return;
       }
+      if (cause === "page_player_failed") return leavePage(tabGoneReasonForPagePlayerFailure(agreedProtocol));
       // Страница честно забрала видео (не-MSE источник, пустой источник дольше допуска, элемент
       // убран), вкладка на месте — решение 179: «The page took the video back», без доигрывания.
       endOnPageSide("page_took_video_back", { kind: "page_took_video_back" });
@@ -644,7 +659,7 @@ export function startHandoffSession(
         failStart({ kind: "player_unavailable", reason: `session_socket:${describeSocketEnd(cause)}` });
         return;
       case "active":
-        endHandoff(END_WITHOUT_PLAYER, { kind: "player_ended", cause });
+        endHandoff(endCommandAfterPlayerSocketEnd(cause), { kind: "player_ended", cause });
         return;
       case "between_videos":
       case "moving":

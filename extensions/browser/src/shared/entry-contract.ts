@@ -113,4 +113,22 @@ export interface PageUiProbe {
   readonly banner: string | null;
   /** Прямоугольник кнопки в координатах вьюпорта; `null` — кнопки нет. */
   readonly overlay_button: PageUiRect | null;
+  /** Заглушка поверх переданного видео (11a, решение 236). */
+  readonly placeholder: PlaceholderProbe;
+}
+
+/**
+ * Заглушка «Playing in Fastiplayer» глазами стенда. Прямоугольники — в координатах вьюпорта СВОЕГО фрейма
+ * (`getBoundingClientRect`), прочитаны с экрана, а не из намерений; стенд сверяет их с прямоугольником видео
+ * и кликает «Return» настоящей мышью.
+ */
+export interface PlaceholderProbe {
+  /** Изолированный мир знает переданное видео этого документа (MAIN сказал «передано» и ещё не «ушло»). */
+  readonly handed_off: boolean;
+  /** Заглушка видна: панель на экране с ненулевым размером. */
+  readonly visible: boolean;
+  /** Панель; `null` — не видна. */
+  readonly panel: PageUiRect | null;
+  /** Кнопка «Return»; `null` — не видна. */
+  readonly return_button: PageUiRect | null;
 }

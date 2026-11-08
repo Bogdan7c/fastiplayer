@@ -16,6 +16,8 @@
 // - сторожем следующего видео (сессия 09c2): фон взводит его всем фреймам вкладки, а донесение «видео
 //   задержано» проходит к фону только пока взвод не истёк и только в пределах своего лимита. Иначе
 //   страница могла бы будить фон сама, а решение 198 это запрещает. Нет ответа фона — видео отпускается;
+// - просьбой зрителя «Return» с заглушки (сессия 11a, решение 236): она уходит фону по порту ТЕКУЩЕЙ
+//   передачи и рождается здесь, а не в MAIN-мире, поэтому страница подделать её не может;
 // - тем, что документ говорит о себе сам: имя хоста и происхождение читаются здесь, в изолированном
 //   мире, а не берутся на веру из MAIN-мира. От них зависят проверка адреса (решение 199) и Referer
 //   (решение 202), поэтому поддельное значение страницы до фона не доходит.
@@ -24,6 +26,7 @@
 import {
   HELD_VIDEO_REPORT_KIND,
   PAGE_FLOOD_NOTICE_KIND,
+  VIEWER_RETURN_REQUEST_KIND,
   type DescribeCandidatesQuery,
   type HeldVideoReply,
   type HeldVideoReport,
@@ -33,6 +36,7 @@ import {
   type PageEventBudgetKind,
   type PageFloodNotice,
   type VideoCandidate,
+  type ViewerReturnRequest,
 } from "../shared/handoff-contract.ts";
 import type { PointerQuery, PointerReply, RightClickedVideo, VideoAtPoint } from "../shared/entry-contract.ts";
 import { parseRightClickedReply, parseVideoAtPointReply } from "../shared/entry-validation.ts";
@@ -110,8 +114,21 @@ export interface ContentRelay {
    * видео: `in_player` вычисляет контроллер передачи в MAIN, пограничник форму проверяет.
    */
   videoAtPoint(x: number, y: number): Promise<VideoAtPoint | null>;
+  /**
+   * Зритель нажал «Return» на заглушке (11a): передать просьбу фону по порту текущей передачи. Звать только на
+   * настоящий клик человека — это проверяет заглушка (`isTrusted`).
+   */
+  requestViewerReturn(): ViewerReturnDelivery;
   counters(): RelayCounters;
 }
+
+/**
+ * Что стало с просьбой «Return»:
+ * - `sent` — ушла фону;
+ * - `no_handoff` — передачи с живым портом нет (ещё не началась, уже кончилась или фон пропал): некому;
+ * - `port_failed` — порт бросил при отправке (его `onDisconnect` сам снимет тень).
+ */
+export type ViewerReturnDelivery = "sent" | "no_handoff" | "port_failed";
 
 export interface RelayDependencies {
   /** Отправка MAIN-миру по личному порту участка 1. */
@@ -265,6 +282,21 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     // `hls_source` несёт те же факты Referer, что `file_source`: происхождение документа берём своё, не страницы.
     if ((event.kind !== "file_source" && event.kind !== "hls_source") || event.referrer_origin === null) return event;
     return { ...event, referrer_origin: dependencies.ownDocument().origin };
+  }
+
+  // ---------------------------------------------------------------- «Return» зрителя (11a)
+
+  function requestViewerReturn(): ViewerReturnDelivery {
+    // Только хозяину текущей передачи: просьба относится к той тени, над которой стоит заглушка.
+    const owner = streamOwner;
+    if (owner === undefined || owner.port === undefined || owner.port !== backgroundPort) return "no_handoff";
+    const request: ViewerReturnRequest = { kind: VIEWER_RETURN_REQUEST_KIND };
+    try {
+      owner.port.postMessage(request);
+      return "sent";
+    } catch {
+      return "port_failed";
+    }
   }
 
   // ---------------------------------------------------------------- MAIN → фон
@@ -495,6 +527,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     describeVideoCandidates,
     rightClickedVideo,
     videoAtPoint,
+    requestViewerReturn,
     counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages, droppedFloodEvents }),
   };
 }

@@ -19,6 +19,7 @@ import type { LiveSeekable } from "../protocol/session/live-window.ts";
 import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS } from "../shared/page-message-validation.ts";
 import type { PointerQuery } from "../shared/entry-contract.ts";
 import { parsePointerQuery } from "../shared/entry-validation.ts";
+import { parseWatchHandedOffVideo, type WatchHandedOffVideoMessage } from "../shared/handed-off-video-contract.ts";
 
 /** Что MAIN-мир принимает по порту. */
 export type IncomingPageMessage = DescribeCandidatesQuery | PageCommand | NextVideoCommand;
@@ -183,15 +184,19 @@ export function parseIncomingPageMessage(candidate: unknown): IncomingPageMessag
   }
 }
 
-/** Всё, что MAIN-мир принимает по порту: команды контроллера передачи и вопросы про указатель (10c). */
-export type ChannelMessage = IncomingPageMessage | PointerQuery;
+/**
+ * Всё, что MAIN-мир принимает по порту: команды контроллера передачи, вопросы про указатель (10c) и имя
+ * события якоря переданного видео (11a). Последние два — местные дела миров, фону они не уходят.
+ */
+export type ChannelMessage = IncomingPageMessage | PointerQuery | WatchHandedOffVideoMessage;
 
 /**
  * Разобрать сообщение порта целиком. Вопросы про указатель (`describe_right_clicked`, `video_at_point`)
- * идут мимо контроллера передачи: на них отвечает `PointerVideo`. `null` — не по форме (игнорируется).
+ * идут мимо контроллера передачи: на них отвечает `PointerVideo`; имя якоря (`watch_handed_off_video`)
+ * берёт якорь переданного видео. `null` — не по форме (игнорируется).
  */
 export function parseChannelMessage(candidate: unknown): ChannelMessage | null {
-  return parsePointerQuery(candidate) ?? parseIncomingPageMessage(candidate);
+  return parsePointerQuery(candidate) ?? parseWatchHandedOffVideo(candidate) ?? parseIncomingPageMessage(candidate);
 }
 
 export function isPointerQuery(message: ChannelMessage): message is PointerQuery {

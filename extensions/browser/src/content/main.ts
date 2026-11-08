@@ -9,6 +9,7 @@ import { parseArmNextVideoRequest } from "../shared/page-message-validation.ts";
 import { RIGHT_CLICKED_VIDEO_FUNCTION_NAME } from "../shared/entry-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME, type ScriptedFrameAnswer } from "../shared/video-candidates-probe.ts";
 import { installAdWatch } from "./ad-watch-entry.ts";
+import { listenForHandedOffVideo } from "./handed-off-video-listener.ts";
 import { installPageUi } from "./page-ui/page-ui-entry.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
@@ -95,4 +96,19 @@ Object.defineProperty(globalThis, RIGHT_CLICKED_VIDEO_FUNCTION_NAME, {
 
 // Плашка с итогом входа и кнопка поверх видео (10c). Кнопка спит, пока настройка выключена; фону не пишет,
 // пока человек не нажал её.
-installPageUi((x, y) => relay.videoAtPoint(x, y));
+const handedOffVideo = installPageUi({
+  videoAtPoint: (x, y) => relay.videoAtPoint(x, y),
+  requestViewerReturn: () => relay.requestViewerReturn(),
+});
+
+// Заглушка над переданным видео (11a, решение 236): слушатель якоря встаёт ДО того, как его имя уйдёт MAIN-миру
+// по личному порту (до встречи миров порт копит сообщение). Фону это имя не уходит никогда.
+const handedOffVideoListener = listenForHandedOffVideo(
+  {
+    addCaptureListener: (eventName, listener) => window.addEventListener(eventName, listener, { capture: true }),
+    // Генератор ЭТОГО мира: страница подменить его не может.
+    randomFill: (bytes) => void crypto.getRandomValues(bytes),
+  },
+  handedOffVideo,
+);
+channel.send(handedOffVideoListener.watchMessage);

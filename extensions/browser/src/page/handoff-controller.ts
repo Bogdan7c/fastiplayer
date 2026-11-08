@@ -28,6 +28,8 @@
 // останавливает поток. Снятый на мгновение источник (YouTube: `srcObject = null` перед новым
 // MediaSource) передачу НЕ кончает — тень остаётся, и новый MediaSource идёт живым потоком (Д-1).
 // Пока тень жива, через контроллер идёт и её пульс `shadow_alive` (решение 180).
+// Сессия 11a: пока передача активна, якорь (`handed-off-video-anchor.ts`) сообщает изолированному миру
+// элемент для заглушки, а у MSE сторож (`page-player-failure-watch.ts`) следит, не сломался ли плеер страницы.
 //
 // Пока передачи нет, в порт не уходит НИЧЕГО, кроме ответов на запросы, а воркеры молчат: их
 // потоки закрываются вместе с передачей.
@@ -54,6 +56,7 @@ import type { ElementSource } from "./element-source.ts";
 import type { ForwardByteMeter } from "./forward-byte-meter.ts";
 import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
 import { hlsStreamOfDuration, shadowSourceOfHls } from "./hls-stream-kind.ts";
+import type { HandoffAnchorHooks } from "./handed-off-video-anchor.ts";
 import type { HeldVideo } from "./next-video-guard.ts";
 import { notifyTap, type HandoffTap, type StreamOrigin } from "./handoff-tap.ts";
 import type { ReplayItem } from "./journal/media-journal.ts";
@@ -61,6 +64,7 @@ import type { MediaSourceRecord, MseListener } from "./mse-tracker.ts";
 import { positionMicros } from "./mse-values.ts";
 import type { IncomingPageMessage } from "./page-command-guard.ts";
 import type { PagePort } from "./page-channel.ts";
+import type { PagePlayerFailureHooks, PagePlayerFailureWatchStarter } from "./page-player-failure-watch.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
 import { sendStreamItem, StreamBytesRefused, type StreamMessage } from "./stream-sender.ts";
 import type { ProtectionReader, VideoCandidates } from "./video-candidates.ts";
@@ -83,6 +87,10 @@ export interface HandoffControllerEnvironment {
   readonly nextVideo: NextVideoHolds;
   /** Подслушивание шагов передачи (только отладочная сборка записи потока); без него — ничего. */
   readonly tap?: HandoffTap;
+  /** Якорь переданного видео для заглушки изолированного мира (11a); без него заглушки нет. */
+  readonly anchor?: HandoffAnchorHooks;
+  /** Сторож «плеер страницы сломался» для MSE-передач (11a, решение 237); без него — не следим. */
+  readonly watchPagePlayerFailure?: PagePlayerFailureWatchStarter;
 }
 
 /** Что контроллеру нужно от сторожа следующего видео. */
@@ -109,6 +117,8 @@ interface ActiveHandoff {
    * конца помнит контроллер: иначе флуд выглядел бы для фона обычным сбоем на стороне страницы.
    */
   flooded: boolean;
+  /** Сторож ошибки плеера страницы (только MSE, ставится вместе с тенью); `null` — не следим. */
+  failureWatch: PagePlayerFailureHooks | null;
 }
 
 /** Зачем открывается поток MediaSource воркера. */
@@ -190,6 +200,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     // перезагрузка плеера): он тоже идёт живым потоком, со своим новым локальным ключом.
     if (this.#environment.dom.mediaSourceUrlsOf(active.element).includes(record.objectUrl)) {
       active.liveMediaSources.add(record.key);
+      active.failureWatch?.mediaSourceArrived();
     }
   }
 
@@ -212,6 +223,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     const source = this.#sourceOf(active.element);
     if (source.kind === "worker_media_source" && source.mediaSource.key === mediaSource.key) {
       this.#openWorkerStream(active, mediaSource, "new_generation");
+      active.failureWatch?.mediaSourceArrived();
     }
   }
 
@@ -255,7 +267,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
-    const active: ActiveHandoff = { element, liveMediaSources, session: null, held: this.#environment.nextVideo.take(element), announcedStartUs: null, flooded: false };
+    const active: ActiveHandoff = { element, liveMediaSources, session: null, held: this.#environment.nextVideo.take(element), announcedStartUs: null, flooded: false, failureWatch: null };
     this.#active = active;
     if (source.kind === "worker_media_source") {
       // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
@@ -293,12 +305,15 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       active.held.connect(emit);
       active.held.session.commitHold();
       active.session = active.held.session;
-      return;
+    } else {
+      active.session = this.#environment.startShadow(element as HTMLMediaElement, emit, {
+        isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
+        source: shadowSource,
+      });
     }
-    active.session = this.#environment.startShadow(element as HTMLMediaElement, emit, {
-      isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
-      source: shadowSource,
-    });
+    // Тень встала — передача активна (11a): заглушке нужен элемент, а MSE — сторож ошибок плеера страницы.
+    if (shadowSource === "media_source") active.failureWatch = this.#environment.watchPagePlayerFailure?.(element) ?? null;
+    this.#environment.anchor?.handoffStood(element);
   }
 
   /** Настоящая позиция элемента (T0), мкс. Бросает — решает вызывающий. */
@@ -322,9 +337,10 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     if (error instanceof StreamBytesRefused) active.flooded = true;
   }
 
-  /** Причина конца для фона: флуд важнее того, что сказала тень при снятии. */
+  /** Причина конца для фона: флуд важнее всего, потом сломавшийся плеер страницы, потом слово тени. */
   #endCauseOf(active: ActiveHandoff, reported: HandoffEndCause): HandoffEndCause {
-    return active.flooded ? "page_flood" : reported;
+    if (active.flooded) return "page_flood";
+    return active.failureWatch?.endCauseOf(reported) ?? reported;
   }
 
   /**
@@ -449,13 +465,28 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
   }
 
   #applyShadowCommand(command: ShadowCommand): void {
-    const session = this.#active?.session;
-    if (session === undefined || session === null) return;
+    const active = this.#active;
+    const session = active?.session;
+    if (active === null || session === undefined || session === null) return;
     try {
       session.apply(command);
     } catch {
       this.#environment.reportOddity("shadow command failed");
     }
+    if (command.kind === "clock") this.#onPlayerClockTick(active);
+  }
+
+  /**
+   * Тик часов плеера (раз в ~250 мс и на паузе): якорь повторяет сигнал элементу, вернувшемуся в документ,
+   * а сторож решает, не мёртв ли плеер страницы. Решение «мёртв» — конец на позиции тени и НА ПАУЗЕ
+   * (решение 237): видео в браузере всё равно не играет, а зритель досматривает скачанное у нас.
+   */
+  #onPlayerClockTick(active: ActiveHandoff): void {
+    this.#environment.anchor?.clockTick();
+    // Тень могла кончить передачу на этом же тике (пустой источник дольше допуска).
+    if (this.#active !== active || active.failureWatch?.onClockTick() !== "end_for_page_player_failure") return;
+    this.#environment.reportOddity("the page's own player failed during the handoff");
+    this.#endHandoff({ kind: "shadow_position" }, { kind: "exactly", resume: "paused" });
   }
 
   #endHandoff(position: HandoffEndPosition, resume: HandoffEndResume): void {
@@ -527,9 +558,12 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     }
   }
 
-  /** Передачи больше нет: живой поток главного потока и потоки воркеров остановлены. */
+  /** Передачи больше нет: живой поток главного потока и потоки воркеров остановлены, якорь и сторож сняты. */
   #release(): void {
+    const released = this.#active;
     this.#active = null;
+    released?.failureWatch?.stop();
+    this.#environment.anchor?.handoffEnded();
     this.#environment.workerMediaSources.closeAllStreams();
   }
 
