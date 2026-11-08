@@ -56,6 +56,8 @@ const INTERESTING_LINES: &[&str] = &[
     "Browser session end notice",
     "stream_rejected",
     "ERROR",
+    "ClosedBy",
+    "Browser session ended",
 ];
 /// Подстрока журнала: плашка предлагает нашу кнопку «Skip» (подсказку `on_page` робот не жмёт).
 const SKIP_OFFER: &str = "skip=skip";
