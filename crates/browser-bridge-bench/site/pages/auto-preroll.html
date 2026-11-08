@@ -41,12 +41,13 @@ await runAdHopScenario('auto-preroll', async (ctx, recorder) => {
     filmSession = recorder.guard(startFilmNow(ctx, recorder, catalog));
   });
   ad.src = mediaUrl(catalog, 'ad-preroll');
-  // Кнопка под боксом плеера (бокс вынут из потока, поэтому позиция задана явно).
+  // Кнопка Play поверх бокса плеера, по центру, как у живых сайтов: режим 2 засчитывает только клик по
+  // самому видео (решение 262). Бокс вынут из потока, поэтому позиция задана явно.
   const play = document.createElement('button');
   play.id = 'play';
   play.type = 'button';
   play.textContent = 'Play';
-  Object.assign(play.style, { position: 'absolute', top: '440px', left: '16px' });
+  Object.assign(play.style, { position: 'absolute', top: '240px', left: '336px', transform: 'translate(-50%, -50%)', margin: '0', zIndex: '1' });
   document.body.append(play);
   play.addEventListener('click', () => {
     ctx.log(`play-clicked active=${navigator.userActivation?.isActive ?? 'unknown'}`);

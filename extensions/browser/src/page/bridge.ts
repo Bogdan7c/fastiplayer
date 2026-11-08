@@ -19,7 +19,7 @@ import { createForwardByteMeter } from "./forward-byte-meter.ts";
 import { DrmMarks, type DrmWindow } from "./drm-marks.ts";
 import { ProtectedMediaRelease } from "./protected-media-release.ts";
 import { captureRandomFill, createDocumentTag, type RandomWindow } from "./document-tag.ts";
-import { installViewerActivation, type ActivationWindow } from "./auto-handoff/viewer-activation.ts";
+import { installViewerActivation } from "./auto-handoff/viewer-activation.ts";
 import { ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
@@ -49,8 +49,7 @@ export interface PageBridgeWindow
     BinaryWindow,
     RandomWindow,
     WorkerCaptureWindow,
-    DrmWindow,
-    ActivationWindow {
+    DrmWindow {
   /** Конструктор `Event` нужен встрече канала участка 1 (`RendezvousWindow`). */
   readonly Event: RendezvousWindow["Event"];
   /** Нужны для «видео под указателем» (10c); нет чего-то из них — вход по указателю не включается. */
@@ -130,7 +129,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   const candidates = new VideoCandidates(registry, tracker, dom, mediaSources, documentTag, reportOddity, workerMediaSources, drmMarks, dependencies.scriptArrival);
   // Ввод человека для режима 2 (12a): слушатели встают на document_start, раньше скриптов страницы.
   const viewerActivation = installViewerActivation(win, channel, dependencies.now, reportOddity);
-  const viewerPlay = new ViewerPlayWatch({ activation: viewerActivation, now: dependencies.now });
+  const viewerPlay = new ViewerPlayWatch({ activation: viewerActivation, now: dependencies.now, rectOf: (element) => dom.rectOf(element) });
   const viewerOffer = createViewerOfferAnchor(win, dom, reportOddity);
   const nextVideo = new NextVideoGuard({
     dom,

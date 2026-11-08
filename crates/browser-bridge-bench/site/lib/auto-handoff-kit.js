@@ -56,20 +56,32 @@ export function logVideoEvents(ctx, video) {
 }
 
 /**
- * Кнопки страницы `Play` и `Pause` под видео. Робот кликает по ним настоящей мышью (цели зонда
- * `play` и `pause`), поэтому `video.play()` вызывается из обработчика настоящего клика — с
- * прозрачной активацией пользователя, как у живых сайтов. Отказ `play()` не маскируем: он в журнале.
+ * Кнопки страницы `Play` и `Pause`. Робот кликает по ним настоящей мышью (цели зонда `play` и `pause`),
+ * поэтому `video.play()` вызывается из обработчика настоящего клика — с прозрачной активацией
+ * пользователя, как у живых сайтов. Отказ `play()` не маскируем: он в журнале.
+ *
+ * `Play` лежит ПОВЕРХ видео, как у X, YouTube и большинства плееров: режим 2 засчитывает только клик по
+ * самому видео (решение 262), и кнопка под видео (лайк, «ещё») запуском человека не считается. Для этого
+ * видео переносится в бокс `position: relative` на том же месте (оно ещё стоит, перенос его не трогает).
+ * `Pause` — под видео: пауза не запуск.
  */
 export function addPlayControls(ctx, video, parent = document.body) {
+  const box = document.createElement('div');
+  box.className = 'player-box';
+  Object.assign(box.style, { position: 'relative', display: 'inline-block' });
+  video.parentNode?.insertBefore(box, video);
+  box.append(video);
   const play = document.createElement('button');
   play.id = 'play';
   play.type = 'button';
   play.textContent = 'Play';
+  Object.assign(play.style, { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', margin: '0', zIndex: '1' });
+  box.append(play);
   const pause = document.createElement('button');
   pause.id = 'pause';
   pause.type = 'button';
   pause.textContent = 'Pause';
-  parent.append(play, pause);
+  parent.append(pause);
   play.addEventListener('click', async () => {
     ctx.log(`play-clicked active=${navigator.userActivation?.isActive ?? 'unknown'}`);
     try {

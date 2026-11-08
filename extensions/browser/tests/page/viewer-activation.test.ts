@@ -1,32 +1,9 @@
-// Ввод человека для режима 2 (сессия 12a): оригинальные геттеры активации и доверенные события ввода.
+// Ввод человека для режима 2 (сессии 12a, решение 262): доверенные события ввода и нажатия мыши с точкой.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  FALLBACK_ACTIVATION_WINDOW_MS,
-  installViewerActivation,
-  ViewerActivation,
-  type ActivationWindow,
-} from "../../src/page/auto-handoff/viewer-activation.ts";
+import { installViewerActivation } from "../../src/page/auto-handoff/viewer-activation.ts";
 
 type Listener = (event: unknown) => void;
-
-/** Окно с `navigator.userActivation`, как у браузера: геттеры живут на прототипах. */
-function windowWithActivation() {
-  const state = { active: false };
-  class UserActivation {
-    get isActive(): boolean {
-      return state.active;
-    }
-  }
-  class Navigator {
-    readonly #activation = new UserActivation();
-    get userActivation(): UserActivation {
-      return this.#activation;
-    }
-  }
-  const win: ActivationWindow & object = { navigator: new Navigator(), Navigator, UserActivation };
-  return { win, state, Navigator, UserActivation };
-}
 
 /** Слушатели окна, снятые «оригинальным» addEventListener. */
 function fakeChannel() {
@@ -42,47 +19,17 @@ function fakeChannel() {
   };
 }
 
-function setup(win: ActivationWindow & object) {
+function setup() {
   const clock = { nowMs: 10_000 };
   const oddities: string[] = [];
   const { channel, fire } = fakeChannel();
-  const activation = installViewerActivation(win, channel, () => clock.nowMs, (line) => void oddities.push(line));
+  const activation = installViewerActivation({}, channel, () => clock.nowMs, (line) => void oddities.push(line));
   return { activation, clock, oddities, fire };
 }
 
-describe("временная активация браузера", () => {
-  it("читается оригинальным геттером: подмена страницей не обманывает", () => {
-    const { win, state, Navigator, UserActivation } = windowWithActivation();
-    const { activation } = setup(win);
-    state.active = true;
-    assert.equal(activation.hasTransientActivation(), true);
-    // Страница позже притворяется, что жеста нет (и наоборот): наш читатель идёт мимо.
-    Object.defineProperty(UserActivation.prototype, "isActive", { get: () => false });
-    Object.defineProperty(Navigator.prototype, "userActivation", { get: () => ({ isActive: false }) });
-    assert.equal(activation.hasTransientActivation(), true);
-    state.active = false;
-    assert.equal(activation.hasTransientActivation(), false);
-  });
-
-  it("геттер бросил: активации нет, страница ничего не получила, след оставлен один раз", () => {
-    const oddities: string[] = [];
-    const failing = new ViewerActivation({
-      readTransientActivation: () => {
-        throw new Error("brand check failed");
-      },
-      now: () => 0,
-      reportOddity: (line) => void oddities.push(line),
-    });
-    assert.equal(failing.hasTransientActivation(), false);
-    assert.equal(failing.hasTransientActivation(), false);
-    assert.equal(oddities.length, 1);
-  });
-});
-
 describe("свои отметки доверенного ввода", () => {
   it("доверенный клик мышью, касание и клавиша записываются; Escape и чужие события — нет", () => {
-    const { win } = windowWithActivation();
-    const { activation, clock, fire } = setup(win);
+    const { activation, clock, fire } = setup();
     assert.equal(activation.lastTrustedInputAtMs(), Number.NEGATIVE_INFINITY);
 
     fire("pointerdown", { isTrusted: false, pointerType: "mouse" });
@@ -107,8 +54,7 @@ describe("свои отметки доверенного ввода", () => {
   });
 
   it("событие с бросающим геттером не долетает до страницы и оставляет след", () => {
-    const { win } = windowWithActivation();
-    const { activation, fire, oddities } = setup(win);
+    const { activation, fire, oddities } = setup();
     const hostile = {
       isTrusted: true,
       get pointerType(): string {
@@ -121,14 +67,41 @@ describe("свои отметки доверенного ввода", () => {
   });
 });
 
-describe("браузера без `userActivation`", () => {
-  it("запасной путь: свой ввод моложе окна считается активацией, старше — нет", () => {
-    const { activation, clock, fire } = setup({});
-    assert.equal(activation.hasTransientActivation(), false, "ввода не было");
-    fire("keydown", { isTrusted: true, key: "a" });
-    clock.nowMs += FALLBACK_ACTIVATION_WINDOW_MS;
-    assert.equal(activation.hasTransientActivation(), true);
-    clock.nowMs += 1;
-    assert.equal(activation.hasTransientActivation(), false);
+describe("нажатия мыши (решение 262)", () => {
+  it("доверенное нажатие основной кнопкой записывает момент и точку; правая кнопка и скрипт — нет", () => {
+    const { activation, clock, fire } = setup();
+    assert.equal(activation.lastPointerPress(), null);
+    fire("pointerdown", { isTrusted: false, button: 0, clientX: 5, clientY: 6 });
+    assert.equal(activation.lastPointerPress(), null, "скриптовое нажатие не клик человека");
+    fire("pointerdown", { isTrusted: true, button: 2, clientX: 5, clientY: 6 });
+    assert.equal(activation.lastPointerPress(), null, "правая кнопка не Play");
+    fire("pointerdown", { isTrusted: true, button: 0, pointerType: "mouse", clientX: 120.5, clientY: 80 });
+    assert.deepEqual(activation.lastPointerPress(), { atMs: 10_000, x: 120.5, y: 80 });
+    assert.equal(activation.lastTrustedInputAtMs(), 10_000, "нажатие — тоже доверенный ввод");
+    clock.nowMs = 10_300;
+    fire("mousedown", { isTrusted: true, button: 0, clientX: 7, clientY: 9 });
+    assert.deepEqual(activation.lastPointerPress(), { atMs: 10_300, x: 7, y: 9 }, "запасной путь mousedown");
+  });
+
+  it("клавиша — доверенный ввод, но не нажатие мыши: по клавише запуск не засчитывается", () => {
+    const { activation, fire } = setup();
+    fire("keydown", { isTrusted: true, key: " " });
+    assert.equal(activation.lastTrustedInputAtMs(), 10_000);
+    assert.equal(activation.lastPointerPress(), null);
+  });
+
+  it("точка не число (NaN, нет поля) — нажатие не записывается; бросающий геттер оставляет след", () => {
+    const { activation, fire, oddities } = setup();
+    fire("pointerdown", { isTrusted: true, button: 0, clientX: Number.NaN, clientY: 1 });
+    fire("pointerdown", { isTrusted: true, button: 0 });
+    assert.equal(activation.lastPointerPress(), null);
+    fire("mousedown", {
+      isTrusted: true,
+      get button(): number {
+        throw new Error("hostile getter");
+      },
+    });
+    assert.equal(activation.lastPointerPress(), null);
+    assert.deepEqual(oddities, ["could not read a pointer press"]);
   });
 });

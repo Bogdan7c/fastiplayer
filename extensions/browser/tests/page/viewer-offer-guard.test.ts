@@ -14,7 +14,7 @@ const pageSeesPaused = (video: FakeVideo): boolean => (video as unknown as { pau
 async function offeredFilm(options: { readonly collectOddities?: boolean } = {}) {
   const page = setupGuard(options);
   page.guard.setViewerPlayWatch(WATCH_ON);
-  page.activation.transient = true;
+  page.activation.clickOnVideo = true;
   const film = page.addVideo((video) => {
     video.real.src = FILE_URL;
   });
@@ -101,7 +101,7 @@ describe("предложение «Ask» в MAIN-мире", () => {
   it("изолированный мир о предложении не узнал: держать без панели нельзя — видео играет здесь, странность записана", async () => {
     const page = setupGuard({ collectOddities: true });
     page.guard.setViewerPlayWatch(WATCH_ON);
-    page.activation.transient = true;
+    page.activation.clickOnVideo = true;
     page.viewerOffer.accepts = false;
     const film = page.addVideo((video) => {
       video.real.src = FILE_URL;

@@ -140,6 +140,7 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("auto-unknown-duration"),
     page_unsupported_in("auto-live", &[BrowserKind::Firefox]),
     page("auto-hover-preview"),
+    page("auto-feed"),
     page("auto-preroll"),
     page("live-unload"),
     page("live-unload-new-ms"),

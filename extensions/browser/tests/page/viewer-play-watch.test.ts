@@ -1,8 +1,8 @@
-// Режим 2 «автозапуск» (сессия 12a): сторож задерживает видео, которое запустил САМ человек со звуком.
+// Режим 2 «автозапуск» (сессия 12a, решение 262): сторож задерживает видео, которое запустил САМ человек кликом по нему.
 // Настоящая тень на фейковом DOM; ввод человека и часы — под управлением теста.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { judgeViewerPlay, PLAY_CALL_MARK_WINDOW_MS, type ViewerPlayFacts } from "../../src/page/auto-handoff/viewer-play-watch.ts";
+import { judgeViewerPlay, PLAY_CALL_MARK_WINDOW_MS, VIEWER_CLICK_WINDOW_MS, ViewerPlayWatch, type ViewerPlayFacts } from "../../src/page/auto-handoff/viewer-play-watch.ts";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../src/shared/auto-handoff-contract.ts";
 import type { BinaryIntrinsics } from "../../src/page/binary-view.ts";
 import type { DomReaders } from "../../src/page/dom-readers.ts";
@@ -14,14 +14,14 @@ import type { VideoCandidates } from "../../src/page/video-candidates.ts";
 import type { WorkerMediaSources } from "../../src/page/worker-capture/index.ts";
 import type { PageEvent } from "../../src/shared/handoff-contract.ts";
 import { flushMicrotasks, type FakeVideo } from "./shadow/fake-media-dom.ts";
-import { browserPlays, FILE_URL, LEASE_MS, pagePlay, setupGuard } from "./support/next-video-guard-setup.ts";
+import { browserPlays, FILE_URL, LEASE_MS, pagePlay, POINT_OFF_VIDEO, setupGuard } from "./support/next-video-guard-setup.ts";
 import { AUTO_HANDOFF_WATCH_OFF, WATCH_ON, WATCH_ON_UNFILTERED } from "../support/auto-handoff-watch-fixtures.ts";
 
 /** Охрана включена, у человека свежий клик. */
 function watchedPage() {
   const page = setupGuard();
   page.guard.setViewerPlayWatch(WATCH_ON);
-  page.activation.transient = true;
+  page.activation.clickOnVideo = true;
   return page;
 }
 
@@ -49,7 +49,7 @@ describe("человек нажал play на видео со звуком", () 
   it("нет жеста: `play()` идёт браузеру, фону ни слова", async () => {
     const { guard, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON);
-    activation.transient = false;
+    activation.clickOnVideo = false;
     const film = addVideo();
     await pagePlay(film);
     assert.equal(browserPlays(film), 1);
@@ -70,7 +70,7 @@ describe("человек нажал play на видео со звуком", () 
   it("общий фильтр звука выключен (решения 260–261): беззвучное видео с жестом задерживается", async () => {
     const { guard, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON_UNFILTERED);
-    activation.transient = true;
+    activation.clickOnVideo = true;
     const silent = addVideo((video) => {
       video.real.muted = true;
     });
@@ -83,7 +83,7 @@ describe("человек нажал play на видео со звуком", () 
   it("общий фильтр звука выключен, но жеста нет: беззвучное автовоспроизведение ленты не задерживается", async () => {
     const { guard, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON_UNFILTERED);
-    activation.transient = false;
+    activation.clickOnVideo = false;
     const silent = addVideo((video) => {
       video.real.muted = true;
     });
@@ -95,7 +95,7 @@ describe("человек нажал play на видео со звуком", () 
   it("охрана выключена: `play()` строго прозрачен даже при свежем жесте", async () => {
     const { guard, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(AUTO_HANDOFF_WATCH_OFF);
-    activation.transient = true;
+    activation.clickOnVideo = true;
     const film = addVideo();
     await pagePlay(film);
     assert.equal(browserPlays(film), 1);
@@ -104,7 +104,7 @@ describe("человек нажал play на видео со звуком", () 
 
   it("охрана выключена с рождения: доверенный `play` тоже ничего не задерживает", async () => {
     const { activation, harness, sent, addVideo } = setupGuard();
-    activation.transient = true;
+    activation.clickOnVideo = true;
     const film = addVideo((video) => {
       video.real.paused = false;
     });
@@ -128,7 +128,7 @@ describe("человек нажал play на видео со звуком", () 
   it("общий фильтр цикла выключен (решение 261): зацикленное видео с жестом задерживается, DRM — по-прежнему нет", async () => {
     const { guard, activation, sent, addVideo, protectedVideos } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON_UNFILTERED);
-    activation.transient = true;
+    activation.clickOnVideo = true;
     const reel = addVideo((video) => void Object.assign(video, { loop: true }));
     const promise = pagePlay(reel);
     assert.equal(browserPlays(reel), 0, "ролик под тенью");
@@ -154,11 +154,79 @@ describe("человек нажал play на видео со звуком", () 
   });
 });
 
+describe("клик по этому видео (решение 262, находка M2 на X)", () => {
+  it("клик мимо видео (лайк под ним) и сразу запуск ленты: не задерживается, play() идёт браузеру", async () => {
+    const { guard, harness, activation, sent, addVideo } = setupGuard();
+    guard.setViewerPlayWatch(WATCH_ON_UNFILTERED);
+    activation.press = { atMs: harness.clock.nowMs, ...POINT_OFF_VIDEO };
+    activation.lastInputAtMs = harness.clock.nowMs;
+    const feed = addVideo((video) => {
+      video.real.muted = true;
+    });
+    harness.clock.advance(300);
+    await pagePlay(feed);
+    assert.equal(browserPlays(feed), 1, "ролик ленты играет в браузере");
+    assert.deepEqual(sent, [], "фону ни слова");
+  });
+
+  it("клик по видео старше секунды: лента запустила ролик сама позже — не задерживается", async () => {
+    const { guard, harness, activation, sent, addVideo } = setupGuard();
+    guard.setViewerPlayWatch(WATCH_ON);
+    activation.clickOnVideo = true;
+    const film = addVideo();
+    harness.clock.advance(VIEWER_CLICK_WINDOW_MS + 1);
+    await pagePlay(film);
+    assert.equal(browserPlays(film), 1);
+    assert.deepEqual(sent, []);
+  });
+
+  it("клик по видео, запуск в пределах секунды: задерживается", async () => {
+    const { guard, harness, activation, sent, addVideo } = setupGuard();
+    guard.setViewerPlayWatch(WATCH_ON);
+    activation.clickOnVideo = true;
+    const film = addVideo();
+    harness.clock.advance(VIEWER_CLICK_WINDOW_MS);
+    const promise = pagePlay(film);
+    assert.equal(browserPlays(film), 0);
+    assert.equal(heldEvent(sent).trigger, "viewer_play");
+    await promise;
+  });
+});
+
+describe("клик по видео: прямоугольник элемента", () => {
+  function watchWithRect(rect: { left: number; top: number; right: number; bottom: number } | "throws", press: { x: number; y: number }) {
+    const clock = { nowMs: 1_000 };
+    const watch = new ViewerPlayWatch({
+      activation: { lastPointerPress: () => ({ atMs: clock.nowMs, ...press }), lastTrustedInputAtMs: () => clock.nowMs },
+      now: () => clock.nowMs,
+      rectOf: () => {
+        if (rect === "throws") throw new Error("detached");
+        return rect;
+      },
+    });
+    watch.setWatch(WATCH_ON);
+    return watch;
+  }
+  const video = {};
+  const RECT = { left: 100, top: 50, right: 740, bottom: 410 };
+
+  it("точка на краю и внутри — клик по видео; на пиксель снаружи — нет", () => {
+    assert.equal(watchWithRect(RECT, { x: 100, y: 50 }).judgePlayCall(video, "audible"), "viewer_started");
+    assert.equal(watchWithRect(RECT, { x: 420, y: 230 }).judgePlayCall(video, "audible"), "viewer_started");
+    assert.equal(watchWithRect(RECT, { x: 99, y: 230 }).judgePlayCall(video, "audible"), "no_click_on_video");
+    assert.equal(watchWithRect(RECT, { x: 420, y: 411 }).judgePlayCall(video, "audible"), "no_click_on_video");
+  });
+
+  it("прямоугольник не прочитать — не клик по видео (в пользу браузера, а не передачи)", () => {
+    assert.equal(watchWithRect("throws", { x: 1, y: 1 }).judgePlayCall(video, "audible"), "no_click_on_video");
+  });
+});
+
 describe("кредит клика", () => {
   it("без активации, но с кредитом от фона: видео задержано", () => {
     const { guard, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON);
-    activation.transient = false;
+    activation.clickOnVideo = false;
     guard.grantViewerPlayCredit(30_000);
     const film = addVideo();
     void pagePlay(film);
@@ -169,7 +237,7 @@ describe("кредит клика", () => {
   it("кредит кончился по сроку: `play()` снова идёт браузеру", async () => {
     const { guard, harness, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON);
-    activation.transient = false;
+    activation.clickOnVideo = false;
     guard.grantViewerPlayCredit(1_000);
     harness.clock.advance(1_000);
     const film = addVideo();
@@ -180,7 +248,7 @@ describe("кредит клика", () => {
 
   it("кредит без охраны ничего не значит", async () => {
     const { guard, activation, sent, addVideo } = setupGuard();
-    activation.transient = false;
+    activation.clickOnVideo = false;
     guard.grantViewerPlayCredit(30_000);
     const film = addVideo();
     await pagePlay(film);
@@ -209,7 +277,7 @@ describe("защита от зацикливания после конца пе�
 
   it("кредит клика не отменяет метку возврата", async () => {
     const { guard, activation, harness, sent, film } = handedBackPage();
-    activation.transient = false;
+    activation.clickOnVideo = false;
     activation.lastInputAtMs = harness.clock.nowMs - 10;
     guard.grantViewerPlayCredit(30_000);
     await pagePlay(film);
@@ -255,7 +323,7 @@ describe("`play()` до метаданных", () => {
     const film = pendingFilm(page);
     assert.equal(browserPlays(film), 1, "браузер качает начало файла");
     assert.deepEqual(page.sent, [], "судить рано: длительности нет");
-    page.activation.transient = false; // метаданные шли дольше 5 с
+    page.activation.clickOnVideo = false; // метаданные шли дольше 5 с
     page.harness.clock.advance(8_000);
     metadataArrives(page, film);
     await flushMicrotasks();
@@ -266,7 +334,7 @@ describe("`play()` до метаданных", () => {
   it("метаданные позже окна метки: `play()` давно забыт, тень не встаёт", async () => {
     const page = watchedPage();
     const film = pendingFilm(page);
-    page.activation.transient = false;
+    page.activation.clickOnVideo = false;
     page.harness.clock.advance(PLAY_CALL_MARK_WINDOW_MS + 1);
     metadataArrives(page, film);
     await flushMicrotasks();
@@ -311,7 +379,7 @@ describe("другие запуски мимо `play()`", () => {
 
   it("доверенное событие `play` без жеста (автозапуск сайта): ничего", async () => {
     const page = watchedPage();
-    page.activation.transient = false;
+    page.activation.clickOnVideo = false;
     const film = page.addVideo((video) => {
       video.real.paused = false;
     });
@@ -324,7 +392,7 @@ describe("другие запуски мимо `play()`", () => {
 
 describe("память отказов своя у каждой причины задержки", () => {
   it("отказ переезда (хвост взвода сеанса после «Return») не отнимает видео у нового нажатия человека", async () => {
-    const { guard, sent, addVideo, keyOf, harness } = watchedPage();
+    const { guard, sent, addVideo, keyOf, harness, activation } = watchedPage();
     const film = addVideo();
     // Хвост взвода сеанса: вернувшееся видео задержано как «следующее», фон сеанса уже нет — отпустил.
     guard.arm(LEASE_MS);
@@ -335,6 +403,7 @@ describe("память отказов своя у каждой причины з
     assert.equal(film.real.paused, false, "отпущенное заиграло само");
     // Взвод кончился; человек снова сам жмёт play с тем же источником.
     harness.clock.nowMs += LEASE_MS + 1;
+    activation.clickOnVideo = true;
     const browserPlaysBefore = browserPlays(film);
     void pagePlay(film);
     await flushMicrotasks();
@@ -369,7 +438,7 @@ describe("взвод фона важнее охраны", () => {
 describe("судья вердиктов (чистая функция)", () => {
   const base: ViewerPlayFacts = {
     watch: WATCH_ON,
-    transientActivation: true,
+    clickedThisVideo: true,
     creditActive: false,
     handedBackAtMs: null,
     lastTrustedInputAtMs: 500,
@@ -382,18 +451,18 @@ describe("судья вердиктов (чистая функция)", () => {
     assert.equal(judgeViewerPlay({ ...base, watch: AUTO_HANDOFF_WATCH_OFF, audibility: "silent" }), "watch_off");
     assert.equal(judgeViewerPlay({ ...base, audibility: "silent" }), "muted");
     assert.equal(judgeViewerPlay({ ...base, watch: WATCH_ON_UNFILTERED, audibility: "silent" }), "viewer_started", "общий фильтр звука выключен");
-    assert.equal(judgeViewerPlay({ ...base, watch: WATCH_ON_UNFILTERED, audibility: "silent", transientActivation: false }), "no_viewer_gesture");
-    assert.equal(judgeViewerPlay({ ...base, transientActivation: false }), "no_viewer_gesture");
-    assert.equal(judgeViewerPlay({ ...base, transientActivation: false, creditActive: true }), "viewer_started");
+    assert.equal(judgeViewerPlay({ ...base, watch: WATCH_ON_UNFILTERED, audibility: "silent", clickedThisVideo: false }), "no_click_on_video");
+    assert.equal(judgeViewerPlay({ ...base, clickedThisVideo: false }), "no_click_on_video");
+    assert.equal(judgeViewerPlay({ ...base, clickedThisVideo: false, creditActive: true }), "viewer_started");
     assert.equal(judgeViewerPlay({ ...base, handedBackAtMs: 500 }), "handed_back_without_new_input", "ввод ровно в момент конца не новый");
     assert.equal(judgeViewerPlay({ ...base, handedBackAtMs: 499 }), "viewer_started");
-    assert.equal(judgeViewerPlay({ ...base, transientActivation: false, creditActive: true, handedBackAtMs: 600 }), "handed_back_without_new_input");
+    assert.equal(judgeViewerPlay({ ...base, clickedThisVideo: false, creditActive: true, handedBackAtMs: 600 }), "handed_back_without_new_input");
   });
 
   it("предел кредита из договора не превышается", async () => {
     const { guard, harness, activation, sent, addVideo } = setupGuard();
     guard.setViewerPlayWatch(WATCH_ON);
-    activation.transient = false;
+    activation.clickOnVideo = false;
     guard.grantViewerPlayCredit(MAX_PLAY_CREDIT_LEASE_MS * 10);
     harness.clock.advance(MAX_PLAY_CREDIT_LEASE_MS);
     const film = addVideo();
@@ -437,7 +506,7 @@ describe("конец передачи через контроллер", () => {
     await flushMicrotasks();
 
     sent.length = 0;
-    activation.transient = true; // активация браузера ещё жива, но ввод был ДО конца передачи
+    activation.clickOnVideo = true; // активация браузера ещё жива, но ввод был ДО конца передачи
     await pagePlay(film);
     assert.deepEqual(sent, [], "возвращённое видео не задерживается снова на старом жесте");
 

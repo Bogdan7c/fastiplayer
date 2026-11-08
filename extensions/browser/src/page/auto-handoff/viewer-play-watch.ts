@@ -6,8 +6,8 @@
 // и быть не должно: страница делит мир с MAIN-скриптом, и всё, что здесь лежит, она может прочитать. Сюда
 // попадает только то, что страница и так знает (свои клики, свой `play()`); решает фон.
 //
-// Правило строгое (решение владельца): запуск зрителя — это либо свежая временная активация браузера, либо
-// действующий «кредит клика» от фона (унаследованный клик через короткую рекламу). Защита от зацикливания:
+// Правило строгое (решения владельца 246, 262): запуск зрителя — это либо клик мышью по ЭТОМУ видео не раньше
+// чем за секунду до запуска, либо действующий «кредит клика» от фона (унаследованный клик через короткую рекламу). Защита от зацикливания:
 // пока передача элемента не кончилась, ничего не меняется, а после конца (Return, окно закрыто, замена)
 // новый запуск того же элемента считается только при НОВОМ доверенном вводе позже конца. Сам клик «Return»
 // стоит РАНЬШЕ конца передачи (его ответ идёт кругом через фон), поэтому не засчитывается.
@@ -20,6 +20,7 @@
 
 import { AUTO_HANDOFF_WATCH_OFF, type AutoHandoffWatch } from "../../shared/auto-handoff-contract.ts";
 import { MAX_PLAY_CREDIT_LEASE_MS } from "../../shared/auto-handoff-contract.ts";
+import type { ViewportRect } from "../dom-readers.ts";
 import type { ViewerActivationReader } from "./viewer-activation.ts";
 
 /**
@@ -27,6 +28,13 @@ import type { ViewerActivationReader } from "./viewer-activation.ts";
  * сервер сайта: 15 с покрывает медленный старт, но не позволяет «вчерашнему» клику запустить передачу.
  */
 export const PLAY_CALL_MARK_WINDOW_MS = 15_000;
+
+/**
+ * Сколько после клика по видео его запуск ещё считается запуском человека, мс (решение 262: «клик по видео +
+ * старт сразу»). Сайт зовёт `play()` из обработчика клика или через доли секунды (перерисовка плеера);
+ * секунда покрывает это, но не покрывает «кликнул паузу, а сайт через 3 с сам запустил снова».
+ */
+export const VIEWER_CLICK_WINDOW_MS = 1_000;
 
 /** Слышно ли звук у настоящего элемента (читается оригинальными геттерами: `muted`, `volume`). */
 export type ElementAudibility = "audible" | "silent";
@@ -37,15 +45,15 @@ export type ViewerPlayVerdict =
   | "watch_off"
   | "muted"
   | "handed_back_without_new_input"
-  | "no_viewer_gesture"
+  | "no_click_on_video"
   | "no_credited_play_call";
 
 /** Простые факты момента запуска: на них судья не обращается ни к часам, ни к браузеру. */
 export interface ViewerPlayFacts {
   /** Охрана: включена ли и пропускает ли сама видео без звука. */
   readonly watch: AutoHandoffWatch;
-  /** Браузерная временная активация жива. */
-  readonly transientActivation: boolean;
+  /** Человек кликнул по этому видео только что (`VIEWER_CLICK_WINDOW_MS`, решение 262). */
+  readonly clickedThisVideo: boolean;
   /** Кредит клика от фона действует. */
   readonly creditActive: boolean;
   /** Когда кончилась передача этого элемента; `null` — не передавался. */
@@ -65,12 +73,14 @@ export function judgeViewerPlay(facts: ViewerPlayFacts): ViewerPlayVerdict {
   // а включён ли фильтр на этом сайте по списку, решит фон.
   if (facts.audibility === "silent" && facts.watch.muted === "skip") return "muted";
   if (facts.handedBackAtMs !== null && facts.lastTrustedInputAtMs <= facts.handedBackAtMs) return "handed_back_without_new_input";
-  if (!facts.transientActivation && !facts.creditActive) return "no_viewer_gesture";
+  if (!facts.clickedThisVideo && !facts.creditActive) return "no_click_on_video";
   return "viewer_started";
 }
 
 export interface ViewerPlayWatchEnvironment {
   readonly activation: ViewerActivationReader;
+  /** Прямоугольник элемента на экране (оригинальный `getBoundingClientRect`); может бросить. */
+  readonly rectOf: (element: object) => ViewportRect;
   /** Монотонные часы окна, мс. */
   readonly now: () => number;
 }
@@ -143,8 +153,8 @@ export class ViewerPlayWatch {
     if (handedBackAtMs !== null && handedBackAtMs >= markedAtMs) return "handed_back_without_new_input";
     const verdict = judgeViewerPlay({
       watch: this.#watch,
-      // Жест доказан в момент `play()` — метка и есть его след.
-      transientActivation: true,
+      // Клик доказан в момент `play()` — метка и есть его след.
+      clickedThisVideo: true,
       creditActive: false,
       handedBackAtMs: null,
       lastTrustedInputAtMs: this.#environment.activation.lastTrustedInputAtMs(),
@@ -154,10 +164,27 @@ export class ViewerPlayWatch {
     return verdict;
   }
 
+  /**
+   * Кликнул ли человек по этому видео только что: последнее нажатие мыши моложе `VIEWER_CLICK_WINDOW_MS`,
+   * и его точка лежит в прямоугольнике элемента (там у X, YouTube и большинства плееров кнопка Play и само
+   * видео). Клик по лайку, соседнему посту или кнопке под видео сюда не попадает. Сбой чтения — «не кликнул».
+   */
+  #clickedOn(element: object): boolean {
+    const press = this.#environment.activation.lastPointerPress();
+    if (press === null || this.#environment.now() - press.atMs > VIEWER_CLICK_WINDOW_MS) return false;
+    let rect: ViewportRect;
+    try {
+      rect = this.#environment.rectOf(element);
+    } catch {
+      return false;
+    }
+    return press.x >= rect.left && press.x <= rect.right && press.y >= rect.top && press.y <= rect.bottom;
+  }
+
   #judgeNow(element: object, audibility: ElementAudibility): ViewerPlayVerdict {
     return judgeViewerPlay({
       watch: this.#watch,
-      transientActivation: this.#environment.activation.hasTransientActivation(),
+      clickedThisVideo: this.#clickedOn(element),
       creditActive: this.hasActiveCredit(),
       handedBackAtMs: this.#handedBack.get(element) ?? null,
       lastTrustedInputAtMs: this.#environment.activation.lastTrustedInputAtMs(),

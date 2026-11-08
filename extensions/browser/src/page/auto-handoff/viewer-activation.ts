@@ -1,79 +1,61 @@
-// «Человек только что что-то нажал» глазами MAIN-мира (сессия 12a, режим 2 «автозапуск», решение 246).
+// «Человек только что что-то нажал» глазами MAIN-мира (сессия 12a, режим 2 «автозапуск», решения 246, 262).
 //
-// Режим 2 передаёт видео в плеер, только если запуск начал САМ человек. Страница свой `play()` подделать
-// умеет, а вот «настоящий жест» — нет. Берём два независимых источника:
-// 1. браузерное понятие «временная активация» (`navigator.userActivation.isActive`, около 5 с после клика
-//    или клавиши): это то самое правило, по которому браузер сам разрешает звучащий запуск;
-// 2. собственные отметки времени доверенных событий ввода (`isTrusted`): нужны для защиты от зацикливания
-//    (был ли ввод ПОСЛЕ возврата видео) и как запасной путь там, где `userActivation` нет.
+// Режим 2 передаёт видео в плеер, только если запуск начал САМ человек кликом по этому видео (решение 262).
+// Страница свой `play()` подделать умеет, а вот доверенное событие ввода (`isTrusted`) — нет. Здесь
+// снимаются два следа:
+// 1. последнее нажатие мыши (или касание): момент и точка на экране. По нему охрана решает, кликнул ли
+//    человек именно по запущенному видео (`ViewerPlayWatch`);
+// 2. момент последнего доверенного ввода вообще (клик или клавиша): защита от зацикливания — был ли
+//    ввод ПОСЛЕ возврата видео.
+// Браузерную «временную активацию» (`navigator.userActivation`, ~5 с после ЛЮБОГО клика или клавиши) мы
+// больше не читаем: из-за неё ролик, который лента запускала сама через секунду после лайка, считался
+// запуском человека (находка M2 на X, решение 262).
 //
-// Всё снимается на document_start ОРИГИНАЛАМИ: страница позже может подменить геттер активации или
-// `addEventListener`, и тогда она обманула бы нас («активация есть всегда» или «ввода не было»). Любой сбой —
-// это «активации нет»: ошибка наших чтений не должна ни долететь до страницы, ни незаметно включить передачу.
+// Слушатели ставятся на document_start ОРИГИНАЛЬНЫМ `addEventListener`: страница позже может подменить
+// его и «съесть» события. Любой сбой чтения — это «ввода не было»: ошибка наших чтений не должна ни
+// долететь до страницы, ни незаметно включить передачу.
 
 import type { ChannelOriginals } from "../page-channel.ts";
 import type { OddityReporter } from "../prototype-wrap.ts";
 
-/**
- * Сколько держится «свой» след ввода там, где браузерной активации нет (запасной путь). Совпадает с окном
- * временной активации Chromium и Firefox (около 5 с), чтобы поведение не зависело от браузера.
- */
-export const FALLBACK_ACTIVATION_WINDOW_MS = 5_000;
+/** Нажатие мыши (касание): когда и где (координаты окна, как у `getBoundingClientRect`). */
+export interface PointerPress {
+  readonly atMs: number;
+  readonly x: number;
+  readonly y: number;
+}
 
 /** Что остальной MAIN-мир знает про ввод человека: два вопроса, ни одного поля. */
 export interface ViewerActivationReader {
-  /** Браузер считает, что жест человека «свежий» (или, без `userActivation`, свой ввод моложе окна). */
-  hasTransientActivation(): boolean;
+  /** Последнее доверенное нажатие основной кнопкой мыши (или касание); `null` — не было. */
+  lastPointerPress(): PointerPress | null;
   /** Момент последнего доверенного ввода по часам MAIN-мира; `-Infinity` — ввода не было. */
   lastTrustedInputAtMs(): number;
 }
 
-/** Окно, с которого снимаются оригиналы (в тестах — фейк; всё необязательно: нет — значит «нет API»). */
-export interface ActivationWindow {
-  readonly navigator?: object;
-  readonly Navigator?: { readonly prototype: object };
-  readonly UserActivation?: { readonly prototype: object };
-}
-
-/** Чтение браузерной активации; `undefined` — API нет (старый браузер, фейк теста). */
-export type TransientActivationReader = () => boolean | undefined;
-
-/** Что `ViewerActivation` нужно снаружи. */
-export interface ViewerActivationEnvironment {
-  readonly readTransientActivation: TransientActivationReader;
-  /** Монотонные часы окна, снятые на document_start, мс. */
-  readonly now: () => number;
-  readonly reportOddity: OddityReporter;
-}
-
 export class ViewerActivation implements ViewerActivationReader {
-  readonly #environment: ViewerActivationEnvironment;
+  readonly #now: () => number;
   #lastTrustedInputAtMs = Number.NEGATIVE_INFINITY;
-  #readFailureReported = false;
+  #lastPress: PointerPress | null = null;
 
-  constructor(environment: ViewerActivationEnvironment) {
-    this.#environment = environment;
+  constructor(now: () => number) {
+    this.#now = now;
   }
 
   /** Записать момент доверенного ввода. Зовёт только слушатель, поставленный в `installViewerActivation`. */
   noteTrustedInput(): void {
-    this.#lastTrustedInputAtMs = this.#environment.now();
+    this.#lastTrustedInputAtMs = this.#now();
   }
 
-  hasTransientActivation(): boolean {
-    try {
-      const fromBrowser = this.#environment.readTransientActivation();
-      if (fromBrowser !== undefined) return fromBrowser;
-    } catch {
-      // Чтение сломала страница или браузер: не гадаем в пользу передачи, но один раз оставляем след.
-      if (!this.#readFailureReported) {
-        this.#readFailureReported = true;
-        this.#environment.reportOddity("could not read navigator.userActivation");
-      }
-      return false;
-    }
-    // `userActivation` нет — запасной путь по своим отметкам.
-    return this.#environment.now() - this.#lastTrustedInputAtMs <= FALLBACK_ACTIVATION_WINDOW_MS;
+  /** Записать нажатие мыши в точке окна (оно же — доверенный ввод). */
+  notePointerPress(x: number, y: number): void {
+    const atMs = this.#now();
+    this.#lastTrustedInputAtMs = atMs;
+    this.#lastPress = { atMs, x, y };
+  }
+
+  lastPointerPress(): PointerPress | null {
+    return this.#lastPress;
   }
 
   lastTrustedInputAtMs(): number {
@@ -81,7 +63,7 @@ export class ViewerActivation implements ViewerActivationReader {
   }
 }
 
-/** Ввод, после которого браузер считает жест «активирующим» (список MDN «Transient activation»). */
+/** Ввод человека для защиты от зацикливания (список MDN «Transient activation»). */
 interface ActivatingEvent {
   readonly type: string;
   /** Подходит ли именно это событие (клавиша Escape и «мышиный» `pointerup` не активируют). */
@@ -104,32 +86,19 @@ function keyOf(event: unknown): unknown {
   return (event as { key?: unknown }).key;
 }
 
-/** Достать геттер свойства из прототипа (своё или унаследованное); `undefined` — нет. */
-function findGetter(prototype: object, name: string): ((this: unknown) => unknown) | undefined {
-  let current: object | null = prototype;
-  while (current !== null) {
-    const getter = Object.getOwnPropertyDescriptor(current, name)?.get;
-    if (getter !== undefined) return getter as (this: unknown) => unknown;
-    current = Object.getPrototypeOf(current) as object | null;
-  }
-  return undefined;
+/** Основная (левая) кнопка мыши; у касания и пера — тоже 0. */
+const PRIMARY_BUTTON = 0;
+
+/** Нажатие, которое считается кликом человека: основная кнопка, точка — конечные числа. */
+function pressPointOf(event: unknown): { readonly x: number; readonly y: number } | undefined {
+  const { button, clientX, clientY } = event as { button?: unknown; clientX?: unknown; clientY?: unknown };
+  if (button !== PRIMARY_BUTTON) return undefined;
+  if (typeof clientX !== "number" || typeof clientY !== "number" || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return undefined;
+  return { x: clientX, y: clientY };
 }
 
-/**
- * Читатель браузерной активации на оригинальных геттерах (`Navigator.prototype.userActivation` →
- * `UserActivation.prototype.isActive`). Нет любого звена — читатель всегда отвечает `undefined` («API нет»).
- */
-export function captureTransientActivationReader(win: ActivationWindow): TransientActivationReader {
-  const activationGetter = win.Navigator === undefined ? undefined : findGetter(win.Navigator.prototype, "userActivation");
-  const isActiveGetter = win.UserActivation === undefined ? undefined : findGetter(win.UserActivation.prototype, "isActive");
-  const navigatorObject = win.navigator;
-  if (activationGetter === undefined || isActiveGetter === undefined || navigatorObject === undefined) return () => undefined;
-  return () => {
-    const activation: unknown = Reflect.apply(activationGetter, navigatorObject, []);
-    if (typeof activation !== "object" || activation === null) return undefined;
-    return Reflect.apply(isActiveGetter, activation, []) === true;
-  };
-}
+/** Типы событий нажатия: `pointerdown` (мышь, касание, перо) и `mousedown` (запасной путь без Pointer Events). */
+const PRESS_EVENT_TYPES = ["pointerdown", "mousedown"] as const;
 
 /**
  * Собрать `ViewerActivation` и поставить слушатели на window в захвате ОРИГИНАЛЬНЫМ `addEventListener`
@@ -137,21 +106,38 @@ export function captureTransientActivationReader(win: ActivationWindow): Transie
  * вводом человека, только если оно доверенное (`isTrusted` у экземпляра подделать нельзя).
  */
 export function installViewerActivation(
-  win: ActivationWindow & object,
+  win: object,
   channel: Pick<ChannelOriginals, "addListener">,
   now: () => number,
   reportOddity: OddityReporter,
 ): ViewerActivation {
-  const activation = new ViewerActivation({ readTransientActivation: captureTransientActivationReader(win), now, reportOddity });
+  const activation = new ViewerActivation(now);
+  const isTrusted = (event: unknown): boolean => (event as { isTrusted?: unknown }).isTrusted === true;
   for (const { type, activates } of ACTIVATING_EVENTS) {
     channel.addListener(
       win,
       type,
       (event) => {
         try {
-          if ((event as { isTrusted?: unknown }).isTrusted === true && activates(event)) activation.noteTrustedInput();
+          if (isTrusted(event) && activates(event)) activation.noteTrustedInput();
         } catch {
           reportOddity("could not read an input event");
+        }
+      },
+      true,
+    );
+  }
+  for (const type of PRESS_EVENT_TYPES) {
+    channel.addListener(
+      win,
+      type,
+      (event) => {
+        try {
+          if (!isTrusted(event)) return;
+          const point = pressPointOf(event);
+          if (point !== undefined) activation.notePointerPress(point.x, point.y);
+        } catch {
+          reportOddity("could not read a pointer press");
         }
       },
       true,

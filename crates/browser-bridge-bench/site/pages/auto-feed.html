@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>auto-feed</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;display:block}button{font:16px system-ui;padding:10px 24px;margin:12px 12px 12px 0}</style>
+</head>
+<body>
+<h1>auto-feed</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor, checkPlaying } from '../lib/bench-checks.js';
+import { progressiveUrl } from '../lib/entry-page-kit.js';
+import { registerEntryTarget } from '../lib/entry-probe.js';
+import { logVideoEvents, serveAutoHandoff } from '../lib/auto-handoff-kit.js';
+
+/** Через сколько после клика по «Like» лента сама запускает ролик, мс: в пределах окна жеста браузера. */
+const FEED_START_DELAY_MS = 300;
+
+// Режим 2, находка M2 на X (решение 262): лента сама запускает беззвучный ролик, а человек за долю
+// секунды до этого кликнул по «Like» ПОД видео. Браузерная активация после такого клика жива, но
+// кликали не по видео: передачи быть не должно, ролик обязан играть у браузера. Строка идёт с фильтрами
+// по умолчанию (все выключены), чтобы беззвучие ролик не спасало.
+await runScenario('auto-feed', async (ctx) => {
+  const video = document.createElement('video');
+  Object.assign(video, { id: 'feed', muted: true, playsInline: true, preload: 'auto', width: 480 });
+  video.src = await progressiveUrl('progressive-long-h264-aac');
+  document.body.append(video);
+  logVideoEvents(ctx, video);
+  const like = document.createElement('button');
+  like.id = 'like';
+  like.type = 'button';
+  like.textContent = 'Like';
+  document.body.append(like);
+  like.addEventListener('click', () => {
+    ctx.log(`like-clicked active=${navigator.userActivation?.isActive ?? 'unknown'}`);
+    // Лента запускает ролик не в обработчике клика, а чуть позже (как при прокрутке к посту).
+    setTimeout(() => {
+      video.play().then(() => ctx.log('feed-play-resolved'), (error) => ctx.log(`feed-play-rejected ${error?.name ?? 'Error'}`));
+    }, FEED_START_DELAY_MS);
+  });
+  registerEntryTarget('like', () => like);
+  const loaded = await waitFor(() => video.readyState >= 1, 15000);
+  ctx.check('feed-metadata-loaded', loaded, `readyState=${video.readyState}`);
+  ctx.check('feed-is-muted-and-waits', video.muted && video.paused, `muted=${video.muted} paused=${video.paused}`);
+  if (!ctx.params.handoff) {
+    // Без робота страница нажимает «Like» сама, а браузер обязан сыграть ролик ленты.
+    like.click();
+    await checkPlaying(ctx, video, 'feed-plays-after-like');
+    return;
+  }
+  await serveAutoHandoff(ctx, { video });
+});
+</script>
+</body>
+</html>

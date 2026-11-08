@@ -1,6 +1,7 @@
 // Общая обвязка тестов сторожа следующего видео (сессии 09c2 и 11b2): НАСТОЯЩАЯ тень на фейковом DOM.
 import assert from "node:assert/strict";
-import type { DomReaders } from "../../../src/page/dom-readers.ts";
+import type { DomReaders, ViewportRect } from "../../../src/page/dom-readers.ts";
+import type { PointerPress, ViewerActivationReader } from "../../../src/page/auto-handoff/viewer-activation.ts";
 import type { ElementSource } from "../../../src/page/element-source.ts";
 import type { ElementRegistry } from "../../../src/page/element-registry.ts";
 import { ViewerPlayWatch } from "../../../src/page/auto-handoff/viewer-play-watch.ts";
@@ -15,20 +16,40 @@ import { createCountingGuard, createShadowHarness, type ShadowHarness } from "..
 export const FILE_URL = "https://cdn.example/ad.mp4";
 export const LEASE_MS = 3_000;
 
-/** Ввод человека под управлением теста: что сказал бы браузер и когда был последний доверенный ввод. */
-export interface FakeActivation {
-  transient: boolean;
+/** Прямоугольник каждого видео в тестах сторожа (все лежат в одном месте экрана, клики судятся по нему). */
+export const VIDEO_RECT: ViewportRect = { left: 0, top: 0, right: 640, bottom: 360 };
+/** Точка внутри `VIDEO_RECT` (кнопка Play поверх видео) и точка вне его (лайк под видео). */
+export const POINT_ON_VIDEO = { x: 320, y: 180 } as const;
+export const POINT_OFF_VIDEO = { x: 320, y: 500 } as const;
+
+/**
+ * Ввод человека под управлением теста (решение 262). `clickOnVideo = true` — человек только что нажал мышью
+ * по видео (в точке `POINT_ON_VIDEO`, по часам теста); `false` — нажатий не было. `press` можно задать и
+ * прямо (клик вне видео, давний клик).
+ */
+export interface FakeActivation extends ViewerActivationReader {
+  press: PointerPress | null;
   lastInputAtMs: number;
-  hasTransientActivation(): boolean;
-  lastTrustedInputAtMs(): number;
+  clickOnVideo: boolean;
 }
 
-export function createFakeActivation(): FakeActivation {
+export function createFakeActivation(now: () => number): FakeActivation {
   return {
-    transient: false,
+    press: null,
     lastInputAtMs: Number.NEGATIVE_INFINITY,
-    hasTransientActivation() {
-      return this.transient;
+    get clickOnVideo(): boolean {
+      return this.press !== null;
+    },
+    set clickOnVideo(value: boolean) {
+      if (!value) {
+        this.press = null;
+        return;
+      }
+      this.press = { atMs: now(), ...POINT_ON_VIDEO };
+      this.lastInputAtMs = now();
+    },
+    lastPointerPress() {
+      return this.press;
     },
     lastTrustedInputAtMs() {
       return this.lastInputAtMs;
@@ -98,10 +119,10 @@ export function setupGuard(options: { readonly collectOddities?: boolean } = {})
       playing: !video.real.paused,
       visible_area_px: 400_000,
     }));
-  const activation = createFakeActivation();
+  const activation = createFakeActivation(() => harness.clock.nowMs);
   const viewerOffer = createFakeViewerOfferSignals();
   const oddities: string[] = [];
-  const viewerPlay = new ViewerPlayWatch({ activation, now: () => harness.clock.nowMs });
+  const viewerPlay = new ViewerPlayWatch({ activation, now: () => harness.clock.nowMs, rectOf: () => VIDEO_RECT });
   const guard = new NextVideoGuard({
     dom,
     viewerPlay,

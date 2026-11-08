@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use super::facts::PREVIEW_HOVER_LINE;
+use super::facts::{LIKE_CLICKED_LINE, PREVIEW_HOVER_LINE};
 use super::judge::{
     browser_plays_failures, click_reached_page_failures, handed_off_failures,
     hover_reached_page_failures, infinite_duration_failures, placeholder_failures,
@@ -39,6 +39,8 @@ pub(super) enum Gesture {
     ClickPlay,
     /// Настоящее движение мыши на превью (без клика).
     HoverPreview,
+    /// Настоящий клик по «Like» ПОД видео; ролик ленты страница запускает сама чуть позже (решение 262).
+    ClickBesideVideo,
 }
 
 /// Чем должна кончиться строка.
@@ -96,6 +98,7 @@ fn make_gesture(
     match gesture {
         Gesture::ClickPlay => session.click_target(run, "play"),
         Gesture::HoverPreview => session.hover_target(run, "preview"),
+        Gesture::ClickBesideVideo => session.click_target(run, "like"),
     }
 }
 
@@ -130,6 +133,12 @@ fn stays_in_browser_steps(session: &mut AutoSession<'_, '_>, row: ClickRow) {
         Gesture::HoverPreview => {
             let lines = session.page_lines(&run, PREVIEW_HOVER_LINE);
             session.failures.extend(hover_reached_page_failures(&lines));
+        }
+        Gesture::ClickBesideVideo => {
+            let lines = session.page_lines(&run, LIKE_CLICKED_LINE);
+            session
+                .failures
+                .extend(click_reached_page_failures("the Like click", &lines));
         }
     }
     let probe = session.placeholder(&prefix);

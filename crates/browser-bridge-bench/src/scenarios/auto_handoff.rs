@@ -12,6 +12,8 @@
 //!    (`presented_frames`), заглушка «Return», браузер почти не декодирует (как судит `capture`);
 //!  * `muted-autoplay` — беззвучный баннер, который заиграл сам: передачи нет, баннер играет у браузера;
 //!  * `hover-preview` — превью по наведению мыши (беззвучное, без клика): передачи нет;
+//!  * `click-beside-feed` — лента (решение 262): клик по «Like» под видео, ролик страница запускает сама —
+//!    передачи нет, хотя браузерная активация жива и фильтры выключены;
 //!  * `short-clip` — ролик 30 с со звуком по клику (короче порога, фильтры включены): передачи нет;
 //!  * `short-clip-default-filters` — тот же ролик при фильтрах по умолчанию (все выключены, решение 261): передача;
 //!  * `preroll-to-film` — реклама перед фильмом по клику: передача уже на рекламе, потом сеанс
@@ -64,6 +66,8 @@ const LIVE_PAGE: &str = "auto-live";
 const HOVER_PAGE: &str = "auto-hover-preview";
 /// Реклама перед фильмом по клику.
 const PREROLL_PAGE: &str = "auto-preroll";
+/// Лента: клик по «Like» под видео, ролик страница запускает сама через 0,3 с (решение 262).
+const FEED_PAGE: &str = "auto-feed";
 /// Беззвучный баннер и превью, которые играют сами (страница режима 1, переиспользована).
 const BANNER_PAGE: &str = "banner-autoplay";
 
@@ -148,6 +152,14 @@ const ROWS: &[Row] = &[
         HOVER_PAGE,
         SettingsPreset::On,
         Gesture::HoverPreview,
+        Expected::StaysInBrowser,
+    ),
+    // Находка M2 на X: клик мимо видео, а лента сама запустила беззвучный ролик — передачи нет.
+    click_row(
+        "click-beside-feed",
+        FEED_PAGE,
+        SettingsPreset::OnDefaultFilters,
+        Gesture::ClickBesideVideo,
         Expected::StaysInBrowser,
     ),
     click_row(
@@ -311,6 +323,7 @@ mod tests {
             "click-hands-off",
             "muted-autoplay",
             "hover-preview",
+            "click-beside-feed",
             "short-clip",
             "short-clip-default-filters",
             "preroll-to-film",
@@ -389,6 +402,10 @@ mod tests {
                     Gesture::HoverPreview => {
                         assert!(source.contains("registerEntryTarget('preview'"), "{name}");
                         assert!(source.contains(facts::PREVIEW_HOVER_LINE), "{name}");
+                    }
+                    Gesture::ClickBesideVideo => {
+                        assert!(source.contains("registerEntryTarget('like'"), "{name}");
+                        assert!(source.contains(facts::LIKE_CLICKED_LINE), "{name}");
                     }
                 }
             }

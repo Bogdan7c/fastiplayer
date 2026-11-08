@@ -384,6 +384,11 @@ YouTube (видео, микс, live, Shorts, субтитры, дорожки), 
 - ЛОВУШКА Firefox: `PictureInPictureChild` на mousedown ищет видео под курсором `nodesFromRect(..., onlyVisible, порог visibility-threshold = 1.0)` — перекрытием считает только НЕПРОЗРАЧНОЕ. Наш слой поверх видео обязан иметь сплошной фон, иначе клик в зоне кнопки «Картинка в картинке» (правый край видео) уходит Firefox (стенд 12b: «Never» не нажимался). Касается и будущих контролов режима 3.
 - Попап: `src/popup/site-rule-row{,-model}.ts` (`section.site-rule > select.site-rule-choice` default|always|never|ask, «Default (off/always/ask first)», заметки про стоп-листы). Настройки: `src/options/auto-handoff-lists-control.ts` (`#auto-handoff-stop-entry/-add`, `ul#auto-handoff-own-stop-list`, `ul#auto-handoff-site-rules`, `details#auto-handoff-built-in-stop-list` только чтение — решение 258; своё `always` сильнее встроенного стоп-листа).
 - Решение 259 (владелец, во время M2): группа «Social feeds» (вкл. `youtube.com/shorts`) УДАЛЕНА из встроенного стоп-листа (`stop-list.ts`); остались звонки и банки/платежи. Соцсети судятся как любой сайт (фильтры звука и длины).
+- Решение 262: «запустил зритель» = доверенное нажатие основной кнопкой мыши или касание внутри `rectOf(video)` не старше `VIEWER_CLICK_WINDOW_MS` = 1 с, ИЛИ кредит клика.
+  - `ViewerActivation` хранит `lastPointerPress` {atMs, x, y} (`pointerdown`/`mousedown`, button 0) и `lastTrustedInputAtMs` (для защиты от зацикливания после возврата).
+  - `navigator.userActivation` больше не читается (из-за него ролики ленты X после лайка уходили сами). Клавиши запуском не считаются.
+  - Вердикт отказа — `no_click_on_video`. `ViewerPlayWatch` получает `rectOf` в окружении.
+  - Стенд: Play поверх видео (`addPlayControls` кладёт видео в `.player-box`, кнопка по центру). Ряд `click-beside-feed` (страница `auto-feed`: клик по «Like» под видео → лента сама запускает беззвучный ролик → остаётся у браузера).
 - Решения 260–261: фильтры видео режима 2 — звук, длина, цикл (`shared/video-filter-settings.ts`).
   - Настройка: `video_filters.{sound,duration,loop} = {enabled, sites}`. По умолчанию всё выключено; порог — прежний `min_duration_s`.
   - Сайт из списка = ключ хоста вкладки, действует на поддомены (`videoFilterAppliesOn`).

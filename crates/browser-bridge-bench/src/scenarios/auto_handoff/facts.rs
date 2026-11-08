@@ -9,6 +9,8 @@ pub(super) const STATE_LINE: &str = "auto-state ";
 pub(super) const PLAY_CLICKED_LINE: &str = "play-clicked";
 /// Строка журнала: превью запустилось по наведению мыши.
 pub(super) const PREVIEW_HOVER_LINE: &str = "preview-hover-started";
+/// Строка страницы-ленты: настоящий клик по «Like» под видео (решение 262).
+pub(super) const LIKE_CLICKED_LINE: &str = "like-clicked";
 /// Строка журнала: кнопка Pause получила настоящий клик.
 pub(super) const PAUSE_CLICKED_LINE: &str = "pause-clicked";
 
