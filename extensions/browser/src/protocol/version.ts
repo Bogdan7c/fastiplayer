@@ -13,6 +13,9 @@
 // 1.3 (сессия 11a, решение 237) - новых сообщений нет, новое ЗНАЧЕНИЕ: причина
 // `tab_gone{page_player_failed}` (плеер сайта сломался во время передачи). Значение новее
 // общей версии сторона не шлёт: экстеншен со старым плеером говорит `navigated_away`.
+// 1.4 (сессия 11b1, решения 240-241) - «возврат вкладки»: страница -> плеер `page_left`,
+// `page_returned`, `page_reopen_failed`; плеер -> страница `reopen_page` (договор -
+// `session/page-reopen.ts`). `tab_gone` не менялся, коды закрытия не менялись.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -35,8 +38,11 @@ export const PROTOCOL_VERSION_1_2: ProtocolVersion = Object.freeze({ major: 1, m
 /** Причина `tab_gone{page_player_failed}` (сессия 11a, решение 237). */
 export const PROTOCOL_VERSION_1_3: ProtocolVersion = Object.freeze({ major: 1, minor: 3 });
 
+/** Возврат вкладки: `page_left`, `page_returned`, `page_reopen_failed`, `reopen_page` (сессия 11b1, решения 240-241). */
+export const PROTOCOL_VERSION_1_4: ProtocolVersion = Object.freeze({ major: 1, minor: 4 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_3;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_4;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

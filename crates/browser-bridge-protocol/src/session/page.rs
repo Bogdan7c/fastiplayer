@@ -10,6 +10,7 @@ use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::resource::{ResourceFetchOutcome, ResourceHandle};
 use crate::session::ad_state::PageAdState;
+use crate::session::page_reopen::PageReopenFailure;
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
@@ -172,6 +173,15 @@ impl TabGoneReason {
     }
 }
 
+/// Старшая из двух версий (одного `major`): версия сообщения со всеми его значениями.
+const fn max_version(first: ProtocolVersion, second: ProtocolVersion) -> ProtocolVersion {
+    if second.minor > first.minor {
+        second
+    } else {
+        first
+    }
+}
+
 /// К какому потоку относится сообщение — для сторожа поколений
 /// (`crate::stream_gate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +339,22 @@ pub enum PageSessionMessage {
         /// Почему.
         reason: TabGoneReason,
     },
+    /// Страница больше не источник, но связь остаётся открытой (протокол 1.4, решение 240):
+    /// экстеншен ждёт `reopen_page` и может вернуть страницу. В отличие от `tab_gone`
+    /// сеанс НЕ кончается. Байты старого поколения после этого приходить не должны.
+    PageLeft {
+        /// Почему страница ушла (те же причины, что у `tab_gone`).
+        reason: TabGoneReason,
+    },
+    /// Страница вернулась (протокол 1.4): тот же сеанс продолжается, дальше идёт новое
+    /// поколение потока.
+    PageReturned {},
+    /// Вернуть страницу не вышло (протокол 1.4): после этого экстеншен закрывает
+    /// соединение кодом 4002.
+    PageReopenFailed {
+        /// Почему не вышло.
+        reason: PageReopenFailure,
+    },
 }
 
 impl PageSessionMessage {
@@ -343,6 +369,9 @@ impl PageSessionMessage {
             | Self::RangeFetchFinished { .. }
             | Self::ResourceFetchFinished { .. }
             | Self::TabGone { .. }
+            | Self::PageLeft { .. }
+            | Self::PageReturned {}
+            | Self::PageReopenFailed { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
             | Self::FileSourceAdded { generation }
@@ -387,6 +416,9 @@ impl PageSessionMessage {
             Self::HlsSourceAdded { .. } | Self::ResourceFetchFinished { .. } => {
                 ProtocolVersion::V1_1
             }
+            Self::PageLeft { .. } | Self::PageReturned {} | Self::PageReopenFailed { .. } => {
+                ProtocolVersion::V1_4
+            }
             Self::Attach { .. }
             | Self::GenerationStarted { .. }
             | Self::FileSourceAdded { .. }
@@ -417,6 +449,10 @@ impl PageSessionMessage {
         match self {
             // Тип `tab_gone` есть с 1.0, поэтому версия значения всегда не старше типа.
             Self::TabGone { reason } => reason.introduced_in(),
+            // Тип `page_left` из 1.4, причина не новее его, но берём наибольшую явно.
+            Self::PageLeft { reason } => {
+                max_version(Self::introduced_in(self), reason.introduced_in())
+            }
             other => other.introduced_in(),
         }
     }
@@ -442,6 +478,9 @@ impl ProtocolMessage for PageSessionMessage {
         "range_fetch_finished",
         "resource_fetch_finished",
         "tab_gone",
+        "page_left",
+        "page_returned",
+        "page_reopen_failed",
     ];
 
     fn validate(&self) -> Result<(), ValueViolation> {

@@ -464,6 +464,48 @@ def write_invalid_tab_gone_reasons(manifest: Manifest) -> None:
         manifest.invalid(f"{invalid}{name}.json", schema, compact_json(page_message("tab_gone", reason=reason)), "unknown_value")
 
 
+PAGE_LEFT_REASONS = ["closed", "navigated_away", "browser_closing", "page_player_failed"]
+PAGE_REOPEN_FAILURES = ["no_browser_window", "page_did_not_load", "not_the_same_video", "video_did_not_start"]
+
+
+def page_return_cases() -> list[tuple[str, dict[str, Any]]]:
+    """Верные `page_left`, `page_returned`, `page_reopen_failed` (протокол 1.4)."""
+    return [
+        *[(f"page-left-{reason.replace('_', '-')}", page_message("page_left", reason=reason)) for reason in PAGE_LEFT_REASONS],
+        ("page-returned", page_message("page_returned")),
+        *[
+            (f"page-reopen-failed-{failure.replace('_', '-')}", page_message("page_reopen_failed", reason=failure))
+            for failure in PAGE_REOPEN_FAILURES
+        ],
+    ]
+
+
+def write_invalid_page_return(manifest: Manifest) -> None:
+    """Неверные сообщения возврата вкладки (протокол 1.4): метки строгие, без нормализации.
+
+    Внешняя форма serde (`{"no_browser_window":null}`) — ошибка формы, её пишет
+    `write_shape_strictness` рядом с другими `*-as-map`.
+    """
+    schema = "page_session"
+    invalid = "session/invalid/page-"
+    for name, message, kind in [
+        ("page-reopen-failed-reason-unknown", page_message("page_reopen_failed", reason="teleported"), "unknown_value"),
+        ("page-reopen-failed-upper-case", page_message("page_reopen_failed", reason="No_Browser_Window"), "unknown_value"),
+        ("page-reopen-failed-with-dashes", page_message("page_reopen_failed", reason="no-browser-window"), "unknown_value"),
+        ("page-reopen-failed-with-spaces", page_message("page_reopen_failed", reason=" no_browser_window"), "unknown_value"),
+        ("page-reopen-failed-reason-missing", page_message("page_reopen_failed"), "missing_field"),
+        ("page-left-reason-unknown", page_message("page_left", reason="teleported"), "unknown_value"),
+        ("page-left-upper-case", page_message("page_left", reason="Closed"), "unknown_value"),
+        ("page-left-with-dashes", page_message("page_left", reason="page-player-failed"), "unknown_value"),
+        ("page-left-reason-missing", page_message("page_left"), "missing_field"),
+        # Метка причины ухода и метка отказа возврата - разные словари: чужая метка не подходит.
+        ("page-left-reopen-failure-label", page_message("page_left", reason="no_browser_window"), "unknown_value"),
+        ("page-reopen-failed-gone-label", page_message("page_reopen_failed", reason="closed"), "unknown_value"),
+        ("page-returned-with-field", page_message("page_returned", reason="closed"), "unknown_field"),
+    ]:
+        manifest.invalid(f"session/invalid/{name}.json", schema, compact_json(message), kind)
+
+
 def write_page_session(manifest: Manifest) -> None:
     schema = "page_session"
     valid = "session/valid/page-"
@@ -586,11 +628,14 @@ def write_page_session(manifest: Manifest) -> None:
         ("tab-gone", page_message("tab_gone", reason="navigated_away")),
         # Протокол 1.3 (решение 237): плеер сайта сломался во время передачи.
         ("tab-gone-page-player-failed", page_message("tab_gone", reason="page_player_failed")),
+        # Протокол 1.4 (решения 240-241): возврат вкладки.
+        *page_return_cases(),
         *resource_fetch_finished_cases(),
     ]:
         manifest.valid(f"{valid}{name}.json", schema, message)
     write_invalid_hls_page_messages(manifest)
     write_invalid_tab_gone_reasons(manifest)
+    write_invalid_page_return(manifest)
 
     invalid = "session/invalid/page-"
     manifest.invalid(
@@ -765,6 +810,10 @@ def write_player_session(manifest: Manifest) -> None:
                 max_bytes=MAX_RESOURCE_FETCH_BYTES,
             ),
         ),
+        # Протокол 1.4 (решение 241): зритель нажал play, пока страница ушла.
+        ("reopen-page", {"type": "reopen_page", "position_us": 123}),
+        ("reopen-page-zero", {"type": "reopen_page", "position_us": 0}),
+        ("reopen-page-max", {"type": "reopen_page", "position_us": MAX_JSON_SAFE_INTEGER}),
         ("live-window-range", live_window()),
         ("live-window-none", live_window(seekable={"kind": "none"})),
         # Края договора включительно: окно в одну точку ровно на краю эфира.
@@ -813,6 +862,27 @@ def write_player_session(manifest: Manifest) -> None:
     )
     write_invalid_fetch_resource(manifest)
     write_invalid_live_window(manifest)
+    write_invalid_reopen_page(manifest)
+
+
+def write_invalid_reopen_page(manifest: Manifest) -> None:
+    """Неверные `reopen_page` (протокол 1.4): позиция обязательна, неотрицательная, целая."""
+    schema = "player_session"
+    invalid = "session/invalid/player-reopen-page-"
+    for name, message, kind in [
+        ("position-missing", {"type": "reopen_page"}, "missing_field"),
+        ("position-negative", {"type": "reopen_page", "position_us": -1}, "number_out_of_range"),
+        ("position-string", {"type": "reopen_page", "position_us": "123"}, "wrong_value_type"),
+        ("position-fractional", {"type": "reopen_page", "position_us": 1.5}, "wrong_value_type"),
+        ("position-null", {"type": "reopen_page", "position_us": None}, "wrong_value_type"),
+        (
+            "position-beyond-js-safe-integer",
+            {"type": "reopen_page", "position_us": MAX_JSON_SAFE_INTEGER + 1},
+            "number_out_of_range",
+        ),
+        ("unknown-field", {"type": "reopen_page", "position_us": 1, "page": "x"}, "unknown_field"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
 
 
 def window_range(start_us: int, end_us: int) -> dict[str, Any]:
@@ -1042,6 +1112,11 @@ def write_shape_strictness(manifest: Manifest) -> None:
         ("tab-gone-reason-unknown-key-as-map", page_message("tab_gone", reason={"teleported": None})),
         # Новая причина 1.3 в той же чужой форме — тоже ошибка формы.
         ("tab-gone-page-player-failed-as-map", page_message("tab_gone", reason={"page_player_failed": None})),
+        # Протокол 1.4: метки возврата вкладки - тоже только строкой.
+        ("page-left-reason-as-map", page_message("page_left", reason={"closed": None})),
+        ("page-left-reason-as-index", page_message("page_left", reason=0)),
+        ("page-reopen-failed-reason-as-map", page_message("page_reopen_failed", reason={"no_browser_window": None})),
+        ("page-reopen-failed-reason-as-index", page_message("page_reopen_failed", reason=1)),
         ("menu-as-array", page_message("variant_menu_changed", menu=["audio", []])),
         (
             "menu-option-as-array",
@@ -1515,6 +1590,9 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         },
         "hls_source_added": "1.1",
         "resource_fetch_finished": "1.1",
+        "page_left": "1.4",
+        "page_returned": "1.4",
+        "page_reopen_failed": "1.4",
     },
     "player_session": {
         **{
@@ -1537,6 +1615,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         },
         "fetch_resource": "1.1",
         "live_window": "1.2",
+        "reopen_page": "1.4",
     },
 }
 
@@ -1557,6 +1636,13 @@ VALUE_VERSIONS: dict[str, dict[str, str]] = {
         "navigated_away": "1.0",
         "browser_closing": "1.0",
         "page_player_failed": "1.3",
+    },
+    # Значения page_left.reason - те же TabGoneReason, их версии в tab_gone.reason выше.
+    "page_reopen_failed.reason": {
+        "no_browser_window": "1.4",
+        "page_did_not_load": "1.4",
+        "not_the_same_video": "1.4",
+        "video_did_not_start": "1.4",
     },
 }
 

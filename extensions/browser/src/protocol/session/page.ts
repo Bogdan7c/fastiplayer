@@ -30,6 +30,7 @@ import {
   mediaTimeOffsetCodec,
   playbackRateCodec,
 } from "../time.ts";
+import { type PageReopenFailure, PAGE_REOPEN_FAILURES } from "./page-reopen.ts";
 import { type PageAdState, pageAdStateCodec, validatePageAdState } from "./ad-state.ts";
 import { type VariantMenu, variantMenuCodec, validateVariantMenu } from "./variants.ts";
 
@@ -119,7 +120,16 @@ export type PageSessionMessage =
   | { readonly type: "range_fetch_finished"; readonly request_id: number; readonly outcome: RangeFetchOutcome }
   /** Протокол 1.1: запрос ресурса HLS закончен (тело уже ушло рамками вида 2). */
   | { readonly type: "resource_fetch_finished"; readonly request_id: number; readonly outcome: ResourceFetchOutcome }
-  | { readonly type: "tab_gone"; readonly reason: TabGoneReason };
+  | { readonly type: "tab_gone"; readonly reason: TabGoneReason }
+  /**
+   * Протокол 1.4: страница больше не источник, но связь остаётся открытой («сирота»);
+   * экстеншен ждёт `reopen_page`. В отличие от `tab_gone` сеанс НЕ кончается.
+   */
+  | { readonly type: "page_left"; readonly reason: TabGoneReason }
+  /** Протокол 1.4: страница вернулась, тот же сеанс продолжается, дальше - новое поколение. */
+  | { readonly type: "page_returned" }
+  /** Протокол 1.4: вернуть не вышло; после этого экстеншен закрывает соединение кодом 4002. */
+  | { readonly type: "page_reopen_failed"; readonly reason: PageReopenFailure };
 
 const removalEndCodec: Codec<RemovalEnd> = taggedUnion<RemovalEnd, "kind">("kind", {
   at: { time_us: mediaTimeCodec },
@@ -186,6 +196,9 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   range_fetch_finished: { request_id: rangeRequestIdCodec, outcome: rangeFetchOutcomeCodec },
   resource_fetch_finished: { request_id: rangeRequestIdCodec, outcome: resourceFetchOutcomeCodec },
   tab_gone: { reason: stringEnum<TabGoneReason>(TAB_GONE_REASONS) },
+  page_left: { reason: stringEnum<TabGoneReason>(TAB_GONE_REASONS) },
+  page_returned: {},
+  page_reopen_failed: { reason: stringEnum<PageReopenFailure>(PAGE_REOPEN_FAILURES) },
 });
 
 /** Проверки между полями: удаляемый промежуток непуст, меню корректно. */

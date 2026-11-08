@@ -189,6 +189,13 @@ pub enum PlayerSessionMessage {
         /// Куда можно перемотать.
         seekable: LiveSeekable,
     },
+    /// Зритель нажал play, пока страница ушла (протокол 1.4, решение 241): вернуть страницу
+    /// на этой секунде. Позиция — во времени плеера (как `clock.position_us`). Ответ —
+    /// `page_returned` или `page_reopen_failed`.
+    ReopenPage {
+        /// С какой секунды продолжить.
+        position_us: MediaTime,
+    },
     /// Плеер не будет играть это поколение — экстеншен возвращает видео странице.
     StreamRejected {
         /// Поколение.
@@ -214,6 +221,7 @@ impl ProtocolMessage for PlayerSessionMessage {
         "fetch_range",
         "fetch_resource",
         "live_window",
+        "reopen_page",
         "stream_rejected",
     ];
 
@@ -244,6 +252,7 @@ impl PlayerSessionMessage {
     #[must_use]
     pub const fn introduced_in(&self) -> ProtocolVersion {
         match self {
+            Self::ReopenPage { .. } => ProtocolVersion::V1_4,
             Self::LiveWindow { .. } => ProtocolVersion::V1_2,
             Self::FetchResource { .. } => ProtocolVersion::V1_1,
             Self::Attached {}

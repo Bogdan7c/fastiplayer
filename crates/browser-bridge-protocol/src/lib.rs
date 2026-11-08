@@ -29,7 +29,9 @@
 //!
 //! Версия 1.1 (решение 228) добавила нативный HLS по номеркам ресурсов:
 //! `crate::resource`, `crate::resource_address`; 1.2 (решение 232) — окно эфира
-//! `live_window`; 1.3 (решение 237) — значение `tab_gone{page_player_failed}`.
+//! `live_window`; 1.3 (решение 237) — значение `tab_gone{page_player_failed}`;
+//! 1.4 (решения 240–241) — возврат вкладки: `page_left`, `page_returned`,
+//! `page_reopen_failed`, `reopen_page` (`crate::session::page_reopen`).
 //! История версий — `crate::version`.
 
 pub mod capability;

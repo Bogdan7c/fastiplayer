@@ -24,8 +24,8 @@ import { FIXTURES_ROOT, readFixtureBytes } from "./fixtures-support.ts";
 
 const version = (major: number, minor: number): ProtocolVersion => ({ major, minor });
 
-test("текущая версия протокола - 1.3 (tab_gone{page_player_failed}, сессия 11a)", () => {
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 3 });
+test("текущая версия протокола - 1.4 (возврат вкладки, сессия 11b1)", () => {
+  assert.deepEqual(CURRENT_PROTOCOL_VERSION, { major: 1, minor: 4 });
 });
 
 test("версия включает только свои и более старые minor того же major", () => {

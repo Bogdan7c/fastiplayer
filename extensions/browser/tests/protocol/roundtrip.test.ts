@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  PAGE_REOPEN_FAILURES,
   TAB_GONE_REASONS,
   decodeExtensionControl,
   decodePageSession,
@@ -160,6 +161,9 @@ function pageSession(random: Random): PageSessionMessage {
     },
     { type: "range_fetch_finished", request_id: random.next(), outcome: { kind: "failed", failure: "http_error" } },
     { type: "tab_gone", reason: random.pick(TAB_GONE_REASONS) },
+    { type: "page_left", reason: random.pick(TAB_GONE_REASONS) },
+    { type: "page_returned" },
+    { type: "page_reopen_failed", reason: random.pick(PAGE_REOPEN_FAILURES) },
   ]);
 }
 
@@ -176,6 +180,7 @@ function playerSession(random: Random): PlayerSessionMessage {
     { type: "select_variant", kind: random.pick(["audio", "quality", "subtitles"] as const), variant_id: random.text(BASE64URL, 1, 64) },
     { type: "next_episode" },
     { type: "fetch_range", request_id: random.next(), offset: random.safeInt(), length: 1 + random.int(16 * 1024 * 1024) },
+    { type: "reopen_page", position_us: random.safeInt() },
     { type: "stream_rejected", generation: generation(random), reason: random.pick(["protected_content", "unsupported_codec", "unparsable_media", "file_unavailable", "playback_failed"] as const) },
   ]);
 }
@@ -220,7 +225,7 @@ test("page_session: encode(decode(x)) == x на сгенерированных �
     seenTypes.add(message.type);
     checkRoundTrip("page_session", message, encodePageSession, decodePageSession);
   }
-  assert.equal(seenTypes.size, 15, "генератор покрыл все типы сообщений страницы");
+  assert.equal(seenTypes.size, 18, "генератор покрыл все типы сообщений страницы");
 });
 
 test("player_session: encode(decode(x)) == x на сгенерированных сообщениях", () => {
@@ -231,5 +236,5 @@ test("player_session: encode(decode(x)) == x на сгенерированных
     seenTypes.add(message.type);
     checkRoundTrip("player_session", message, encodePlayerSession, decodePlayerSession);
   }
-  assert.equal(seenTypes.size, 12, "генератор покрыл все типы сообщений плеера");
+  assert.equal(seenTypes.size, 13, "генератор покрыл все типы сообщений плеера");
 });

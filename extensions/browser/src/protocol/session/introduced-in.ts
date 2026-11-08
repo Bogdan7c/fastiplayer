@@ -10,9 +10,11 @@ import {
   PROTOCOL_VERSION_1_1,
   PROTOCOL_VERSION_1_2,
   PROTOCOL_VERSION_1_3,
+  PROTOCOL_VERSION_1_4,
   type ProtocolVersion,
 } from "../version.ts";
 import type { PageSessionMessage, TabGoneReason } from "./page.ts";
+import { type PageReopenFailure } from "./page-reopen.ts";
 import type { PlayerSessionMessage } from "./player.ts";
 
 const PAGE_SESSION_INTRODUCED_IN: Readonly<Record<PageSessionMessage["type"], ProtocolVersion>> = {
@@ -34,6 +36,9 @@ const PAGE_SESSION_INTRODUCED_IN: Readonly<Record<PageSessionMessage["type"], Pr
   range_fetch_finished: PROTOCOL_VERSION_1_0,
   resource_fetch_finished: PROTOCOL_VERSION_1_1,
   tab_gone: PROTOCOL_VERSION_1_0,
+  page_left: PROTOCOL_VERSION_1_4,
+  page_returned: PROTOCOL_VERSION_1_4,
+  page_reopen_failed: PROTOCOL_VERSION_1_4,
 };
 
 const PLAYER_SESSION_INTRODUCED_IN: Readonly<Record<PlayerSessionMessage["type"], ProtocolVersion>> = {
@@ -51,6 +56,7 @@ const PLAYER_SESSION_INTRODUCED_IN: Readonly<Record<PlayerSessionMessage["type"]
   fetch_range: PROTOCOL_VERSION_1_0,
   fetch_resource: PROTOCOL_VERSION_1_1,
   live_window: PROTOCOL_VERSION_1_2,
+  reopen_page: PROTOCOL_VERSION_1_4,
   stream_rejected: PROTOCOL_VERSION_1_0,
 };
 
@@ -79,4 +85,41 @@ const TAB_GONE_REASON_INTRODUCED_IN: Readonly<Record<TabGoneReason, ProtocolVers
 /** В какой версии появилась причина `tab_gone{reason}`. */
 export function tabGoneReasonIntroducedIn(reason: TabGoneReason): ProtocolVersion {
   return TAB_GONE_REASON_INTRODUCED_IN[reason];
+}
+
+/**
+ * В какой версии появился отказ возврата страницы (все - вместе с `page_reopen_failed`, 1.4).
+ * Зеркало `PageReopenFailure::introduced_in` (page_reopen.rs); таблица значений -
+ * fixtures/value-versions.json.
+ */
+const PAGE_REOPEN_FAILURE_INTRODUCED_IN: Readonly<Record<PageReopenFailure, ProtocolVersion>> = {
+  no_browser_window: PROTOCOL_VERSION_1_4,
+  page_did_not_load: PROTOCOL_VERSION_1_4,
+  not_the_same_video: PROTOCOL_VERSION_1_4,
+  video_did_not_start: PROTOCOL_VERSION_1_4,
+};
+
+/** В какой версии появился отказ `page_reopen_failed{reason}`. */
+export function pageReopenFailureIntroducedIn(reason: PageReopenFailure): ProtocolVersion {
+  return PAGE_REOPEN_FAILURE_INTRODUCED_IN[reason];
+}
+
+/**
+ * Самая старая общая версия, при которой страница вправе прислать это сообщение: самая новая из
+ * версий его типа и его значений. Зеркало `PageSessionMessage::required_version` (page.rs).
+ */
+export function pageSessionRequiredVersion(message: PageSessionMessage): ProtocolVersion {
+  const typeVersion = PAGE_SESSION_INTRODUCED_IN[message.type];
+  const valueVersion = (() => {
+    switch (message.type) {
+      case "tab_gone":
+      case "page_left":
+        return TAB_GONE_REASON_INTRODUCED_IN[message.reason];
+      case "page_reopen_failed":
+        return PAGE_REOPEN_FAILURE_INTRODUCED_IN[message.reason];
+      default:
+        return typeVersion;
+    }
+  })();
+  return valueVersion.minor > typeVersion.minor ? valueVersion : typeVersion;
 }

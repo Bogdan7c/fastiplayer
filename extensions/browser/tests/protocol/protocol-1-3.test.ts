@@ -58,7 +58,8 @@ test("в 1.3 нет новых типов сообщений: tab_gone по-пр
 
 test("версия каждой причины tab_gone - ровно та, что в общей таблице значений", () => {
   const table = readJson<{ "tab_gone.reason": Record<string, string> }>("value-versions.json");
-  assert.deepEqual(Object.keys(table).sort(), ["tab_gone.reason"]);
+  // Записи более поздних версий (1.4: `page_reopen_failed.reason`) проверяет их тест.
+  assert.ok("tab_gone.reason" in table);
   const byReason = table["tab_gone.reason"];
   // Таблица полна по значениям: тот же список, что разбирает кодек.
   assert.deepEqual(Object.keys(byReason).sort(), [...TAB_GONE_REASONS].sort());

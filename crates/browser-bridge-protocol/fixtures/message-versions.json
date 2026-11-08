@@ -17,7 +17,10 @@
     "range_fetch_finished": "1.0",
     "tab_gone": "1.0",
     "hls_source_added": "1.1",
-    "resource_fetch_finished": "1.1"
+    "resource_fetch_finished": "1.1",
+    "page_left": "1.4",
+    "page_returned": "1.4",
+    "page_reopen_failed": "1.4"
   },
   "player_session": {
     "attached": "1.0",
@@ -34,6 +37,7 @@
     "fetch_range": "1.0",
     "stream_rejected": "1.0",
     "fetch_resource": "1.1",
-    "live_window": "1.2"
+    "live_window": "1.2",
+    "reopen_page": "1.4"
   }
 }

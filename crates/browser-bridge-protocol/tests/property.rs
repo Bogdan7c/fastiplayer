@@ -31,9 +31,9 @@ use browser_bridge_protocol::limits::{
     MAX_RANGE_FETCH_BYTES, MAX_RESOURCE_FETCH_BYTES, MIN_PLAYBACK_RATE_PERMILLE,
 };
 use browser_bridge_protocol::session::{
-    BufferIntake, ClockSequence, ClockState, PagePlaybackRequest, RangeFetchFailure,
-    RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause, StreamRejection,
-    TabGoneReason, VariantKind, VariantMenu, VariantOption, VariantSelection,
+    BufferIntake, ClockSequence, ClockState, PagePlaybackRequest, PageReopenFailure,
+    RangeFetchFailure, RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause,
+    StreamRejection, TabGoneReason, VariantKind, VariantMenu, VariantOption, VariantSelection,
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
@@ -286,10 +286,19 @@ fn live_window(generator: &mut Generator) -> PlayerSessionMessage {
     }
 }
 
+fn random_tab_gone_reason(generator: &mut Generator) -> TabGoneReason {
+    *generator.pick(&[
+        TabGoneReason::Closed,
+        TabGoneReason::NavigatedAway,
+        TabGoneReason::BrowserClosing,
+        TabGoneReason::PagePlayerFailed,
+    ])
+}
+
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
-    match generator.below(16) {
+    match generator.below(19) {
         0 => PageSessionMessage::Attach {
             session_key: session_key(generator),
             token: session_token(generator),
@@ -392,19 +401,27 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
             request_id: RangeRequestId(generator.next_u64() as u32),
             outcome: resource_fetch_outcome(generator),
         },
-        _ => PageSessionMessage::TabGone {
+        15 => PageSessionMessage::TabGone {
+            reason: random_tab_gone_reason(generator),
+        },
+        // Протокол 1.4: возврат вкладки.
+        16 => PageSessionMessage::PageLeft {
+            reason: random_tab_gone_reason(generator),
+        },
+        17 => PageSessionMessage::PageReturned {},
+        _ => PageSessionMessage::PageReopenFailed {
             reason: *generator.pick(&[
-                TabGoneReason::Closed,
-                TabGoneReason::NavigatedAway,
-                TabGoneReason::BrowserClosing,
-                TabGoneReason::PagePlayerFailed,
+                PageReopenFailure::NoBrowserWindow,
+                PageReopenFailure::PageDidNotLoad,
+                PageReopenFailure::NotTheSameVideo,
+                PageReopenFailure::VideoDidNotStart,
             ]),
         },
     }
 }
 
 fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
-    match generator.below(14) {
+    match generator.below(15) {
         0 => PlayerSessionMessage::Attached {},
         1 => PlayerSessionMessage::Clock {
             seq: ClockSequence(generator.next_u64() as u32),
@@ -447,6 +464,10 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
         },
         11 => fetch_resource(generator),
         12 => live_window(generator),
+        // Протокол 1.4: зритель нажал play, пока страница ушла.
+        13 => PlayerSessionMessage::ReopenPage {
+            position_us: media_time(generator),
+        },
         _ => PlayerSessionMessage::StreamRejected {
             generation: generation(generator),
             reason: *generator.pick(&[

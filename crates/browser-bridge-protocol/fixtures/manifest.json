@@ -460,6 +460,69 @@
       }
     },
     {
+      "file": "session/valid/page-page-left-closed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-left-navigated-away.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-left-browser-closing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-left-page-player-failed.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-returned.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-reopen-failed-no-browser-window.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-reopen-failed-page-did-not-load.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-reopen-failed-not-the-same-video.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-page-reopen-failed-video-did-not-start.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/page-resource-fetch-completed.json",
       "schema": "page_session",
       "expect": {
@@ -664,6 +727,102 @@
       "expect": {
         "result": "error",
         "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-reopen-failed-reason-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-reopen-failed-upper-case.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-reopen-failed-with-dashes.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-reopen-failed-with-spaces.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-reopen-failed-reason-missing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-left-reason-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-left-upper-case.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-left-with-dashes.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-left-reason-missing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-left-reopen-failure-label.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-reopen-failed-gone-label.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-returned-with-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
       }
     },
     {
@@ -893,6 +1052,27 @@
     },
     {
       "file": "session/valid/player-fetch-resource-max-fields.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-reopen-page.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-reopen-page-zero.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-reopen-page-max.json",
       "schema": "player_session",
       "expect": {
         "result": "ok"
@@ -1244,6 +1424,62 @@
       }
     },
     {
+      "file": "session/invalid/player-reopen-page-position-missing.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-reopen-page-position-negative.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-reopen-page-position-string.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-reopen-page-position-fractional.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-reopen-page-position-null.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-reopen-page-position-beyond-js-safe-integer.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-reopen-page-unknown-field.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
       "file": "data/valid/source-buffer-first-frame.bin",
       "schema": "data_frame",
       "expect": {
@@ -1587,6 +1823,38 @@
     },
     {
       "file": "session/invalid/page-shape-tab-gone-page-player-failed-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-page-left-reason-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-page-left-reason-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-page-reopen-failed-reason-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-shape-page-reopen-failed-reason-as-index.json",
       "schema": "page_session",
       "expect": {
         "result": "error",

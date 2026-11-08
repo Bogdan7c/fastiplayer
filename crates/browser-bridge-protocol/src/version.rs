@@ -41,6 +41,13 @@
 //!   ниже 1.3 экстеншен вместо неё шлёт `navigated_away`. Коды закрытия не
 //!   версионируются (4009 и 4010 добавлены так же): чужой 4xxx старый плеер
 //!   понимает как молчаливый конец.
+//! - **1.4** (сессия 11b1, решения 240–241) — «возврат вкладки»: страница → плеер
+//!   `page_left{reason}` (страница ушла, связь остаётся «сиротой»), `page_returned`
+//!   (страница вернулась, тот же сеанс, новое поколение), `page_reopen_failed{reason}`
+//!   (вернуть не вышло; затем закрытие 4002); плеер → страница `reopen_page{position_us}`
+//!   (зритель нажал play). `tab_gone` не менялся и по-прежнему означает конец сеанса,
+//!   когда экстеншен не может вернуть страницу. Коды закрытия не менялись. Договор —
+//!   `crate::session::page_reopen`, правила порядка — `crate::stream_gate`.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -73,6 +80,10 @@ impl ProtocolVersion {
     /// Причина `tab_gone{page_player_failed}` (сессия 11a, решение 237).
     pub const V1_3: Self = Self { major: 1, minor: 3 };
 
+    /// «Возврат вкладки» (сессия 11b1, решения 240–241): `page_left`, `page_returned`,
+    /// `page_reopen_failed`, `reopen_page`.
+    pub const V1_4: Self = Self { major: 1, minor: 4 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -85,7 +96,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_3;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_4;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -167,26 +178,27 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_3() {
-        // Сессия 11a: причина `tab_gone{page_player_failed}`. Число закреплено — его же
-        // зеркалит экстеншен (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 3));
+    fn this_crate_speaks_protocol_1_4() {
+        // Сессия 11b1: возврат вкладки. Число закреплено — его же зеркалит экстеншен
+        // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 4));
     }
 
     #[test]
-    fn a_1_3_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_4_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_3,
             ProtocolVersion::V1_2,
             ProtocolVersion::V1_1,
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_3, older),
+                negotiate_protocol_version(ProtocolVersion::V1_4, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_3),
+                negotiate_protocol_version(older, ProtocolVersion::V1_4),
                 Ok(older)
             );
         }

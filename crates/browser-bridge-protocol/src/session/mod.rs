@@ -31,12 +31,18 @@
 //! не знающий кода, видит чужой 4xxx и кончает сеанс молча — для 4010 это и есть
 //! правильное поведение.
 //!
+//! Протокол 1.4 (решения 240–241) добавил «возврат вкладки»: страница-источник ушла, но связь
+//! остаётся открытой (`page_left`), зритель нажимает play (`reopen_page`), экстеншен открывает
+//! страницу заново (`page_returned`) или сообщает отказ (`page_reopen_failed`, затем 4002).
+//! Договор целиком — [`page_reopen`]; коды закрытия не менялись.
+//!
 //! Обычное 1000 от страницы и кадр без кода ничего не объясняют: плеер кончает сеанс
 //! молча.
 
 pub mod ad_state;
 pub mod live_window;
 pub mod page;
+pub mod page_reopen;
 pub mod player;
 pub mod variants;
 
@@ -49,6 +55,7 @@ pub use page::{
     PagePlaybackRequest, PageSessionMessage, RangeFetchFailure, RangeFetchOutcome, RemovalEnd,
     ResourceSize, SeekCause, StreamScope, TabGoneReason,
 };
+pub use page_reopen::PageReopenFailure;
 pub use player::{
     BufferIntake, ClockSequence, ClockState, PlayerSessionMessage, ResumeState, StreamRejection,
 };

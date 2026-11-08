@@ -4,5 +4,11 @@
     "navigated_away": "1.0",
     "browser_closing": "1.0",
     "page_player_failed": "1.3"
+  },
+  "page_reopen_failed.reason": {
+    "no_browser_window": "1.4",
+    "page_did_not_load": "1.4",
+    "not_the_same_video": "1.4",
+    "video_did_not_start": "1.4"
   }
 }

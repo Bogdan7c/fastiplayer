@@ -57,10 +57,13 @@ struct MessageVersions {
 
 /// Таблица версий значений: «сообщение.поле» → значение → версия.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ValueVersions {
     #[serde(rename = "tab_gone.reason")]
     tab_gone_reason: BTreeMap<String, String>,
+    // Записи более поздних версий (1.4: `page_reopen_failed.reason`) проверяет их тест.
+    #[serde(flatten)]
+    #[allow(dead_code, reason = "поля других версий здесь не читаются")]
+    other_entries: BTreeMap<String, serde_json::Value>,
 }
 
 fn fixtures_root() -> PathBuf {

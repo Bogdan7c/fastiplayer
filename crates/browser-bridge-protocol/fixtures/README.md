@@ -17,7 +17,7 @@
 | `streams/<имя>/` | Записанный поток: `stream.json` (шаги по порядку + ожидание) и файлы шагов |
 | `media/` | Крошечные синтетические медиа (fMP4 H.264, fMP4 AAC, WebM VP9+Opus) и `generate.sh` |
 | `message-versions.json` | В какой версии протокола появилось каждое сообщение сеанса (с протокола 1.1) |
-| `value-versions.json` | В какой версии протокола появилось каждое ЗНАЧЕНИЕ старого сообщения, у которого значения добавлялись (с протокола 1.3) |
+| `value-versions.json` | В какой версии протокола появилось каждое ЗНАЧЕНИЕ старого сообщения, у которого значения добавлялись (с протокола 1.3; с 1.4 — и значения нового сообщения `page_reopen_failed`) |
 | `resource-addresses.json` | Верные и неверные адреса-заглушки номерков ресурсов HLS (протокол 1.1) |
 | `generate_fixtures.py` | Генератор всего, кроме `media/`; независимая от Rust реализация формата |
 
@@ -102,6 +102,21 @@
 **Код закрытия 4010 `viewer_returned_to_page`** (решение 236): зритель нажал «Return» на заглушке страницы; видео играет на странице дальше. Закрывает экстеншен; плеер закрывает окно сразу и молча — без доигрывания, сообщения и прощания `return_to_page`. Коды закрытия не версионируются (4009 добавлен так же): старый плеер видит незнакомый 4xxx и кончает сеанс молча, как на 1000. Заняты коды 4000–4010.
 
 Фикстуры — `session/valid/page-tab-gone-page-player-failed.json`, `session/invalid/page-tab-gone-*` и `session/invalid/page-shape-tab-gone-page-player-failed-as-map.json`.
+
+## Возврат вкладки (протокол 1.4, сессия 11b1, решения 240–241)
+
+Версия протокола — **1.4**. Четыре новых сообщения (все `1.4` в `message-versions.json`):
+
+- страница → плеер `{"type":"page_left","reason":"closed"}` — страница больше не источник, но связь остаётся открытой («сирота»); причины те же, что у `tab_gone`. Сеанс НЕ кончается;
+- страница → плеер `{"type":"page_returned"}` — страница вернулась, тот же сеанс продолжается, дальше идёт новое поколение;
+- страница → плеер `{"type":"page_reopen_failed","reason":"no_browser_window"}` — вернуть не вышло; значения `no_browser_window`, `page_did_not_load`, `not_the_same_video`, `video_did_not_start` (таблица `value-versions.json`, ключ `page_reopen_failed.reason`); затем экстеншен закрывает соединение кодом 4002;
+- плеер → страница `{"type":"reopen_page","position_us":123}` — зритель нажал play, пока страница ушла: вернуть страницу на этой секунде (время плеера).
+
+`tab_gone` не менялся и по-прежнему означает конец сеанса, когда страницу вернуть нельзя. Коды закрытия не менялись. Значения `page_left.reason` — те же `TabGoneReason`, отдельной записи в `value-versions.json` у них нет (их версии — в `tab_gone.reason`).
+
+Правила порядка (сторож плеера, `StreamGate`): после `page_left` разрешены только `page_returned`, `page_reopen_failed` и `tab_gone`; байты и любые другие сообщения — нарушение (`PageIsAway`); `page_returned`/`page_reopen_failed` при странице на месте — нарушение (`PageIsPresent`); поколение, ушедшее со страницей, остаётся устаревшим и после возврата, следующее — ровно на 1 больше. Рамки `<video src>` сторож не разбирает: сервер обязан спрашивать `admit_range_bytes()`.
+
+Фикстуры — `session/valid/page-page-left-*`, `page-page-returned`, `page-page-reopen-failed-*`, `player-reopen-page*`; `session/invalid/page-left-*`, `page-reopen-failed-*`, `page-returned-with-field`, `player-reopen-page-*` и `page-shape-page-left-*`/`page-shape-page-reopen-failed-*`.
 
 ## Строгость формы (сессия 07)
 

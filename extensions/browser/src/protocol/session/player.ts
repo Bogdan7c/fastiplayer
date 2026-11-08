@@ -97,6 +97,12 @@ export type PlayerSessionMessage =
       readonly edge_us: MediaTimeMicros;
       readonly seekable: LiveSeekable;
     }
+  /**
+   * Протокол 1.4 (решение 241): зритель нажал play, пока страница ушла, - вернуть страницу на
+   * этой секунде (время плеера, как `clock.position_us`). Ответ - `page_returned` или
+   * `page_reopen_failed`.
+   */
+  | { readonly type: "reopen_page"; readonly position_us: MediaTimeMicros }
   | { readonly type: "stream_rejected"; readonly generation: StreamGeneration; readonly reason: StreamRejection };
 
 const clockStateCodec: Codec<ClockState> = stringEnum<ClockState>(["playing", "paused", "waiting", "ended"]);
@@ -135,6 +141,7 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
     edge_us: mediaTimeCodec,
     seekable: liveSeekableCodec,
   },
+  reopen_page: { position_us: mediaTimeCodec },
   stream_rejected: {
     generation: streamGenerationCodec,
     reason: stringEnum<StreamRejection>([

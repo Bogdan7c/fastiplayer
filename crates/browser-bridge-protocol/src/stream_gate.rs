@@ -22,15 +22,23 @@
 //!   версия типа и его значений) — нарушение: при общей 1.0 страница не вправе слать
 //!   `hls_source_added` и `resource_fetch_finished`, при общей ниже 1.3 —
 //!   `tab_gone{page_player_failed}` (`crate::version`, правило 5);
+//! - присутствие страницы (протокол 1.4, `page_presence`): после `page_left` страница
+//!   молчит — любое сообщение, кроме `page_returned`, `page_reopen_failed` и `tab_gone`,
+//!   и любые байты — нарушение; `page_returned` и `page_reopen_failed` при странице на
+//!   месте — тоже нарушение; поколение, ушедшее со страницей, навсегда «устаревшее»;
 //! - SourceBuffer объявляют (`source_buffer_added`) до его байтов и только раз;
 //! - порядковые номера рамок SourceBuffer идут подряд с 0: пропуск значит
 //!   потерю куска, и склеивать байты дальше нельзя.
+
+mod page_presence;
 
 use crate::data_frame::SourceBufferBytesHeader;
 use crate::limits::MAX_SOURCE_BUFFERS_PER_GENERATION;
 use crate::session::page::{PageSessionMessage, StreamScope};
 use crate::stream::{AppendSequence, SourceBufferIndex, StreamGeneration};
 use crate::version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
+
+use self::page_presence::{PagePresence, PresenceReaction};
 
 /// Что делать с сообщением или рамкой.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +96,13 @@ pub enum StreamViolation {
     /// MSE-сообщение или рамка вида 1 пришли в HLS-поколении.
     #[error("media source message in an hls generation")]
     MediaSourceMessageInHlsGeneration,
+    /// `page_returned` или `page_reopen_failed` пришли, пока страница на месте (протокол 1.4).
+    #[error("page_returned or page_reopen_failed while the page is present")]
+    PageIsPresent,
+    /// Сообщение или байты пришли, пока страница ушла или не вернулась (протокол 1.4):
+    /// после `page_left` разрешены только `page_returned`, `page_reopen_failed` и `tab_gone`.
+    #[error("message or bytes while the page is away")]
+    PageIsAway,
     /// Сообщение появилось в версии протокола новее общей версии сеанса.
     #[error("message is not part of the agreed protocol version")]
     MessageNotInAgreedVersion {
@@ -234,6 +249,12 @@ pub struct StreamGate {
     agreed_version: ProtocolVersion,
     /// Текущее поколение; `None` — ещё ни одного не объявили.
     current: Option<GenerationState>,
+    /// Где страница-источник (протокол 1.4); начинается «на месте».
+    presence: PagePresence,
+    /// Последнее поколение, ушедшее со страницей: всё про него и старше — устаревшее,
+    /// даже когда страница вернулась (инвариант 6). Следующее поколение после возврата —
+    /// ровно на 1 больше текущего, как и раньше.
+    left_with_page: Option<StreamGeneration>,
 }
 
 impl Default for StreamGate {
@@ -260,6 +281,8 @@ impl StreamGate {
         Self {
             agreed_version: agreed,
             current: None,
+            presence: PagePresence::Present,
+            left_with_page: None,
         }
     }
 
@@ -297,6 +320,18 @@ impl StreamGate {
                 introduced_in,
             });
         }
+        // Присутствие страницы — раньше правил потока: пока страница ушла, потоковых
+        // сообщений нет вовсе, даже про устаревшее поколение.
+        match self.presence.react_to(message)? {
+            PresenceReaction::AcceptAndBecome(next) => {
+                if self.presence == PagePresence::Present && next == PagePresence::Left {
+                    self.leave_page();
+                }
+                self.presence = next;
+                return Ok(GateDecision::Accept);
+            }
+            PresenceReaction::ContinueWithStreamRules => {}
+        }
         match message {
             PageSessionMessage::GenerationStarted { generation } => {
                 self.start_generation(*generation)
@@ -327,6 +362,8 @@ impl StreamGate {
         &mut self,
         header: &SourceBufferBytesHeader,
     ) -> Result<GateDecision, StreamViolation> {
+        // Страница ушла — байтов быть не может, даже «устаревших».
+        self.presence.admit_bytes()?;
         match self.relation_to(header.generation) {
             GenerationRelation::Stale => return Ok(GateDecision::DropStale),
             GenerationRelation::NotAnnounced => {
@@ -355,6 +392,24 @@ impl StreamGate {
         // номер «застынет», и следующая рамка честно даст SequenceGap.
         progress.next_sequence = AppendSequence(progress.next_sequence.0.saturating_add(1));
         Ok(GateDecision::Accept)
+    }
+
+    /// Пропускает байты `<video src>` (рамки вида 2), которых сторож иначе не разбирает.
+    ///
+    /// Сервер ОБЯЗАН вызывать это для каждой такой рамки: пока страница на месте — принять,
+    /// иначе (ушла, не вернулась) — нарушение. Состояние сторожа не меняется.
+    ///
+    /// # Errors
+    /// [`StreamViolation::PageIsAway`] — страница ушла или не вернулась.
+    pub fn admit_range_bytes(&self) -> Result<GateDecision, StreamViolation> {
+        self.presence.admit_bytes().map(|()| GateDecision::Accept)
+    }
+
+    /// Страница ушла: текущее поколение уходит с ней и навсегда становится устаревшим.
+    fn leave_page(&mut self) {
+        if let Some(state) = &self.current {
+            self.left_with_page = Some(state.generation);
+        }
     }
 
     /// Новое поколение: ровно следующее за текущим (или 1 для первого).
@@ -485,6 +540,10 @@ impl StreamGate {
     }
 
     fn relation_to(&self, generation: StreamGeneration) -> GenerationRelation {
+        // Поколение, ушедшее со страницей, устарело и после её возврата (оно ещё `current`).
+        if self.left_with_page.is_some_and(|left| generation <= left) {
+            return GenerationRelation::Stale;
+        }
         match &self.current {
             None => GenerationRelation::NotAnnounced,
             Some(state) if generation < state.generation => GenerationRelation::Stale,
