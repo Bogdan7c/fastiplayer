@@ -4,10 +4,11 @@
 // - чем снять тень, когда плеер закрыл сокет сам (решение 238): окно закрыто без прощания → пауза;
 // - какую причину `tab_gone` послать, когда сломался плеер страницы (решение 237): новое ЗНАЧЕНИЕ протокола
 //   1.3 только плееру, который его знает;
-// - как закрыть сокет, когда страница подтвердила снятие тени по нашему `end_handoff`.
+// - как закрыть сокет, когда страница подтвердила снятие тени по нашему `end_handoff`;
+// - что значит `handoff_ended`, о котором мы не просили (09a2, 09c2, 11a; вынесено из сеанса в 11b2).
 
 import { SESSION_CLOSE_CODES, tabGoneReasonIntroducedIn, versionIncludes, type ProtocolVersion, type SessionCloseReason, type TabGoneReason } from "../../protocol/index.ts";
-import type { PageCommand } from "../../shared/handoff-contract.ts";
+import type { HandoffEndCause, PageCommand } from "../../shared/handoff-contract.ts";
 import type { HandoffSessionEnd } from "./session-contract.ts";
 import { END_WITHOUT_PLAYER, RETURN_PAUSED_AT_SHADOW } from "./session-page-commands.ts";
 import { NORMAL_CLOSE_CODE, type QueueDeliveringCloseReason, type SocketEndCause } from "./session-socket.ts";
@@ -62,4 +63,32 @@ export function closingAfterConfirmedEnd(end: HandoffSessionEnd): ConfirmedEndCl
     default:
       return { kind: "close_now", code: NORMAL_CLOSE_CODE };
   }
+}
+
+/** Что делать, когда страница сама сняла активную тень (`handoff_ended`, о котором мы не просили). */
+export type PageEndedShadowStep =
+  /** Переезд открыт: это конец ролика, ждём следующее видео (09c2). */
+  | { readonly kind: "wait_for_next_video" }
+  /** Плеер страницы сломался (решение 237): как уход страницы, с этой причиной. */
+  | { readonly kind: "leave_page"; readonly reason: TabGoneReason }
+  /** Конец по стороне страницы: дописать очередь и закрыть кодом причины. */
+  | { readonly kind: "end_on_page_side"; readonly closeReason: QueueDeliveringCloseReason; readonly end: HandoffSessionEnd };
+
+/**
+ * `handoff_ended{cause}` при активной тени:
+ * - страница забрала видео или её плеер сломался, а переезд открыт (реклама, ошибка рекламы перед фильмом) —
+ *   ждать следующее видео;
+ * - плеер страницы сломался — уход страницы (`tab_gone`, причина по версии плеера);
+ * - страница честно забрала видео, вкладка на месте — решение 179: «The page took the video back» (4009);
+ * - счётчик копий в MAIN-мире или воркере отказал (решение 200) — та же вина страницы, что бюджет событий (4003);
+ * - `returned` без нашей просьбы — сбой внутри страницы (Д-6): для плеера ошибка потока (4003).
+ */
+export function stepAfterPageEndedShadow(cause: HandoffEndCause, nextVideoExpected: boolean, agreedProtocol: ProtocolVersion): PageEndedShadowStep {
+  if (cause === "element_released" || cause === "page_player_failed") {
+    if (nextVideoExpected) return { kind: "wait_for_next_video" };
+    if (cause === "page_player_failed") return { kind: "leave_page", reason: tabGoneReasonForPagePlayerFailure(agreedProtocol) };
+    return { kind: "end_on_page_side", closeReason: "page_took_video_back", end: { kind: "page_took_video_back" } };
+  }
+  if (cause === "page_flood") return { kind: "end_on_page_side", closeReason: "protocol_violation", end: { kind: "page_flood", overBudget: "forwarded_bytes" } };
+  return { kind: "end_on_page_side", closeReason: "protocol_violation", end: { kind: "page_side_failure" } };
 }

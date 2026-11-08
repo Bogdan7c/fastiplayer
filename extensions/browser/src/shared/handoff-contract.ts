@@ -421,8 +421,22 @@ export type PageCommand =
  * - `release_held_video` — отпустить задержанное видео: фон сказал «не берём» или не ответил вовремя.
  */
 export type NextVideoCommand =
-  | { readonly kind: "arm_next_video"; readonly lease_ms: number }
+  | { readonly kind: "arm_next_video"; readonly lease_ms: number; readonly page_return?: PageReturnTarget }
   | { readonly kind: "release_held_video"; readonly element: ElementKey };
+
+/**
+ * Взвод возврата страницы (сессия 11b2, решения 240–241): вкладку открыли заново, и сторож ждёт не «любое
+ * следующее видео», а то самое, что играет в окне плеера.
+ * - `recorded` — запись: длина ролика (сверка ± `PAGE_RETURN_DURATION_TOLERANCE_S`, как у позднего входа) и
+ *   секунда, на которую страница должна встать до тени (последняя секунда часов плеера);
+ * - `live` — эфир: длины нет, сверять нечем, страница сама входит на живой край.
+ */
+export type PageReturnTarget =
+  | { readonly kind: "recorded"; readonly duration_s: number; readonly start_s: number }
+  | { readonly kind: "live" };
+
+/** Допуск сверки длины вернувшегося ролика, секунды (тот же, что у позднего входа, сессия 10d). */
+export const PAGE_RETURN_DURATION_TOLERANCE_S = 2;
 
 // ---------------------------------------------------------------------------------------------
 // Переезд сеанса на следующее видео (сессия 09c2, решения 201, 204): фон ⇄ изолированный мир.
@@ -435,7 +449,15 @@ export const ARM_NEXT_VIDEO_KIND = "arm_next_video";
 export interface ArmNextVideoRequest {
   readonly kind: typeof ARM_NEXT_VIDEO_KIND;
   readonly lease_ms: number;
+  /** Есть — взвод возврата страницы (11b2); нет — обычный переезд на следующее видео (09c2). */
+  readonly page_return?: PageReturnTarget;
 }
+
+/**
+ * Ответ изолированного мира на взвод: «сторож этого документа есть». Фону возврата он говорит, что страница
+ * уже загрузила наш скрипт (иначе `tabs.sendMessage` отвергается — получателя нет).
+ */
+export const ARM_NEXT_VIDEO_ACCEPTED = "armed";
 
 /** Вид донесения изолированного мира фону о задержанном видео. */
 export const HELD_VIDEO_REPORT_KIND = "held_video_report";

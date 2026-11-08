@@ -2,7 +2,7 @@
 // чем кончается сеанс и что владелец сеанса может у него спросить. Только типы, поведения здесь нет.
 
 import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudgetKind, UnsupportedMediaForm, VideoRef } from "../../shared/handoff-contract.ts";
-import type { PageAdState, TabGoneReason } from "../../protocol/index.ts";
+import type { PageAdState, PageReopenFailure, TabGoneReason } from "../../protocol/index.ts";
 import type { PageStreamProblem } from "./page-event-translator.ts";
 import type { SocketEndCause } from "./session-socket.ts";
 
@@ -10,6 +10,8 @@ import type { SocketEndCause } from "./session-socket.ts";
 export type HandoffSessionEnd =
   | { readonly kind: "start_failed"; readonly outcome: HandOffTabOutcome }
   | { readonly kind: "page_gone"; readonly reason: TabGoneReason }
+  /** Страница ушла сиротой, а вернуть её не вышло (11b2): `page_reopen_failed{reason}` и 4002. */
+  | { readonly kind: "page_not_returned"; readonly reason: PageReopenFailure }
   /** Страница сама забрала видео, вкладка на месте (`handoff_ended{element_released}`, 4009). */
   | { readonly kind: "page_took_video_back" }
   /** Страница сняла тень сама без нашей просьбы — сбой внутри страницы (4003, Д-6). */

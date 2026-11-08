@@ -38,7 +38,8 @@ export interface AdMirrorBrowser {
 }
 
 export interface SessionAdMirrorDependencies {
-  readonly tabId: number;
+  /** Вкладка страницы сеанса сейчас: после возврата страницы (11b2) это уже другая вкладка. */
+  readonly currentTabId: () => number;
   readonly scheduler: Scheduler;
   readonly browser: AdMirrorBrowser;
   /** Признак сеанса «идёт ролик, принятый за рекламу» (`relocation.adOnScreen`). */
@@ -61,7 +62,7 @@ export interface SessionAdMirror {
 }
 
 export function createSessionAdMirror(dependencies: SessionAdMirrorDependencies): SessionAdMirror {
-  const { tabId, browser } = dependencies;
+  const { currentTabId, browser } = dependencies;
   const renewTimer = createTimerSlot(dependencies.scheduler);
   const announceTimer = createTimerSlot(dependencies.scheduler);
   let running = false;
@@ -93,7 +94,7 @@ export function createSessionAdMirror(dependencies: SessionAdMirrorDependencies)
 
   /** Продлить аренду, пересчитать сводку (устаревшие донесения, признак сеанса), запланировать следующее продление. */
   function renew(): void {
-    browser.armAdWatch(tabId, AD_WATCH_LEASE_MS);
+    browser.armAdWatch(currentTabId(), AD_WATCH_LEASE_MS);
     summary.recompute();
     // Отправка могла синхронно закончить сеанс (сокет закрывается): тогда цепочка продлений обрывается.
     if (running) renewTimer.start(AD_WATCH_RENEW_MS, renew);
@@ -118,7 +119,7 @@ export function createSessionAdMirror(dependencies: SessionAdMirrorDependencies)
         dependencies.note("skip_ad ignored: no frame reports an available skip button");
         return;
       }
-      browser.pressSkipInFrame(tabId, frameId).then(
+      browser.pressSkipInFrame(currentTabId(), frameId).then(
         (outcome) => {
           if (outcome !== "pressed") dependencies.note(`skip_ad not pressed: ${outcome}`);
         },

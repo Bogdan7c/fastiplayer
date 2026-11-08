@@ -35,6 +35,7 @@ import {
   type PageEvent,
   type PageEventBudgetKind,
   type PageFloodNotice,
+  type PageReturnTarget,
   type VideoCandidate,
   type ViewerReturnRequest,
 } from "../shared/handoff-contract.ts";
@@ -104,7 +105,8 @@ export interface ContentRelay {
   /** Фон открыл порт участка 2 к этому фрейму. */
   acceptBackgroundPort(port: BackgroundPort): void;
   /** Фон просит взвести сторож следующего видео. */
-  armNextVideo(leaseMs: number): void;
+  /** Взвести сторож; `pageReturn` — цель возврата страницы (11b2), без неё — обычный переезд (09c2). */
+  armNextVideo(leaseMs: number, pageReturn?: PageReturnTarget): void;
   /** Описание видео документа от MAIN-мира; таймаут или пустой фрейм — пустой список. */
   describeVideoCandidates(): Promise<readonly VideoCandidate[]>;
   /** Видео под последним настоящим правым кликом; таймаут и «ничего» — `null` (10c). */
@@ -380,9 +382,10 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
 
   // ---------------------------------------------------------------- сторож следующего видео
 
-  function armNextVideo(leaseMs: number): void {
+  /** `pageReturn` — цель взвода возврата страницы (11b2); без неё — обычный взвод переезда (09c2). */
+  function armNextVideo(leaseMs: number, pageReturn?: PageReturnTarget): void {
     armedUntilMs = dependencies.now() + leaseMs;
-    sendToPage({ kind: "arm_next_video", lease_ms: leaseMs });
+    sendToPage(pageReturn === undefined ? { kind: "arm_next_video", lease_ms: leaseMs } : { kind: "arm_next_video", lease_ms: leaseMs, page_return: pageReturn });
   }
 
   /**

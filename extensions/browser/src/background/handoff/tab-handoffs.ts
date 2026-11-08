@@ -27,6 +27,7 @@ import { surveyTabVideos, type ExecuteInAllFrames } from "./frame-survey.ts";
 import { refusalOf, refusalOfSessionEnd } from "./handoff-refusal.ts";
 import { HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import { startHandoffSession, type HandoffSession, type HandoffSessionDependencies, type HandoffSessionEnd } from "./handoff-session.ts";
+import { returnablePageOf } from "./handoff-session-dependencies.ts";
 import { pageIdentityOf } from "./page-identity.ts";
 import { chooseRequestedVideo, chooseVideo, type ChosenVideo, type RequestedVideoChoice } from "./video-choice.ts";
 
@@ -87,7 +88,8 @@ export type SessionStartedListener = (tabId: number) => void;
 export type SessionEndedListener = (tabId: number, end: HandoffSessionEnd) => void;
 
 interface TabEntry {
-  readonly tabId: number;
+  /** Вкладка страницы сеанса; после возврата страницы (11b2) — новая вкладка. */
+  tabId: number;
   /** Исход передачи; повторная команда получает его же. */
   outcome: Promise<HandOffTabOutcome>;
   session: HandoffSession | undefined;
@@ -228,19 +230,23 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         beginRequestId: takeBeginRequestId(),
         fileAddressRule,
         video: chosen,
+        pagePlace: returnablePageOf(tab),
+        movePageToTab: (newTabId) => movePageToTab(entry, newTabId),
         nextBeginRequestId: takeBeginRequestId,
         ...(replacing === undefined ? {} : { afterPreviousSession: () => waitForSessionEnd(replacing) }),
       },
       dependencies,
       (end) => {
-        if (entries.get(tabId) === entry) entries.delete(tabId);
+        // Вкладка записи — текущая: страница сеанса могла вернуться в другую вкладку (11b2).
+        const endedTabId = entry.tabId;
+        if (entries.get(endedTabId) === entry) entries.delete(endedTabId);
         replaced.delete(entry);
         entry.markEnded();
         // Сеанс кончился по вине страницы: причина — в модель, попап покажет её честно.
         const refusal = refusalOfSessionEnd(end);
-        if (refusal !== undefined && !entry.removed) void dependencies.tabModel.noteHandoffRefused(tabId, refusal);
-        dependencies.onSessionEnded?.(tabId, end);
-        notifySessionEnded(tabId, end);
+        if (refusal !== undefined && !entry.removed) void dependencies.tabModel.noteHandoffRefused(endedTabId, refusal);
+        dependencies.onSessionEnded?.(endedTabId, end);
+        notifySessionEnded(endedTabId, end);
       },
     );
     entry.session = session;
@@ -402,6 +408,23 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     // Без выбранного видео: передача уже идёт — окно плеера открыто (решение 216); ещё стартует — исход той же
     // передачи (кнопку можно нажать дважды).
     return existing.started ? Promise.resolve(STARTED_IN_OPEN_WINDOW) : existing.outcome;
+  }
+
+  /**
+   * Страница сеанса вернулась в другую вкладку (11b2): запись переезжает на её номер, чтобы донесения
+   * сторожа, реклама и закрытие вкладки шли этому сеансу. Прежняя вкладка закрыта или показывает другой
+   * адрес, её номер свободен. В новой вкладке уже есть своя передача — её запись не трогаем: такой сеанс
+   * просто не получит донесений и откажет по сроку.
+   */
+  function movePageToTab(entry: TabEntry, newTabId: number): void {
+    if (entries.get(entry.tabId) === entry) entries.delete(entry.tabId);
+    entry.tabId = newTabId;
+    entry.removed = false;
+    if (entries.has(newTabId)) {
+      dependencies.noteForDeveloper(`page return: tab ${newTabId} already has a handoff`);
+      return;
+    }
+    entries.set(newTabId, entry);
   }
 
   /** Закрытие вкладки доходит и до текущей записи, и до заменённых, чей сеанс ещё не кончился. */

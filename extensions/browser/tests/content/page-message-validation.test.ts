@@ -271,4 +271,33 @@ describe("сообщения сторожа следующего видео (с�
     assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 1.5 }), undefined);
     assert.equal(parseArmNextVideoRequest({ kind: "other", lease_ms: 1 }), undefined);
   });
+
+  it("взвод возврата страницы (11b2): цель — строгая форма записи или эфира, иначе весь взвод отвергнут", () => {
+    const recorded = { kind: "recorded", duration_s: 1_800.5, start_s: 600 };
+    assert.deepEqual(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 3_000, page_return: recorded }), {
+      kind: "arm_next_video",
+      lease_ms: 3_000,
+      page_return: recorded,
+    });
+    assert.deepEqual(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 3_000, page_return: { kind: "live" } }), {
+      kind: "arm_next_video",
+      lease_ms: 3_000,
+      page_return: { kind: "live" },
+    });
+    const broken: readonly unknown[] = [
+      { kind: "live", start_s: 1 },
+      { kind: "recorded", duration_s: 10 },
+      { kind: "recorded", duration_s: 10, start_s: -1 },
+      { kind: "recorded", duration_s: Number.POSITIVE_INFINITY, start_s: 1 },
+      { kind: "recorded", duration_s: 10, start_s: Number.NaN },
+      { kind: "recorded", duration_s: 400_000_000, start_s: 1 },
+      { kind: "recorded", duration_s: 10, start_s: 1, url: "https://x.example" },
+      { kind: "elsewhere" },
+      null,
+    ];
+    for (const target of broken) {
+      assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 3_000, page_return: target }), undefined, JSON.stringify(target));
+    }
+    assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 3_000, page_return: { kind: "live" }, extra: 1 }), undefined);
+  });
 });

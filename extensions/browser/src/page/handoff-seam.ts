@@ -44,7 +44,16 @@ export interface ShadowStartOptions {
    */
   readonly isMediaSourceObjectUrl: MediaSourceObjectUrlCheck;
   readonly source: ShadowSourceKind;
+  /**
+   * Только для задержанной тени: страница уже просила играть, а настоящий `play()` сторож не звал (взвод
+   * возврата страницы, 11b2) — тогда модель тени начинает «играющей», хотя настоящий элемент стоит.
+   * Нет поля — как настоящий элемент.
+   */
+  readonly initialPlayback?: HeldShadowPlayback;
 }
+
+/** С чего начинает модель задержанной тени: как настоящий элемент или «страница просила играть». */
+export type HeldShadowPlayback = "as_real_element" | "page_asked_to_play";
 
 /** Поставить элемент в тень. `emit` — события страницы (page_seek, page_playback, handoff_ended, …). */
 export type ShadowStarter = (element: HTMLMediaElement, emit: (event: PageEvent) => void, options: ShadowStartOptions) => ShadowSessionHandle;
@@ -87,6 +96,13 @@ export interface PlayWatchSeam {
    * кроме теневого DOM, поэтому `play()` такого элемента подписывает и его самого.
    */
   onRealMediaEvent(target: object, listener: (element: object) => void): void;
+  /**
+   * Настоящая перемотка элемента НЕ в тени (возврат страницы, 11b2): оригинальный сеттер `currentTime`.
+   * Страница видит обычную перемотку (`seeking`/`seeked`), и её плеер сам качает данные с этой секунды.
+   */
+  seekRealElement(element: object, seconds: number): void;
+  /** Идёт ли настоящая перемотка элемента (оригинальный геттер `seeking`; нет геттера — `false`). */
+  isSeekingReal(element: object): boolean;
   /** `Promise` мира страницы: страница получает обещание своего мира. */
   readonly PagePromise: PromiseConstructor;
 }

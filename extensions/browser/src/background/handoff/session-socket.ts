@@ -20,6 +20,7 @@ import {
   decodePlayerSession,
   encodeDataFrame,
   encodePageSession,
+  type PageReopenFailure,
   type PageSessionMessage,
   type PlayerSessionMessage,
   type SessionCloseReason,
@@ -103,6 +104,10 @@ export interface SessionSocket {
   enqueue(item: OutgoingItem): void;
   /** Страница ушла: отдать что можно, `tab_gone{reason}` и закрыть кодом 4002. */
   sendTabGoneAndClose(reason: TabGoneReason): void;
+  /** Страница ушла, связь держим (сирота, 1.4): отдать что можно, `page_left{reason}`, сокет открыт. */
+  sendPageLeft(reason: TabGoneReason): void;
+  /** Вернуть страницу не вышло (1.4): отдать что можно, `page_reopen_failed{reason}` и закрыть кодом 4002. */
+  sendPageReopenFailedAndClose(reason: PageReopenFailure): void;
   /**
    * Страница на месте, но передача кончилась по её стороне: отдать что можно и закрыть кодом
    * причины, без `tab_gone` (иначе плеер решил бы, что вкладка ушла, и стал бы доигрывать).
@@ -285,11 +290,7 @@ export function openSessionSocket(parameters: SessionSocketParameters): SessionS
   function deliverQueueThenClose(lastMessage: PageSessionMessage | undefined, closeCode: number): void {
     if (phase === "ended") return;
     if (phase === "attached" && socket.readyState === WEB_SOCKET_OPEN) {
-      // При «полон» рамки остаются невыданными — плееру они сейчас не нужны, а дыры в номерах не
-      // будет: новых рамок после конца не бывает. Порог буфера сокета здесь не ждём: конец сейчас.
-      if (!intakeIsFull) {
-        for (const entry of queue.splice(0)) if (!sendNow(entry.payload)) return;
-      }
+      if (!flushOrDropQueue()) return;
       if (lastMessage !== undefined) {
         const encoded = encodePageSession(lastMessage);
         // Своё постоянное сообщение не проходит запись только при баге кодека: закрытие кодом
@@ -300,8 +301,42 @@ export function openSessionSocket(parameters: SessionSocketParameters): SessionS
     finish({ kind: "closed_by_extension" }, closeCode);
   }
 
+  /**
+   * Очередь сейчас целиком: при «принимаю» — отдать сокету, при «полон» — выбросить. Выброшенные рамки
+   * плееру не нужны, а дыры в номерах не будет: после конца потока (или ухода страницы) рамок этого
+   * поколения больше не бывает. Порог буфера сокета не ждём: решение принято сейчас. `false` — отправка
+   * не ушла, сеанс уже кончен.
+   */
+  function flushOrDropQueue(): boolean {
+    drainTimer.cancel();
+    const entries = queue.splice(0);
+    queuedBytes = 0;
+    if (intakeIsFull) return true;
+    for (const entry of entries) if (!sendNow(entry.payload)) return false;
+    return true;
+  }
+
+  /**
+   * Страница ушла, а связь остаётся «сиротой» (протокол 1.4, сессия 11b2): отдать очередь, как при конце, и
+   * послать `page_left{reason}`, НЕ закрывая сокет. После `page_left` любой байт для плеера — нарушение 4003,
+   * поэтому придержанные «полон» рамки ушедшего поколения выбрасываются, а не ждут «принимаю».
+   * Сокет не на связи — ничего: его конец придёт владельцу обычным `onEnded`.
+   */
+  function sendPageLeft(reason: TabGoneReason): void {
+    if (phase !== "attached" || socket.readyState !== WEB_SOCKET_OPEN) return;
+    if (!flushOrDropQueue()) return;
+    const encoded = encodePageSession({ type: "page_left", reason });
+    if (encoded.ok) sendNow(encoded.value);
+    else finish({ kind: "page_message_rejected", detail: `page_left: ${encoded.error.kind}` }, SESSION_CLOSE_CODES.protocol_violation);
+  }
+
   function sendTabGoneAndClose(reason: TabGoneReason): void {
     deliverQueueThenClose({ type: "tab_gone", reason }, SESSION_CLOSE_CODES.tab_gone);
+  }
+
+  /** Вернуть страницу не вышло (протокол 1.4): `page_reopen_failed{reason}`, затем закрытие кодом 4002. */
+  function sendPageReopenFailedAndClose(reason: PageReopenFailure): void {
+    deliverQueueThenClose({ type: "page_reopen_failed", reason }, SESSION_CLOSE_CODES.tab_gone);
   }
 
   function closeAfterDeliveringQueue(reason: QueueDeliveringCloseReason): void {
@@ -311,6 +346,8 @@ export function openSessionSocket(parameters: SessionSocketParameters): SessionS
   return {
     enqueue,
     sendTabGoneAndClose,
+    sendPageLeft,
+    sendPageReopenFailedAndClose,
     closeAfterDeliveringQueue,
     close: (code) => finish({ kind: "closed_by_extension" }, code),
     queuedBytes: () => queuedBytes,

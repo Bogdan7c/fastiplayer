@@ -11,6 +11,8 @@ import type { FileAddressRule } from "./file-address-guard.ts";
 import type { FileReferrerRules } from "./file-referrer-rule.ts";
 import type { FrameConnector } from "./frame-port.ts";
 import type { LocalAddressBlock } from "./local-address-block-rules.ts";
+import type { PageReopenBrowser } from "./page-return/page-reopen-browser.ts";
+import type { ReturnablePage } from "./page-return/page-return-memory.ts";
 import type { RangeFetch } from "./range-fetcher.ts";
 import type { AfterPreviousSession } from "./session-contract.ts";
 import type { WebSocketFactory } from "./session-socket.ts";
@@ -43,12 +45,23 @@ export interface HandoffSessionDependencies {
   readonly adMirrorBrowser: AdMirrorBrowser;
   /** Отметка в журнал разработчика (устаревшая команда плеера, сбой вывода вкладки). */
   readonly noteForDeveloper: (message: string) => void;
+  /** Браузерная сторона возврата ушедшей страницы (сессия 11b2): окна, вкладки, взвод сторожа возврата. */
+  readonly pageReopen: PageReopenBrowser;
 }
 
 /** Что фон знает о вкладке: подпись окна и адрес документа. */
 export interface TabDescription {
   readonly title?: string | undefined;
   readonly url?: string | undefined;
+  /** Окно вкладки и его вид: где открыть страницу заново, если она уйдёт (сессия 11b2). */
+  readonly windowId?: number | undefined;
+  readonly incognito?: boolean | undefined;
+}
+
+/** Где живёт страница вкладки — для возврата (11b2); `undefined` — адреса или окна браузер не назвал. */
+export function returnablePageOf(tab: TabDescription): ReturnablePage | undefined {
+  if (tab.url === undefined || tab.windowId === undefined) return undefined;
+  return { url: tab.url, windowId: tab.windowId, incognito: tab.incognito === true };
 }
 
 /** Что и куда передаём. */
@@ -66,8 +79,15 @@ export interface HandoffTarget {
   readonly beginRequestId: number;
   /** Правило адреса файла (решение 199): `file_source` и перенаправления проверяются им же. */
   readonly fileAddressRule: FileAddressRule;
-  /** Что передаётся: реклама или фильм, и может ли «фильм» оказаться рекламой (сессия 09c2). */
-  readonly video: Pick<ChosenVideo, "role" | "mayBeAd">;
+  /** Что передаётся: реклама или фильм, может ли «фильм» оказаться рекламой (09c2), и его длина (11b2). */
+  readonly video: Pick<ChosenVideo, "role" | "mayBeAd" | "durationS">;
+  /** Где живёт страница: окно и адрес для возврата, если она уйдёт (11b2). */
+  readonly pagePlace: ReturnablePage | undefined;
+  /**
+   * Страница сеанса вернулась в другую вкладку (11b2): владелец сеансов перенаправляет донесения сторожа и
+   * закрытие вкладки этому сеансу уже по новому номеру.
+   */
+  readonly movePageToTab: (tabId: number) => void;
   /** Новый номер запроса `begin_handoff` для переезда. */
   readonly nextBeginRequestId: () => number;
   /** Замена видео на той же вкладке (решение 215): когда начинать страницу; см. `AfterPreviousSession`. */

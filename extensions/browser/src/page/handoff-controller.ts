@@ -45,6 +45,7 @@ import type {
   HandoffEndResume,
   HlsStreamKind,
   PageEvent,
+  PageReturnTarget,
   ShadowCommand,
 } from "../shared/handoff-contract.ts";
 import type { ReferrerPolicyName } from "../shared/referrer-policy.ts";
@@ -95,7 +96,8 @@ export interface HandoffControllerEnvironment {
 
 /** Что контроллеру нужно от сторожа следующего видео. */
 export interface NextVideoHolds {
-  arm(leaseMs: number): void;
+  /** `pageReturn` — цель взвода возврата страницы (11b2); без неё — обычный переезд (09c2). */
+  arm(leaseMs: number, pageReturn?: PageReturnTarget): void;
   /** Забрать задержанное видео для передачи (`null` — такого нет). */
   take(element: object): HeldVideo | null;
   release(key: ElementKey): void;
@@ -174,7 +176,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         this.#endHandoff(message.position, message.resume);
         return;
       case "arm_next_video":
-        this.#environment.nextVideo.arm(message.lease_ms);
+        this.#environment.nextVideo.arm(message.lease_ms, message.page_return);
         return;
       case "release_held_video":
         this.#environment.nextVideo.release(message.element);

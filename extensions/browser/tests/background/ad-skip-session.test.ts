@@ -273,7 +273,7 @@ describe("дублёр сам по себе", () => {
     const clock = createFakeClock();
     const sent: PageAdState[] = [];
     const mirror = createSessionAdMirror({
-      tabId: TAB,
+      currentTabId: () => TAB,
       scheduler: clock.scheduler,
       browser: idleBrowser,
       sessionSaysAdOnScreen: () => false,
@@ -297,7 +297,7 @@ describe("дублёр сам по себе", () => {
     let adOnScreen = false;
     let mirror: SessionAdMirror | undefined;
     mirror = createSessionAdMirror({
-      tabId: TAB,
+      currentTabId: () => TAB,
       scheduler: clock.scheduler,
       browser: { ...idleBrowser, armAdWatch: (_tab, leaseMs) => void armings.push(leaseMs) },
       sessionSaysAdOnScreen: () => adOnScreen,

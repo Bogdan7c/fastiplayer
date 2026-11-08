@@ -1,7 +1,12 @@
 // Чистые правила концов сеанса 11a (session-end-rules.ts): каждое — на всех своих ветках.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, tabGoneReasonForPagePlayerFailure } from "../../src/background/handoff/session-end-rules.ts";
+import {
+  closingAfterConfirmedEnd,
+  endCommandAfterPlayerSocketEnd,
+  stepAfterPageEndedShadow,
+  tabGoneReasonForPagePlayerFailure,
+} from "../../src/background/handoff/session-end-rules.ts";
 import { END_WITHOUT_PLAYER, RETURN_PAUSED_AT_SHADOW } from "../../src/background/handoff/session-page-commands.ts";
 import type { SocketEndCause } from "../../src/background/handoff/session-socket.ts";
 import { closeReasonFromCode, PROTOCOL_VERSION_1_0, PROTOCOL_VERSION_1_2, PROTOCOL_VERSION_1_3, SESSION_CLOSE_CODES } from "../../src/protocol/index.ts";
@@ -45,5 +50,36 @@ describe("закрытие сокета после подтверждённог�
     assert.equal(SESSION_CLOSE_CODES.viewer_returned_to_page, 4010);
     assert.deepEqual(closingAfterConfirmedEnd({ kind: "stream_rejected" }), { kind: "deliver_queue_then_close", reason: "protocol_violation" });
     assert.deepEqual(closingAfterConfirmedEnd({ kind: "returned_to_page" }), { kind: "close_now", code: 1000 });
+  });
+});
+
+describe("страница сама сняла активную тень (вынесено из сеанса в 11b2)", () => {
+  it("переезд открыт — ждать следующее видео, и при ошибке рекламы перед фильмом тоже", () => {
+    for (const cause of ["element_released", "page_player_failed"] as const) {
+      assert.deepEqual(stepAfterPageEndedShadow(cause, true, PROTOCOL_VERSION_1_3), { kind: "wait_for_next_video" }, cause);
+    }
+  });
+
+  it("плеер сайта сломался — уход страницы с причиной по версии плеера (решение 237)", () => {
+    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", false, PROTOCOL_VERSION_1_3), { kind: "leave_page", reason: "page_player_failed" });
+    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", false, PROTOCOL_VERSION_1_2), { kind: "leave_page", reason: "navigated_away" });
+  });
+
+  it("страница забрала видео — 4009; флуд и сбой внутри страницы — 4003 с разной причиной", () => {
+    assert.deepEqual(stepAfterPageEndedShadow("element_released", false, PROTOCOL_VERSION_1_3), {
+      kind: "end_on_page_side",
+      closeReason: "page_took_video_back",
+      end: { kind: "page_took_video_back" },
+    });
+    assert.deepEqual(stepAfterPageEndedShadow("page_flood", true, PROTOCOL_VERSION_1_3), {
+      kind: "end_on_page_side",
+      closeReason: "protocol_violation",
+      end: { kind: "page_flood", overBudget: "forwarded_bytes" },
+    });
+    assert.deepEqual(stepAfterPageEndedShadow("returned", true, PROTOCOL_VERSION_1_3), {
+      kind: "end_on_page_side",
+      closeReason: "protocol_violation",
+      end: { kind: "page_side_failure" },
+    });
   });
 });

@@ -10,6 +10,7 @@ import { createFileReferrerRules } from "../../src/background/handoff/file-refer
 import { createLocalAddressBlock, localAddressBlockRules } from "../../src/background/handoff/local-address-block-rules.ts";
 import { createSessionRules, FIRST_REQUEST_RULE_ID, type SessionRule, type SessionRulesApi } from "../../src/background/handoff/session-rules.ts";
 import type { RangeFetch } from "../../src/background/handoff/range-fetcher.ts";
+import type { PageReopenBrowser } from "../../src/background/handoff/page-return/page-reopen-browser.ts";
 import { createMemoryTabModelStore, type TabModelStore } from "../../src/background/tab-model/session-store.ts";
 import { createTabModel } from "../../src/background/tab-model/tab-model.ts";
 import { createTabHandoffs } from "../../src/background/handoff/tab-handoffs.ts";
@@ -68,7 +69,27 @@ export const EXTENSION_HOST = "extension-id";
 /** Необязательные особенности мира сценария. */
 export interface WorldOptions {
   readonly localAddressSetting?: LocalAddressSetting | Promise<LocalAddressSetting>;
+  /**
+   * Окно вкладки (11b2). Есть — фон знает, где жила страница, и уход страницы может стать «сиротой»; нет —
+   * как до 11b2: браузер окна не называет, уход кончается `tab_gone`.
+   */
+  readonly tabWindowId?: number;
+  /** Браузерная сторона возврата страницы (11b2); по умолчанию — «нет окна». */
+  readonly pageReopen?: PageReopenBrowser;
 }
+
+/** Возврат по умолчанию: окна нет, ничего не открывается (сценарии до 11b2 его не зовут). */
+const NO_PAGE_REOPEN: PageReopenBrowser = {
+  findWindow: async () => undefined,
+  findOpenTab: async () => undefined,
+  openTab: () => Promise.reject(new Error("test: unexpected page reopen")),
+  bringForwardMuted: () => Promise.reject(new Error("test: unexpected page reopen")),
+  setMuted: async () => {},
+  closeTab: async () => {},
+  armPageReturn: async () => "no_script",
+  describeTab: async () => undefined,
+  readVideos: async () => [],
+};
 
 /** Версия экстеншена в этом мире. */
 export const WORLD_EXTENSION_VERSION = "1.2.3";
@@ -123,7 +144,9 @@ export function setup(
       return surveyError === undefined ? Promise.resolve(currentFrames).then((frames) => frames.map(scriptedFrameResult)) : Promise.reject(surveyError);
     },
     extensionVersion: WORLD_EXTENSION_VERSION,
-    describeTab: () => Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl } : undefined),
+    describeTab: () =>
+      Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl, windowId: options.tabWindowId, incognito: false } : undefined),
+    pageReopen: options.pageReopen ?? NO_PAGE_REOPEN,
     tabExists: () => {
       tabExistsQuestions += 1;
       return Promise.resolve(tabAlive);

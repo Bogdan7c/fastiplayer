@@ -16,7 +16,7 @@ import type {
 import { MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../protocol/limits.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
 import type { LiveSeekable } from "../protocol/session/live-window.ts";
-import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS } from "../shared/page-message-validation.ts";
+import { isDocumentTag, MAX_NEXT_VIDEO_LEASE_MS, parsePageReturnTarget } from "../shared/page-message-validation.ts";
 import type { PointerQuery } from "../shared/entry-contract.ts";
 import { parsePointerQuery } from "../shared/entry-validation.ts";
 import { parseWatchHandedOffVideo, type WatchHandedOffVideoMessage } from "../shared/handed-off-video-contract.ts";
@@ -170,9 +170,13 @@ export function parseIncomingPageMessage(candidate: unknown): IncomingPageMessag
       return { kind: "end_handoff", position, resume };
     }
     case "arm_next_video": {
-      const fields = exactObject(candidate, ["kind", "lease_ms"]);
+      // Взвод возврата страницы (11b2) несёт цель `page_return`; без неё — обычный взвод переезда (09c2).
+      const withTarget = exactObject(candidate, ["kind", "lease_ms", "page_return"]);
+      const fields = withTarget ?? exactObject(candidate, ["kind", "lease_ms"]);
       if (fields === null || !isIntegerInRange(fields["lease_ms"], 1, MAX_NEXT_VIDEO_LEASE_MS)) return null;
-      return { kind: "arm_next_video", lease_ms: fields["lease_ms"] };
+      if (withTarget === null) return { kind: "arm_next_video", lease_ms: fields["lease_ms"] };
+      const pageReturn = parsePageReturnTarget(withTarget["page_return"]);
+      return pageReturn === undefined ? null : { kind: "arm_next_video", lease_ms: fields["lease_ms"], page_return: pageReturn };
     }
     case "release_held_video": {
       const fields = exactObject(candidate, ["kind", "element"]);

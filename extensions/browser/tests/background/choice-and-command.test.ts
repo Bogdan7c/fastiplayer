@@ -17,13 +17,16 @@ function video(element: number, overrides: Partial<VideoCandidate> = {}): VideoC
 }
 
 /** Итог «передать этот элемент». */
-function handOff(frameId: number, document: string, element: number) {
-  return { kind: "hand_off", video: { frameId, document, element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: DEFAULT_CANDIDATE_FACTS.file_host, role: "film", mayBeAd: false } };
+function handOff(frameId: number, document: string, element: number, durationS: number | null = DEFAULT_CANDIDATE_FACTS.duration_s) {
+  return {
+    kind: "hand_off",
+    video: { frameId, document, element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: DEFAULT_CANDIDATE_FACTS.file_host, role: "film", mayBeAd: false, durationS },
+  };
 }
 
 /** Сеанс начинается на рекламе (решение 201): рекламный файл короткий, поэтому и `mayBeAd`. */
-function handedAd(frameId: number, element: number, fileHost: string) {
-  return { kind: "hand_off", video: { frameId, document: "doc-top", element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost, role: "ad", mayBeAd: true } };
+function handedAd(frameId: number, element: number, fileHost: string, durationS: number | null) {
+  return { kind: "hand_off", video: { frameId, document: "doc-top", element, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost, role: "ad", mayBeAd: true, durationS } };
 }
 
 describe("выбор видео", () => {
@@ -131,7 +134,7 @@ describe("выбор видео: реклама, мусор, DRM, скрытые
 
   it("реклама на месте плеера уходит первой, но главным видео вкладки остаётся фильм (решение 201)", () => {
     const frames = [{ frameId: 0, candidates: [video(1, { visible_area_px: 400_000 }), video(2, { ...AD_FILE, playing: true, visible_area_px: 400_000 })] }];
-    assert.deepEqual(chooseVideo(frames), handedAd(0, 2, AD_FILE.file_host));
+    assert.deepEqual(chooseVideo(frames), handedAd(0, 2, AD_FILE.file_host, AD_FILE.duration_s));
     assert.deepEqual(chooseMainVideo(frames), handOff(0, "doc-top", 1));
   });
 
@@ -194,7 +197,7 @@ describe("выбор видео: реклама, мусор, DRM, скрытые
     const longer = chooseVideo([{ frameId: 0, candidates: [video(1, { duration_s: 600 }), video(2, { duration_s: 5400 }), video(3, { duration_s: null })] }]);
     assert.deepEqual(longer, handOff(0, "doc-top", 2));
     const unknownLast = chooseVideo([{ frameId: 0, candidates: [video(1, { duration_s: null }), video(2, { duration_s: 90 })] }]);
-    assert.deepEqual(unknownLast, handOff(0, "doc-top", 2));
+    assert.deepEqual(unknownLast, handOff(0, "doc-top", 2, 90));
   });
 
   it("DRM-видео: единственное играющее — исход protected, а не передача", () => {
@@ -208,7 +211,7 @@ describe("выбор видео: реклама, мусор, DRM, скрытые
   });
 
   it("только играющая реклама, фильма нет — передача рекламы (решение 201); стоящая реклама — nothing", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: true })] }]), handedAd(0, 1, AD_FILE.file_host));
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: true })] }]), handedAd(0, 1, AD_FILE.file_host, AD_FILE.duration_s));
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [video(1, { ...AD_FILE, playing: false })] }]), { kind: "nothing" });
   });
 
@@ -216,7 +219,7 @@ describe("выбор видео: реклама, мусор, DRM, скрытые
     const unsupported = video(3, { media: { kind: "unsupported", form: "native_hls" }, playing: true });
     const ad = video(2, { ...AD_FILE, playing: true });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad, video(1, { drm: true, playing: true })] }]), { kind: "protected" });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad] }]), handedAd(0, 2, AD_FILE.file_host));
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [unsupported, ad] }]), handedAd(0, 2, AD_FILE.file_host, AD_FILE.duration_s));
   });
 });
 
@@ -225,7 +228,7 @@ describe("выбор видео: преролл с неизвестного до
   const PLAYER_AREA = 296_000;
   const UNKNOWN_AD_HOST = "video.unknown-ad-cdn.example";
   /** Итог «файл не реклама, передаётся он». */
-  const keptFile = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 2, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: UNKNOWN_AD_HOST, role: "film", mayBeAd: true } };
+  const keptFile = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 2, frameHost: DEFAULT_CANDIDATE_FACTS.frame_host, fileHost: UNKNOWN_AD_HOST, role: "film", mayBeAd: true, durationS: 24 } };
   /** Итог «реклама на месте плеера»: сеанс начинается на ней. */
   const keptAd = { kind: "hand_off", video: { ...keptFile.video, role: "ad", mayBeAd: true } };
   const preroll = (element: number, overrides: Partial<VideoCandidate> = {}) =>
@@ -261,18 +264,21 @@ describe("выбор видео: преролл с неизвестного до
 
   it("длинный файл рядом с ожидающим MSE остаётся видео (порог преролла, решение 8)", () => {
     const longFile = preroll(2, { duration_s: 181 });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), longFile] }]), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false } });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), longFile] }]), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false, durationS: 181 } });
   });
 
   it("ролик ровно на пороге ещё преролл, порог берётся из правил, а не из кода", () => {
     const atLimit = preroll(2, { duration_s: 180 });
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), atLimit] }]), keptAd);
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), atLimit] }]), { ...keptAd, video: { ...keptAd.video, durationS: 180 } });
     const strict = { ...VIDEO_FILTER_RULES, prerollMaxSeconds: 20 };
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2)] }], strict), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false } });
   });
 
   it("файл с неизвестной длительностью не считается прероллом: рано судить", () => {
-    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2, { duration_s: null })] }]), { kind: "hand_off", video: { ...keptFile.video, mayBeAd: false } });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), preroll(2, { duration_s: null })] }]), {
+      kind: "hand_off",
+      video: { ...keptFile.video, mayBeAd: false, durationS: null },
+    });
   });
 
   it("сосед MSE короче играющего файла — не фильм, файл остаётся видео", () => {
@@ -317,7 +323,7 @@ describe("выбор видео: преролл с неизвестного до
 
   it("MSE-реклама поверх MSE-фильма правилом не трогается: прероллы бывают только файлом", () => {
     const choice = chooseVideo([{ frameId: 0, candidates: [waitingFilm(1), video(2, { playing: true, visible_area_px: PLAYER_AREA, duration_s: 24 })] }]);
-    assert.deepEqual(choice, handOff(0, "doc-top", 2));
+    assert.deepEqual(choice, handOff(0, "doc-top", 2, 24));
   });
 });
 
@@ -331,7 +337,7 @@ describe("выбор видео: адрес плейлиста в `src` до с�
 
   it("играющий нативный HLS без длительности — эфир: с 10a3 передаётся (версию плеера проверяет сеанс)", () => {
     const choice = chooseVideo([{ frameId: 0, candidates: [video(1, { ...playlist, playing: true, duration_s: null })] }]);
-    assert.deepEqual(choice, handOff(0, "doc-top", 1));
+    assert.deepEqual(choice, handOff(0, "doc-top", 1, null));
   });
 
   it("нативный HLS на паузе с известной длительностью — запись: передаётся как видео", () => {

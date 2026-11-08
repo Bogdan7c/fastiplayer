@@ -13,6 +13,7 @@ import {
   PAGE_FLOOD_NOTICE_KIND,
   VIEWER_RETURN_REQUEST_KIND,
   type ArmNextVideoRequest,
+  type PageReturnTarget,
   type CandidateMedia,
   type CandidatesReply,
   type HandoffEndCause,
@@ -437,12 +438,40 @@ export function parseHeldVideoReport(value: unknown): HeldVideoReport | undefine
   return { kind: HELD_VIDEO_REPORT_KIND, element, candidates };
 }
 
-/** Просьба фона взвести сторож; срок — целые миллисекунды не больше предела договора. */
+/**
+ * Просьба фона взвести сторож; срок — целые миллисекунды не больше предела договора. Взвод возврата
+ * страницы (11b2) несёт ещё и цель `page_return`; без неё — обычный взвод переезда (09c2).
+ */
 export function parseArmNextVideoRequest(value: unknown): ArmNextVideoRequest | undefined {
   if (!isPlainRecord(value) || value["kind"] !== ARM_NEXT_VIDEO_KIND) return undefined;
   const leaseMs = value["lease_ms"];
-  if (!hasExactKeys(value, ["kind", "lease_ms"]) || !isIntegerInRange(leaseMs, 1, MAX_NEXT_VIDEO_LEASE_MS)) return undefined;
-  return { kind: ARM_NEXT_VIDEO_KIND, lease_ms: leaseMs };
+  if (!isIntegerInRange(leaseMs, 1, MAX_NEXT_VIDEO_LEASE_MS)) return undefined;
+  if (hasExactKeys(value, ["kind", "lease_ms"])) return { kind: ARM_NEXT_VIDEO_KIND, lease_ms: leaseMs };
+  if (!hasExactKeys(value, ["kind", "lease_ms", "page_return"])) return undefined;
+  const pageReturn = parsePageReturnTarget(value["page_return"]);
+  return pageReturn === undefined ? undefined : { kind: ARM_NEXT_VIDEO_KIND, lease_ms: leaseMs, page_return: pageReturn };
+}
+
+/**
+ * Предел секунд в цели возврата: десять лет. Длиннее ролика не бывает, а число без предела позволило бы
+ * чужому сообщению загнать перемотку страницы в бессмысленную точку.
+ */
+const MAX_PAGE_RETURN_SECONDS = 315_360_000;
+
+/** Конечные неотрицательные секунды не больше предела. */
+function isPageReturnSeconds(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= MAX_PAGE_RETURN_SECONDS;
+}
+
+/** Цель взвода возврата страницы (handoff-contract.ts `PageReturnTarget`): строгая форма, лишних полей нет. */
+export function parsePageReturnTarget(value: unknown): PageReturnTarget | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  if (value["kind"] === "live") return hasExactKeys(value, ["kind"]) ? { kind: "live" } : undefined;
+  if (value["kind"] !== "recorded" || !hasExactKeys(value, ["kind", "duration_s", "start_s"])) return undefined;
+  const durationS = value["duration_s"];
+  const startS = value["start_s"];
+  if (!isPageReturnSeconds(durationS) || !isPageReturnSeconds(startS)) return undefined;
+  return { kind: "recorded", duration_s: durationS, start_s: startS };
 }
 
 // ------------------------------------------------------------------ донесения изолированного мира

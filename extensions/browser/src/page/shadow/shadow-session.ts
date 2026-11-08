@@ -17,7 +17,7 @@ import type { HandoffEndCause, HandoffEndPosition, HandoffEndResume, PageEvent, 
 import { MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../../protocol/limits.ts";
 import type { MediaTimeMicros, PlaybackRatePermille } from "../../protocol/time.ts";
 import type { MediaKeyAction, MediaSessionGuard } from "../media-session-guard.ts";
-import type { PendingPlay, ShadowSourceKind } from "../handoff-seam.ts";
+import type { HeldShadowPlayback, PendingPlay, ShadowSourceKind } from "../handoff-seam.ts";
 import type { TimeoutScheduler } from "./file-return.ts";
 import { FileShadowLifecycle, type FileShadowHost, type ReturnPlan } from "./file-shadow-lifecycle.ts";
 import { PageMutedState } from "./page-muted.ts";
@@ -129,6 +129,8 @@ export class ShadowController implements ShadowBehavior {
     /** Снимок файла прежней тени, чей возврат прервала эта передача (`null` — не было). */
     interruptedFile: FileSourceMode | null,
     fileStop: FileStopMoment,
+    /** С чего начинает модель: как настоящий элемент или «страница просила играть» (возврат страницы, 11b2). */
+    initialPlayback: HeldShadowPlayback,
   ) {
     this.#element = element;
     this.#emitOutward = emit;
@@ -153,7 +155,8 @@ export class ShadowController implements ShadowBehavior {
     this.#timeline = new ShadowTimeline(
       {
         positionUs: handoffPositionUs,
-        paused: realPaused,
+        // Настоящий элемент тень всё равно ставит на паузу (ниже): «играет» — это только модель для страницы.
+        paused: realPaused && initialPlayback === "as_real_element",
         pageRate: Number(readOriginal(media.playbackRate, element)),
         // Тень хранит только 1/2/4: «будущих данных» без «достаточно» у неё не бывает.
         readyState: realReadyState >= READY_STATE.HAVE_FUTURE_DATA ? READY_STATE.HAVE_ENOUGH_DATA : (realReadyState as ReadyStateValue),

@@ -20,6 +20,7 @@ import { createSessionRules, type SessionRulesApi } from "./session-rules.ts";
 import type { SessionWebSocket } from "./session-socket.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
 import { createTabHandoffs, type TabHandoffs } from "./tab-handoffs.ts";
+import { browserPageReopen } from "./page-return/browser-page-reopen.ts";
 
 /** Случайных байт в метке жизни фона (6 байт = 8 символов base64url). */
 const BACKGROUND_NONCE_BYTES = 6;
@@ -129,9 +130,10 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
     },
     describeTab: (tabId) =>
       browserApi.tabs.get(tabId).then(
-        (tab) => ({ title: tab.title, url: tab.url }),
+        (tab) => ({ title: tab.title, url: tab.url, windowId: tab.windowId, incognito: tab.incognito }),
         () => undefined,
       ),
+    pageReopen: browserPageReopen,
     extensionVersion: browserApi.runtime.getManifest().version,
     sessionKeyFor: (tabId, attempt) => `t${tabId}-${attempt}-${nonce}`,
   });

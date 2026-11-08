@@ -51,3 +51,17 @@ if (MAX_SESSION_QUEUE_BYTES < MAX_PAGE_BYTES_EVENT_BYTES) {
 if (MAX_SESSION_QUEUE_BYTES < MAX_FORWARDED_APPEND_BYTES) {
   throw new Error("MAX_SESSION_QUEUE_BYTES must hold the largest forwarded append");
 }
+
+/**
+ * Срок возврата страницы (сессия 11b2): от просьбы плеера `reopen_page` до тени на вернувшемся видео, мс.
+ * У плеера свой срок — 45 с (11b1); наш заметно короче, чтобы отказ дошёл до окна С ПРИЧИНОЙ, а не как
+ * «браузер не ответил». 35 с вмещают загрузку тяжёлой страницы и короткую рекламу перед фильмом.
+ */
+export const PAGE_REOPEN_DEADLINE_MS = 35_000;
+
+/**
+ * Как часто звать сторож новой вкладки, пока нашего скрипта там ещё нет, мс. Скрипт встаёт на
+ * `document_start`, а плеер сайта зовёт `play()` не раньше своих сетевых запросов: четверть секунды
+ * почти всегда успевает раньше, а чаще — лишние пробуждения фона.
+ */
+export const PAGE_REOPEN_ARM_RETRY_MS = 250;

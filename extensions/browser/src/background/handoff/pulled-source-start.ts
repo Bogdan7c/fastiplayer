@@ -11,6 +11,8 @@ import type { HlsStreamKind } from "../../shared/handoff-contract.ts";
 import type { FileReferrer } from "../../shared/referrer-policy.ts";
 import type { DocumentTranslator, OutgoingItem, PageStreamProblem } from "./page-event-translator.ts";
 import type { PulledSourceStart, SessionSourceFeeds } from "./session-source-feeds.ts";
+import { ruleAllowsFileUrl } from "./file-address-guard.ts";
+import { playerCanPlayHls, type PlayerAbilities } from "./hls-player-support.ts";
 
 /** Источник, названный страницей: файл или плейлист HLS (у HLS ещё вид потока — запись или эфир, 10a3). */
 export type PulledSourceEvent =
@@ -28,8 +30,27 @@ export type PulledSourceStartResult =
   | { readonly kind: "started"; readonly items: readonly OutgoingItem[] }
   /** Адрес запрещён правилом: загрузчик не запущен, в сеть не ушло ничего. */
   | { readonly kind: "address_refused" }
+  /** Плеер договорился на версию без этого вида HLS: ни одного сообщения новее его версии не ушло. */
+  | { readonly kind: "needs_newer_player" }
   /** Поколение или номерки исчерпаны: поток честно переслать нельзя. */
   | { readonly kind: "stream_problem"; readonly problem: PageStreamProblem };
+
+/**
+ * Проверки сеанса перед запуском (вынесены из `handoff-session.ts` в 11b2): адрес, названный страницей СЕЙЧАС,
+ * сверяется с правилом (выбор видео шёл по словам кандидата), а HLS — с версией плеера (запись — 1.1, эфир — 1.2,
+ * hls-player-support.ts). Потом — запуск.
+ */
+export function startCheckedPulledSource(
+  feeds: SessionSourceFeeds,
+  translator: DocumentTranslator,
+  source: PulledSourceEvent,
+  start: PulledSourceStart,
+  player: PlayerAbilities,
+): PulledSourceStartResult {
+  if (!ruleAllowsFileUrl(start.rule, source.url)) return { kind: "address_refused" };
+  if (source.form === "hls" && !playerCanPlayHls(player, source.stream)) return { kind: "needs_newer_player" };
+  return startPulledSource(feeds, translator, source, start);
+}
 
 export function startPulledSource(
   feeds: SessionSourceFeeds,

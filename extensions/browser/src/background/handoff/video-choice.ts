@@ -48,6 +48,11 @@ export interface ChosenVideo {
    * домене соседей не имеет. Сторож взводится заранее, а переезд откроется, только когда ролик кончится.
    */
   readonly mayBeAd: boolean;
+  /**
+   * Длина ролика, секунды (`null` — неизвестна или бесконечна, эфир). Нужна возврату страницы (11b2): по ней
+   * фон узнаёт тот же фильм на заново открытой странице (сверка ± 2 с, как у позднего входа).
+   */
+  readonly durationS: number | null;
 }
 
 /** Что на экране плеера. */
@@ -164,7 +169,16 @@ export function chosenVideoOf(entry: ClassifiedVideo, rules: VideoFilterRules = 
   const { document, element, frame_host: frameHost, file_host: fileHost, duration_s: durationSeconds } = entry.candidate;
   // Короткий HLS-ролик (запись) подозрителен так же, как короткий файл.
   const isShortFile = (entry.candidate.media.kind === "file" || entry.candidate.media.kind === "hls") && durationSeconds !== null && durationSeconds <= rules.prerollMaxSeconds;
-  return { frameId: entry.frameId, document, element, frameHost, fileHost, role: entry.verdict === "ad" ? "ad" : "film", mayBeAd: isShortFile };
+  return {
+    frameId: entry.frameId,
+    document,
+    element,
+    frameHost,
+    fileHost,
+    role: entry.verdict === "ad" ? "ad" : "film",
+    mayBeAd: isShortFile,
+    durationS: durationSeconds,
+  };
 }
 
 /**

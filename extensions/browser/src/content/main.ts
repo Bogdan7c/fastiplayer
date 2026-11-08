@@ -4,7 +4,7 @@
 // До передачи скрипт ничего не шлёт фону и не будит его: порт участка 2 открывает сам фон
 // (tabs.connect) в момент «отдать вкладку», а описание видео фон запрашивает через executeScript.
 import { browserApi } from "../shared/browser-api.ts";
-import { HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
+import { ARM_NEXT_VIDEO_ACCEPTED, HANDOFF_PORT_NAME, type HeldVideoReply } from "../shared/handoff-contract.ts";
 import { parseArmNextVideoRequest } from "../shared/page-message-validation.ts";
 import { RIGHT_CLICKED_VIDEO_FUNCTION_NAME } from "../shared/entry-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME, type ScriptedFrameAnswer } from "../shared/video-candidates-probe.ts";
@@ -68,10 +68,13 @@ browserApi.runtime.onConnect.addListener((port) => {
 });
 
 // Взвод сторожа следующего видео: фон зовёт все фреймы вкладки сразу. Только наш фон: у него нет `tab`.
-browserApi.runtime.onMessage.addListener((message: unknown, sender) => {
+// Ответ «взведён» нужен возврату страницы (11b2): по нему фон знает, что наш скрипт в новой вкладке уже есть.
+browserApi.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (sender.id !== browserApi.runtime.id || sender.tab !== undefined) return;
   const request = parseArmNextVideoRequest(message);
-  if (request !== undefined) relay.armNextVideo(request.lease_ms);
+  if (request === undefined) return;
+  relay.armNextVideo(request.lease_ms, request.page_return);
+  sendResponse(ARM_NEXT_VIDEO_ACCEPTED);
 });
 
 // Наблюдение за рекламой (сессия 09d): спит, пока фон не возьмёт его в аренду.

@@ -66,7 +66,7 @@ describe("выбор видео: нативный HLS", () => {
     const choice = chooseVideo(survey(hlsVideo(1)));
     assert.deepEqual(choice, {
       kind: "hand_off",
-      video: { frameId: 0, document: "doc-top", element: 1, frameHost: "site.example", fileHost: "cdn.example", role: "film", mayBeAd: false },
+      video: { frameId: 0, document: "doc-top", element: 1, frameHost: "site.example", fileHost: "cdn.example", role: "film", mayBeAd: false, durationS: 5400 },
     });
     const short = chooseVideo(survey(hlsVideo(1, { duration_s: 40 })));
     assert.equal(short.kind === "hand_off" && short.video.mayBeAd, true);
@@ -84,7 +84,10 @@ describe("выбор видео: нативный HLS", () => {
 
   it("живой эфир передаётся ролью film и без признака «может быть рекламой» (у эфира нет длительности)", () => {
     const live = hlsVideo(1, { duration_s: null });
-    const expected = { kind: "hand_off", video: { frameId: 0, document: "doc-top", element: 1, frameHost: "site.example", fileHost: "cdn.example", role: "film", mayBeAd: false } };
+    const expected = {
+      kind: "hand_off",
+      video: { frameId: 0, document: "doc-top", element: 1, frameHost: "site.example", fileHost: "cdn.example", role: "film", mayBeAd: false, durationS: null },
+    };
     assert.deepEqual(chooseVideo(survey(live)), expected);
     assert.deepEqual(chooseMainVideo(survey(live)), expected);
   });
