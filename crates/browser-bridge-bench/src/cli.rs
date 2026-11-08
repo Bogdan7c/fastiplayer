@@ -6,7 +6,8 @@ use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
-    attack_page_ids, capture_page_ids, end_page_ids, entries_page_ids, player_command_page_ids,
+    attack_page_ids, capture_page_ids, end_page_ids, entries_page_ids, page_return_page_ids,
+    player_command_page_ids,
 };
 
 /// Что запускать.
@@ -23,6 +24,7 @@ pub enum Command {
     LocalAddress,
     HlsLive,
     Entries,
+    PageReturn,
     BlockerMatrix,
     Replay,
     GenerateRecording,
@@ -70,6 +72,7 @@ impl Command {
                 | Self::PlayerCommands
                 | Self::Attacks
                 | Self::Entries
+                | Self::PageReturn
                 | Self::All
         )
     }
@@ -85,6 +88,7 @@ impl Command {
             Self::PlayerCommands => filter.matches_any_of(player_command_page_ids()),
             Self::Attacks => filter.matches_any_of(attack_page_ids()),
             Self::Entries => filter.matches_any_of(entries_page_ids()),
+            Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
             _ => filter.selects_everything(),
@@ -128,6 +132,12 @@ Commands:
   entries           REAL mouse and keyboard in an invisible kwin: click the extension button on
                     the browser toolbar, Tab / Enter in the popup; entry x page matrix, each
                     row proven by player / host / server logs (needs spectacle and ffmpeg)
+  page-return       REAL mouse in an invisible kwin (11a): the \"Playing in Fastiplayer\" placeholder sits
+                    over the handed-off video and follows it; \"Return\" makes the page play on from its
+                    own second and closes the window silently (4010); closing the window pauses the
+                    page; a second tab replaces the first; Return and close at once; the page player
+                    works after Return; offset and baked-ad timelines; HLS live edge; a broken page
+                    player ends with cause=page_player_failed; Return on a link-entry tab
   blocker-matrix    pages x (no blocker / blocker installed first / ours first) with uBlock
                     Origin (Lite); fetch the blockers first with
                     scripts/browser-bridge-bench-fetch-blockers.sh; not part of 'all'
@@ -138,7 +148,7 @@ Commands:
   generate-recording  write a synthetic recording (--output FILE.fprec [--asset ID]) from a
                     stand fMP4 asset: add_source_buffer, paced appends, handoff_began
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live and entries (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, entries and page-return (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -148,7 +158,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, attacks, all);
+                                      player-commands, attacks, entries, page-return, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -356,6 +366,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "local-address" => Ok(Command::LocalAddress),
         "hls-live" => Ok(Command::HlsLive),
         "entries" => Ok(Command::Entries),
+        "page-return" => Ok(Command::PageReturn),
         "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
         "generate-recording" => Ok(Command::GenerateRecording),
@@ -555,6 +566,16 @@ mod tests {
     fn hls_live_is_a_command_of_its_own_without_a_page_filter() {
         assert_eq!(invocation(&["hls-live"]).command, Command::HlsLive);
         assert!(parse_words(&["hls-live", "--page", "hls-live"]).is_err());
+    }
+
+    #[test]
+    fn page_return_is_a_command_with_its_own_pages() {
+        assert_eq!(invocation(&["page-return"]).command, Command::PageReturn);
+        let one = invocation(&["page-return", "--page", "return-offset"]);
+        assert!(one.pages.admits("return-offset"));
+        assert!(!one.pages.admits("return-kit"));
+        // Страница стенда, которой у команды нет, — ошибка, а не пустой «успешный» прогон.
+        assert!(parse_words(&["page-return", "--page", "mse-webm"]).is_err());
     }
 
     #[test]

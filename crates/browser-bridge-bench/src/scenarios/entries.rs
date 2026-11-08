@@ -35,6 +35,7 @@ mod page_geometry;
 mod pick_rows;
 mod refusal_rows;
 mod report_rows;
+pub(super) mod return_hand;
 mod robot;
 mod start_rows;
 

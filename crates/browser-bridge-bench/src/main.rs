@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|entries|blocker-matrix|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|entries|page-return|blocker-matrix|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -101,6 +101,9 @@ fn run(invocation: Invocation) -> ExitCode {
                 Command::Entries => {
                     results.extend(scenarios::run_entries(&stand, browser, &pages));
                 }
+                Command::PageReturn => {
+                    results.extend(scenarios::run_page_return(&stand, browser, &pages));
+                }
                 Command::BlockerMatrix => {
                     results.extend(scenarios::run_blocker_matrix(&stand, browser));
                 }
@@ -143,6 +146,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::LocalAddress,
             Command::HlsLive,
             Command::Entries,
+            Command::PageReturn,
         ],
         Command::All => vec![
             Command::Pages,
@@ -172,7 +176,8 @@ mod tests {
                 Command::Attacks,
                 Command::LocalAddress,
                 Command::HlsLive,
-                Command::Entries
+                Command::Entries,
+                Command::PageReturn
             ]
         );
         // Матрица блокировщиков качает файлы из сети: в `all` её нет.

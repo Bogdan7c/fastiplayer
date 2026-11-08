@@ -16,6 +16,7 @@
 
 import { totalFrames, waitFor } from './bench-checks.js';
 import { installEntryProbe } from './entry-probe.js';
+import { runReturnCommand } from './return-checks.js';
 
 /** Режим страницы из адреса. */
 export const HANDOFF_MODE = 'handoff';
@@ -326,6 +327,8 @@ async function runCommand(context, state, hooks, command) {
     await expectReturnedPaused(context, state, Number(argument));
   } else if (name === 'expect-follows-into-player') {
     await expectFollowsIntoPlayer(context, state);
+  } else if (await runReturnCommand(context, state, name)) {
+    // Команды возврата видео странице (11a): отметка, наблюдение, счёт кликов — в return-checks.js.
   } else {
     context.check(`command-${name}`, false, `unknown command '${command}'`);
   }

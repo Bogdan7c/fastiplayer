@@ -99,6 +99,13 @@ pub(super) enum PageReadiness {
     TimedOut,
 }
 
+/// Страница, отложенная в своей вкладке, пока текущей стала другая (см. [`HandoffRun::park_and_open`]).
+pub(super) struct ParkedPage {
+    tab: TabHandle,
+    run: RunId,
+    page_id: &'static str,
+}
+
 /// Запущенный прогон одной страницы.
 pub(super) struct HandoffRun<'a> {
     stand: &'a Stand,
@@ -253,6 +260,18 @@ impl<'a> HandoffRun<'a> {
             .hand_off_tab_with_options(&self.tab, &prefix, options)
     }
 
+    /// «Отдать вкладку» ровно ЭТОГО прогона: адрес ищется вместе с `?run=<прогон>`. Нужна, когда в
+    /// браузере открыты две вкладки одной и той же страницы (замена из второй вкладки, 11a): по одному
+    /// пути служебная страница нашла бы первую попавшуюся. Страница не должна менять свой адрес.
+    pub(super) fn hand_off_this_run(&mut self) -> Result<HandOffOutcome, BrowserError> {
+        let prefix = format!(
+            "{}/site/pages/{}.html?run={}",
+            self.page_origin, self.page_id, self.run
+        );
+        self.browser
+            .hand_off_tab_with_options(&self.tab, &prefix, HandOffOptions::default())
+    }
+
     /// Открывает в ТОМ ЖЕ браузере следующую страницу стенда (новая вкладка, новый прогон
     /// страницы) и делает её текущей: дальше `wait_page_ready`, `hand_off`, `tell_page` и
     /// `finish_page` работают с ней. Журнал плеера и браузера остаются прежними, поэтому
@@ -313,6 +332,31 @@ impl<'a> HandoffRun<'a> {
         Ok(())
     }
 
+    /// Открывает ещё одну страницу стенда НОВОЙ вкладкой с хвостом адреса `query_suffix` (после
+    /// `run=…`) и делает её текущей, а прежнюю откладывает: её вкладка и сеанс живут, а вернуть её
+    /// текущей можно [`HandoffRun::swap_with_parked`] (замена из второй вкладки, 11a).
+    pub(super) fn park_and_open(
+        &mut self,
+        page_id: &'static str,
+        run_prefix: &str,
+        query_suffix: &str,
+    ) -> Result<ParkedPage, ScenarioError> {
+        let run = RunId::new_unique(run_prefix);
+        let mut url = page_url_under(self.stand, &self.page_origin, page_id, &run);
+        url.push_str(query_suffix);
+        let tab = self.browser.open_tab(&url)?;
+        Ok(self.swap_with_parked(ParkedPage { tab, run, page_id }))
+    }
+
+    /// Делает отложенную страницу текущей, а текущую откладывает (вкладки не активирует и не закрывает).
+    pub(super) fn swap_with_parked(&mut self, parked: ParkedPage) -> ParkedPage {
+        ParkedPage {
+            tab: std::mem::replace(&mut self.tab, parked.tab),
+            run: std::mem::replace(&mut self.run, parked.run),
+            page_id: std::mem::replace(&mut self.page_id, parked.page_id),
+        }
+    }
+
     /// Строки журнала страницы с `needle` (журнал не расходуется).
     pub(super) fn page_log_lines(&self, needle: &str) -> Vec<String> {
         self.stand.site.log_lines_containing(&self.run, needle)
@@ -339,6 +383,28 @@ impl<'a> HandoffRun<'a> {
     /// Команда странице (она заберёт её опросом).
     pub(super) fn tell_page(&self, command: &str) {
         self.stand.site.send_command(&self.run, command);
+    }
+
+    /// Команда странице ДРУГОГО прогона (отложенная вкладка, страница по ссылке).
+    pub(super) fn tell_page_of(&self, run: &RunId, command: &str) {
+        self.stand.site.send_command(run, command);
+    }
+
+    /// Ждёт подтверждение команды страницей другого прогона.
+    pub(super) fn wait_ack_of(
+        &self,
+        run: &RunId,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        self.wait_page_log_line_of(run, &format!("ack {command}"), timeout)
+            .map(|_| ())
+    }
+
+    /// Просит страницу другого прогона подвести итог и ждёт её отчёт.
+    pub(super) fn finish_page_of(&self, run: &RunId) -> Result<PageReport, SiteError> {
+        self.tell_page_of(run, "finish");
+        self.stand.site.wait_report(run, FINAL_REPORT_TIMEOUT)
     }
 
     /// Ждёт, пока страница подтвердит команду (`ack <команда>` в её журнале).

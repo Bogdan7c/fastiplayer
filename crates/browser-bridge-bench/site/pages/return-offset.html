@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>return-offset</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>return-offset</h1>
+<script type="module">
+// Поток, открытый «с середины» (сессия 11a): весь ролик лежит на шкале страницы с 600-й секунды
+// (`timestampOffset`), буфер начинается далеко от нуля. «Return» обязан вернуть видео на секунду
+// СТРАНИЦЫ (600 с лишним), а не на секунду ролика. Подробности — `lib/timeline-page.js`.
+import { runTimelinePage, checkReaches } from '../lib/timeline-page.js';
+
+/** Где на шкале страницы начинается ролик, с. */
+const TIMELINE_OFFSET_S = 600;
+/** Длина ролика `h264-aac`, с. */
+const ASSET_LENGTH_S = 30;
+/** Без робота: часы обязаны уйти на столько дальше начала шкалы, с. */
+const PLAIN_ADVANCE_S = 3;
+
+await runTimelinePage('return-offset', {
+  assetId: 'h264-aac',
+  pieces: [{ fromS: 0, toS: ASSET_LENGTH_S, offsetS: TIMELINE_OFFSET_S }],
+  plainCheck: (context, video, timeline) => checkReaches(context, video, 'clock-runs-past-the-offset', timeline.timelineStartS + PLAIN_ADVANCE_S),
+});
+</script>
+</body>
+</html>

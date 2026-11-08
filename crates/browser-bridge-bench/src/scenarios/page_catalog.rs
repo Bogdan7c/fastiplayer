@@ -127,6 +127,11 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("cached-descriptors"),
     // Решение 194: живой эфир как Twitch — выгрузка на паузе, загрузка только из обработчика
     // Media Session `play` (сценарий `player-commands`). Воркер — как Twitch в Chromium.
+    // 11a, решения 236–238: заглушка, «Return» и честные концы (сценарий `page-return`): рабочий
+    // плеер сайта и две «своих шкалы» — поток со смещённым началом и вшитая реклама.
+    page("return-kit"),
+    page("return-offset"),
+    page("return-baked-ad"),
     page("live-unload"),
     page("live-unload-new-ms"),
     page_unsupported_in("live-unload-worker", &[BrowserKind::Firefox]),

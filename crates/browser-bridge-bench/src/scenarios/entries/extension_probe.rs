@@ -29,6 +29,20 @@ pub(super) struct ButtonRect {
     pub(super) height: f64,
 }
 
+/// Заглушка «Playing in Fastiplayer» поверх переданного видео (11a, решение 236), глазами зонда.
+/// Прямоугольники — в координатах окна СВОЕГО фрейма (`getBoundingClientRect`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(super) struct PlaceholderState {
+    /// Изолированный мир знает переданное видео этого документа.
+    pub(super) handed_off: bool,
+    /// Панель на экране с ненулевым размером.
+    pub(super) visible: bool,
+    /// Панель; `None` — не видна.
+    pub(super) panel: Option<ButtonRect>,
+    /// Кнопка «Return»; `None` — не видна.
+    pub(super) return_button: Option<ButtonRect>,
+}
+
 /// Что слой экстеншена показывает на странице сейчас (суммарно по фреймам).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct PageUiState {
@@ -36,6 +50,8 @@ pub(super) struct PageUiState {
     pub(super) banner: Option<String>,
     /// Кнопка поверх видео.
     pub(super) overlay_button: Option<ButtonRect>,
+    /// Заглушка фрейма, где передача идёт (или любая показанная); без передачи — пустая.
+    pub(super) placeholder: PlaceholderState,
 }
 
 /// Настройки входов, которые робот ставит экстеншену.
@@ -160,21 +176,53 @@ pub(super) fn parse_page_ui(text: &str) -> Result<PageUiState, String> {
         if let Some(banner) = probe.get("banner").and_then(Value::as_str) {
             state.banner = Some(banner.to_owned());
         }
-        if let Some(rect) = probe.get("overlay_button").filter(|rect| !rect.is_null()) {
-            let number = |name: &str| {
-                rect.get(name)
-                    .and_then(Value::as_f64)
-                    .ok_or_else(|| format!("button rect without {name}: {rect}"))
-            };
-            state.overlay_button = Some(ButtonRect {
-                left: number("left")?,
-                top: number("top")?,
-                width: number("width")?,
-                height: number("height")?,
-            });
+        if let Some(rect) = parse_rect(probe.get("overlay_button"))? {
+            state.overlay_button = Some(rect);
+        }
+        // Зонд старой сборки без поля заглушки — не ошибка (поле добавлено в 11a); битое поле — ошибка.
+        if let Some(placeholder) = probe.get("placeholder").filter(|value| !value.is_null()) {
+            let parsed = parse_placeholder(placeholder)?;
+            // Фрейм, где передача идёт или заглушка видна, главнее остальных (у них она пустая).
+            if parsed.handed_off || parsed.visible {
+                state.placeholder = parsed;
+            }
         }
     }
     Ok(state)
+}
+
+/// Прямоугольник зонда; `None` — поля нет или оно `null`, неполный прямоугольник — ошибка.
+fn parse_rect(field: Option<&Value>) -> Result<Option<ButtonRect>, String> {
+    let Some(rect) = field.filter(|rect| !rect.is_null()) else {
+        return Ok(None);
+    };
+    let number = |name: &str| {
+        rect.get(name)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("probe rect without {name}: {rect}"))
+    };
+    Ok(Some(ButtonRect {
+        left: number("left")?,
+        top: number("top")?,
+        width: number("width")?,
+        height: number("height")?,
+    }))
+}
+
+/// Разбор `placeholder` зонда (`PlaceholderProbe` экстеншена).
+fn parse_placeholder(value: &Value) -> Result<PlaceholderState, String> {
+    let flag = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_bool)
+            .ok_or_else(|| format!("placeholder probe without {name}: {value}"))
+    };
+    Ok(PlaceholderState {
+        handed_off: flag("handed_off")?,
+        visible: flag("visible")?,
+        panel: parse_rect(value.get("panel"))?,
+        return_button: parse_rect(value.get("return_button"))?,
+    })
 }
 
 /// Текст значка расширения на вкладке с адресом `url_prefix`.
@@ -252,6 +300,46 @@ mod tests {
         );
         let empty = parse_page_ui(r#"{"frames":[null]}"#).expect("parses");
         assert_eq!(empty, PageUiState::default());
+    }
+
+    #[test]
+    fn the_placeholder_comes_from_the_frame_that_has_the_hand_off() {
+        let state = parse_page_ui(
+            r#"{"frames":[{"banner":null,"overlay_button":null,"placeholder":{"handed_off":true,"visible":true,"panel":{"left":16,"top":60,"width":480,"height":270},"return_button":{"left":200,"top":200,"width":80,"height":30}}},{"banner":null,"overlay_button":null,"placeholder":{"handed_off":false,"visible":false,"panel":null,"return_button":null}}]}"#,
+        )
+        .expect("parses");
+        assert!(state.placeholder.handed_off && state.placeholder.visible);
+        assert_eq!(
+            state.placeholder.panel,
+            Some(ButtonRect {
+                left: 16.0,
+                top: 60.0,
+                width: 480.0,
+                height: 270.0
+            })
+        );
+        assert_eq!(
+            state.placeholder.return_button.map(|rect| rect.width),
+            Some(80.0)
+        );
+        // Без передачи — пустая заглушка, а зонд без поля (старая сборка) не ломает разбор.
+        let idle = parse_page_ui(
+            r#"{"frames":[{"banner":null,"overlay_button":null,"placeholder":{"handed_off":false,"visible":false,"panel":null,"return_button":null}},{"banner":"opened","overlay_button":null}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(idle.placeholder, PlaceholderState::default());
+        assert_eq!(idle.banner.as_deref(), Some("opened"));
+    }
+
+    #[test]
+    fn a_broken_placeholder_probe_is_an_error_not_an_absent_placeholder() {
+        assert!(parse_page_ui(r#"{"frames":[{"placeholder":{"visible":true}}]}"#).is_err());
+        assert!(
+            parse_page_ui(
+                r#"{"frames":[{"placeholder":{"handed_off":true,"visible":true,"panel":{"left":1},"return_button":null}}]}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

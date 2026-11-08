@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>return-baked-ad</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>return-baked-ad</h1>
+<script type="module">
+// Реклама, вшитая в тот же поток MSE перед фильмом (сессия 11a): первые 6 с шкалы страницы — чужие
+// кадры (хвост ролика), фильм идёт следом со сдвигом на длину рекламы. Секунда страницы = секунда
+// фильма + 6. «Return» обязан вернуть видео на секунду СТРАНИЦЫ. Подробности — `lib/timeline-page.js`.
+import { runTimelinePage, checkReaches } from '../lib/timeline-page.js';
+
+/** Длина вшитой рекламы на шкале страницы, с (три сегмента по 2 с). */
+const AD_LENGTH_S = 6;
+/** Длина ролика `h264-aac`, с: реклама — его последние `AD_LENGTH_S` секунд. */
+const ASSET_LENGTH_S = 30;
+/** Без робота: часы обязаны пройти конец рекламы и уйти в фильм на столько, с. */
+const PLAIN_FILM_ADVANCE_S = 1;
+
+await runTimelinePage('return-baked-ad', {
+  assetId: 'h264-aac',
+  pieces: [
+    // Реклама: секунды ролика 24..30 на шкале страницы 0..6.
+    { fromS: ASSET_LENGTH_S - AD_LENGTH_S, toS: ASSET_LENGTH_S, offsetS: -(ASSET_LENGTH_S - AD_LENGTH_S) },
+    // Фильм: секунды ролика 0..30 на шкале страницы 6..36.
+    { fromS: 0, toS: ASSET_LENGTH_S, offsetS: AD_LENGTH_S },
+  ],
+  plainCheck: (context, video) => checkReaches(context, video, 'plays-from-the-ad-into-the-film', AD_LENGTH_S + PLAIN_FILM_ADVANCE_S),
+});
+</script>
+</body>
+</html>

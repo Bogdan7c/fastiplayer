@@ -26,6 +26,7 @@ mod outcome;
 mod page_catalog;
 mod page_ends;
 mod page_filter;
+mod page_return;
 mod pages;
 mod player_commands;
 mod replay;
@@ -108,6 +109,21 @@ pub fn run_player_commands(
 /// Идентификаторы страниц `player-commands` (для проверки `--page` в командной строке).
 pub fn player_command_page_ids() -> Vec<&'static str> {
     player_commands::page_ids()
+}
+
+/// Заглушка поверх видео, «Return» и честные концы (11a, решения 236–238) настоящей мышью
+/// (все строки или строки выбранных `--page`).
+pub fn run_page_return(
+    stand: &Stand,
+    browser: BrowserKind,
+    filter: &PageFilter,
+) -> Vec<StepResult> {
+    page_return::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `page-return` (для проверки `--page` в командной строке).
+pub fn page_return_page_ids() -> Vec<&'static str> {
+    page_return::page_ids()
 }
 
 /// Родной HLS LIVE под тенью (10a3): эфир идёт, страница видит `duration = Infinity` и едущее окно

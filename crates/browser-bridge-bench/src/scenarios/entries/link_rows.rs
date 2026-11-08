@@ -235,12 +235,12 @@ fn press_play_on_the_page(
 }
 
 /// Имя прогона страницы цели: `<прогон>-t` (его строит страница-источник для ссылок).
-fn target_run(ready: &ReadyRun<'_, '_>) -> Result<RunId, ScenarioError> {
+pub(super) fn target_run(ready: &ReadyRun<'_, '_>) -> Result<RunId, ScenarioError> {
     Ok(RunId::new(&format!("{}-t", ready.run.run))?)
 }
 
 /// Вкладка по ссылке открылась и стала АКТИВНОЙ (решение 217: видео в фоновой вкладке не стартует).
-fn check_tab_opened_and_active(
+pub(super) fn check_tab_opened_and_active(
     ready: &mut ReadyRun<'_, '_>,
     target_prefix: &str,
     failures: &mut Vec<String>,
@@ -272,7 +272,7 @@ fn check_tab_opened_and_active(
 }
 
 /// Вкладка по ссылке всё ещё открыта (иначе причина).
-fn tab_still_open(ready: &mut ReadyRun<'_, '_>, target_prefix: &str) -> Option<String> {
+pub(super) fn tab_still_open(ready: &mut ReadyRun<'_, '_>, target_prefix: &str) -> Option<String> {
     match read_tabs(ready.run.browser.as_mut()) {
         Ok(tabs) if tabs.iter().any(|tab| tab.url.starts_with(target_prefix)) => None,
         Ok(tabs) => Some(format!(

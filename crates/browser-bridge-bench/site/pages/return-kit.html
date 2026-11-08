@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>return-kit</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}#below{height:2400px;border-top:1px dashed #999}</style>
+</head>
+<body>
+<h1>return-kit</h1>
+<div id="stage"></div>
+<div id="below">The page goes on below the video, so it can scroll.</div>
+<script type="module">
+// Страница сценария `page-return` (сессия 11a, решения 236–238): обычный MSE-плеер сайта, который
+// после возврата видео обязан остаться полностью рабочим.
+//
+// Под тенью робот управляет ею командами (`handoff-mode.js` + `return-checks.js`) и хуками ниже:
+//   scroll-down          страница прокручивается вниз (заглушка обязана поехать за видео);
+//   own-seek             плеер страницы сам перематывает и играет дальше (после «Return»);
+//   quality-switch       смена качества новым MediaSource на том же элементе (после «Return»);
+//   next-episode         следующая серия — другой поток новым MediaSource (после «Return»);
+//   break-mse            плеер страницы умирает: `endOfStream("decode")` даёт элементу ошибку декодера;
+//   break-mse-then-drop  то же, а через секунду страница ещё и снимает источник.
+// Параметры адреса: `start_s` — с какой секунды страница начинает сама (вторая вкладка замены).
+// Без робота (`pages`) страница прогоняет те же действия сама: так доказано, что каждое из них
+// работает в этом браузере и без нашего экстеншена.
+import { pageParams, runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep, totalFrames } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs } from '../lib/bench-player.js';
+import { mountVideo, requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Ролик страницы (30 с, два качества). */
+const ASSET = 'h264-aac';
+/** Дорожка «высокого качества» для смены качества. */
+const HIGH_QUALITY_TRACK = 'video-720';
+/** Высота кадра высокого качества, px (по ней видно, что смена дошла до экрана). */
+const HIGH_QUALITY_HEIGHT_PX = 720;
+/** «Следующая серия»: другой поток (muxed), чтобы смена была сменой потока, а не качества. */
+const NEXT_EPISODE_ASSET = 'muxed-h264-aac';
+/** Шаг прокрутки, px: видео уезжает вверх заметно, но остаётся на экране. */
+const SCROLL_STEP_PX = 120;
+/** Своя перемотка страницы: назад к началу, если уже далеко, иначе вперёд. */
+const OWN_SEEK_BACK_TARGET_S = 4;
+const OWN_SEEK_FORWARD_TARGET_S = 14;
+/** Дальше этой секунды своя перемотка идёт назад, с. */
+const OWN_SEEK_BACKWARD_FROM_S = 10;
+/** Допуск «часы у цели своей перемотки», с (длина сегмента ролика). */
+const OWN_SEEK_TOLERANCE_S = 2;
+/** Сколько ждём, что страница играет сама после своего действия, мс. */
+const PLAYS_ITSELF_WAIT_MS = 10000;
+/** «Играет сама»: столько настоящих кадров и столько секунд часов. */
+const PLAYS_ITSELF_MIN_FRAMES = 10;
+const PLAYS_ITSELF_MIN_ADVANCE_S = 1;
+/** Сколько ждём ошибку элемента после `endOfStream("decode")`, мс. */
+const ELEMENT_ERROR_WAIT_MS = 3000;
+/** `MediaError.MEDIA_ERR_DECODE` (MDN): ошибка декодера, её и ждёт сторож экстеншена. */
+const MEDIA_ERR_DECODE = 3;
+/** Через сколько после ошибки страница снимает источник (вариант «ошибка, потом снятие»), мс. */
+const DROP_AFTER_ERROR_MS = 1000;
+/** Сколько ждём конец работы SourceBuffer перед `endOfStream`, мс. */
+const SOURCE_BUFFER_IDLE_WAIT_MS = 2000;
+/** Итоговые проверки окна под тенью, которые после поломки плеера страницы нечему доказывать. */
+const CHECKS_MEANINGLESS_AFTER_BREAK = ['page-clock-advances', 'page-buffer-keeps-filling', 'page-sees-playback-not-pause'];
+/** Бюджет страницы без робота, мс: пять действий подряд не влезают в обычные 25 с. Под роботом — общий бюджет передачи. */
+const PLAIN_PAGE_BUDGET_MS = 60000;
+
+await runScenario('return-kit', async (ctx) => {
+  const catalog = await loadCatalog();
+  const startS = Number(ctx.params.raw.get('start_s') ?? 0);
+  const refs = standardRefs(catalog, ASSET);
+  requireMimeSupport(catalog, refs);
+  const video = mountVideo(document.getElementById('stage'));
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  await player.start({ refs, positionS: startS });
+  await checkPlaying(ctx, video, 'playing');
+
+  // Настоящие кадры: под тенью — мимо неё (чистый iframe), без робота — обычный счётчик элемента.
+  const framesOf = () => (ctx.realFrames?.available ? ctx.realFrames.framesOf(video) : totalFrames(video));
+  /** Сколько новых MediaSource страница сделала сама по хукам (их обязана объяснить итоговая проверка). */
+  let hookGenerations = 0;
+  const skippedFinishChecks = [];
+
+  /** Страница играет сама: настоящие кадры растут, часы идут, не на паузе. */
+  async function checkPlaysItself(checkCtx, name) {
+    const framesBefore = framesOf();
+    const timeBefore = video.currentTime;
+    const ok = await waitFor(
+      () => framesOf() >= framesBefore + PLAYS_ITSELF_MIN_FRAMES && video.currentTime >= timeBefore + PLAYS_ITSELF_MIN_ADVANCE_S && !video.paused,
+      PLAYS_ITSELF_WAIT_MS,
+    );
+    checkCtx.check(name, ok, `real frames ${framesBefore} -> ${framesOf()}, currentTime ${timeBefore.toFixed(2)} -> ${video.currentTime.toFixed(2)}, paused=${video.paused}, ${video.videoWidth}x${video.videoHeight}`);
+  }
+
+  async function scrollDown(checkCtx) {
+    window.scrollBy(0, SCROLL_STEP_PX);
+    // Два кадра отрисовки: прокрутка применена, слушатели прокрутки отработали.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    checkCtx.log(`scrolled y=${window.scrollY}`);
+    checkCtx.check('page-scrolls', window.scrollY > 0, `scrollY=${window.scrollY}`);
+  }
+
+  async function ownSeek(checkCtx) {
+    const target = video.currentTime > OWN_SEEK_BACKWARD_FROM_S ? OWN_SEEK_BACK_TARGET_S : OWN_SEEK_FORWARD_TARGET_S;
+    await player.seek(target);
+    const arrived = await waitFor(() => Math.abs(video.currentTime - target) <= OWN_SEEK_TOLERANCE_S, PLAYS_ITSELF_WAIT_MS);
+    checkCtx.check('own-seek-reaches-target', arrived, `target ${target} s, currentTime ${video.currentTime.toFixed(2)}`);
+    await checkPlaysItself(checkCtx, 'plays-after-own-seek');
+  }
+
+  async function switchQuality(checkCtx) {
+    hookGenerations += 1;
+    await player.newGeneration({ refs: standardRefs(catalog, ASSET, HIGH_QUALITY_TRACK), positionS: video.currentTime, autoplay: true });
+    const switched = await waitFor(() => video.videoHeight === HIGH_QUALITY_HEIGHT_PX, PLAYS_ITSELF_WAIT_MS);
+    checkCtx.check('quality-switch-reaches-the-screen', switched, `videoHeight=${video.videoHeight}, generations=${player.generations}`);
+    await checkPlaysItself(checkCtx, 'plays-after-quality-switch');
+  }
+
+  async function nextEpisode(checkCtx) {
+    const episodeRefs = standardRefs(catalog, NEXT_EPISODE_ASSET);
+    requireMimeSupport(catalog, episodeRefs);
+    hookGenerations += 1;
+    await player.newGeneration({ refs: episodeRefs, positionS: 0, autoplay: true });
+    await checkPlaysItself(checkCtx, 'plays-next-episode');
+  }
+
+  /** Плеер страницы умирает: подкачка стоит, MediaSource закрыт ошибкой декодера. */
+  async function breakMediaSource(checkCtx) {
+    skippedFinishChecks.push(...CHECKS_MEANINGLESS_AFTER_BREAK);
+    const mediaSource = player.mediaSources[player.mediaSources.length - 1];
+    await player.engine?.stop();
+    await waitFor(() => [...mediaSource.sourceBuffers].every((buffer) => !buffer.updating), SOURCE_BUFFER_IDLE_WAIT_MS);
+    try {
+      mediaSource.endOfStream('decode');
+    } catch (error) {
+      checkCtx.check('end-of-stream-decode-accepted', false, `${error?.name}: ${error?.message}`);
+      return;
+    }
+    const errored = await waitFor(() => video.error !== null, ELEMENT_ERROR_WAIT_MS);
+    checkCtx.log(`page-player-broken mediaSource=${mediaSource.readyState} error=${video.error?.code ?? 'none'} seen=${errored}`);
+    return video.error?.code ?? null;
+  }
+
+  async function breakThenDrop(checkCtx) {
+    await breakMediaSource(checkCtx);
+    await sleep(DROP_AFTER_ERROR_MS);
+    await player.destroy();
+    video.srcObject = null;
+    video.removeAttribute('src');
+    video.load();
+    checkCtx.log('page-player-dropped-the-source');
+  }
+
+  if (ctx.params.handoff) {
+    const hooks = {
+      'scroll-down': (hookCtx) => scrollDown(hookCtx),
+      'own-seek': (hookCtx) => ownSeek(hookCtx),
+      'quality-switch': (hookCtx) => switchQuality(hookCtx),
+      'next-episode': (hookCtx) => nextEpisode(hookCtx),
+      'break-mse': async (hookCtx, state) => { state.returned = true; await breakMediaSource(hookCtx); },
+      'break-mse-then-drop': async (hookCtx, state) => { state.returned = true; await breakThenDrop(hookCtx); },
+    };
+    await observeHandoff(ctx, { video, player, refs, catalog }, hooks, {
+      expectedExtraGenerations: () => hookGenerations,
+      skipFinishChecks: skippedFinishChecks,
+    });
+    await player.destroy();
+    return;
+  }
+
+  // Без робота: каждое действие страницы работает в этом браузере само по себе.
+  await scrollDown(ctx);
+  window.scrollTo(0, 0);
+  await ownSeek(ctx);
+  await switchQuality(ctx);
+  await nextEpisode(ctx);
+  const errorCode = await breakMediaSource(ctx);
+  ctx.check('decode-error-sets-the-element-error', errorCode === MEDIA_ERR_DECODE,
+    `video.error.code=${errorCode}, expected MEDIA_ERR_DECODE (${MEDIA_ERR_DECODE})`);
+  await player.destroy();
+}, { budgetMs: pageParams().handoff ? undefined : PLAIN_PAGE_BUDGET_MS });
+</script>
+</body>
+</html>
