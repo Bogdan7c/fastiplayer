@@ -1,6 +1,7 @@
 // Договор сеанса передачи (сессия 09d вынесла его из `handoff-session.ts`, который упёрся в предел размера):
 // чем кончается сеанс и что владелец сеанса может у него спросить. Только типы, поведения здесь нет.
 
+import type { VariantWatchReport } from "../../shared/variant-watch-contract.ts";
 import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudgetKind, UnsupportedMediaForm, VideoRef } from "../../shared/handoff-contract.ts";
 import type { PageAdState, PageReopenFailure, TabGoneReason } from "../../protocol/index.ts";
 import type { PageStreamProblem } from "./page-event-translator.ts";
@@ -60,5 +61,7 @@ export interface HandoffSession {
   videoInPlayer(): VideoRef | null;
   /** Донесение фрейма о рекламе (сессия 09d); строгая форма проверена приёмником, вкладка — владельцем. */
   adWatchReport(frameId: number, ad: PageAdState): void;
+  /** Донесение фрейма о меню вариантов страницы (14b); форма проверена приёмником, вкладка — владельцем. */
+  variantWatchReport(frameId: number, report: VariantWatchReport): void;
 }
 

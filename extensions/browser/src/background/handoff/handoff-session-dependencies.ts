@@ -7,6 +7,7 @@ import type { PageIdentity } from "../../protocol/index.ts";
 import type { OpenSessionOutcome, OpenSessionRequest } from "../host-link/open-session-requests.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
+import type { VariantMirrorBrowser } from "./variant-mirror.ts";
 import type { FileAddressRule } from "./file-address-guard.ts";
 import type { FileReferrerRules } from "./file-referrer-rule.ts";
 import type { FrameConnector } from "./frame-port.ts";
@@ -44,6 +45,8 @@ export interface HandoffSessionDependencies {
   readonly armNextVideo: (tabId: number, leaseMs: number) => void;
   /** Браузерная сторона дублёра кнопки пропуска рекламы: аренда наблюдения, нажатие, вывод вкладки (09d). */
   readonly adMirrorBrowser: AdMirrorBrowser;
+  /** Браузерная сторона меню вариантов страницы: аренда наблюдения, команда фрейму (14b). */
+  readonly variantMirrorBrowser: VariantMirrorBrowser;
   /** Отметка в журнал разработчика (устаревшая команда плеера, сбой вывода вкладки). */
   readonly noteForDeveloper: (message: string) => void;
   /** Браузерная сторона возврата ушедшей страницы (сессия 11b2): окна, вкладки, взвод сторожа возврата. */

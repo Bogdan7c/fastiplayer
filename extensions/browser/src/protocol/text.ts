@@ -178,16 +178,29 @@ export const mimeTypeCodec: Codec<string> = textCodec({
   allowedCodePoint: isAllowedMimeCodePoint,
 });
 
-/** Ключ сеанса: экстеншен даёт его одному видеоэлементу в одной вкладке. */
-export const sessionKeyCodec: Codec<string> = textCodec({
+/** Непрозрачный ключ: 1–64 байта алфавита base64url. */
+const OPAQUE_ID_RULE: TextRule = {
   emptyAllowed: false,
   minBytes: 1,
   maxBytes: MAX_OPAQUE_ID_BYTES,
   allowedCodePoint: isAllowedOpaqueCodePoint,
-});
+};
+
+/** Ключ сеанса: экстеншен даёт его одному видеоэлементу в одной вкладке. */
+export const sessionKeyCodec: Codec<string> = textCodec(OPAQUE_ID_RULE);
 
 /** Идентификатор варианта в меню (озвучка, качество, субтитры). */
 export const variantIdCodec: Codec<string> = sessionKeyCodec;
+
+/** Годится ли строка в id варианта: отправитель проверяет пункт меню до отправки (сессия 14b). */
+export function isValidVariantId(text: string): boolean {
+  try {
+    checkText(OPAQUE_ID_RULE, text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Подпись варианта в меню плеера. */
 export const variantLabelCodec: Codec<string> = textCodec({

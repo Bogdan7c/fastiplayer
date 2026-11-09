@@ -21,6 +21,8 @@ import type { TabModel } from "../tab-model/tab-model.ts";
 import { createTabHandoffs, type TabHandoffs } from "./tab-handoffs.ts";
 import { browserPageTabReveal } from "./page-tab-reveal-browser.ts";
 import { browserPageReopen } from "./page-return/browser-page-reopen.ts";
+import { variantMirrorBrowser } from "./variant-watch-browser.ts";
+import { createVariantWatchReportListener } from "./variant-watch-listener.ts";
 
 /** Случайных байт в метке жизни фона (6 байт = 8 символов base64url). */
 const BACKGROUND_NONCE_BYTES = 6;
@@ -113,6 +115,7 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
     connectFrame,
     armNextVideo,
     adMirrorBrowser,
+    variantMirrorBrowser,
     noteForDeveloper: (message) => console.debug(`[fastiplayer] ${message}`),
     executeInAllFrames,
     tabModel,
@@ -149,6 +152,10 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
       { extensionId: browserApi.runtime.id, extensionBaseUrl: browserApi.runtime.getURL("") },
       (tabId) => handoffs.surveyTab(tabId),
     ),
+  );
+  // Донесения о меню вариантов (14b) нужны только сеансу: проб у вкладок без сеанса нет.
+  browserApi.runtime.onMessage.addListener(
+    createVariantWatchReportListener(browserApi.runtime.id, (tabId, frameId, report) => handoffs.variantWatchReport(tabId, frameId, report)),
   );
   // Слушатели донесений сторожа и рекламы ставит режим 2 (auto-handoff/browser-wiring.ts): донесения идут через
   // его маршрутизатор, а проба рекламы читает те же донесения у вкладок без сеанса.

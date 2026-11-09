@@ -8,7 +8,10 @@ import type { PageSubtitleNaming } from "../../shared/page-subtitle-contract.ts"
 import { parseAddressParts } from "../capabilities/subtitle-naming/address-parts.ts";
 import type { SubtitleNamingAdapter } from "../capabilities/subtitle-naming/contract.ts";
 import { genericAddressAdapter } from "../capabilities/subtitle-naming/generic-address.ts";
+import type { PlayerHandActions } from "../capabilities/player-hand/contract.ts";
 import type { SiteAdapterIdentity } from "../site-identity.ts";
+import { BENCH_SERIES_SITE } from "../sites/bench-series/identity.ts";
+import { BENCH_SERIES_PLAYER_HAND } from "../sites/bench-series/player-hand.ts";
 import { YOUTUBE_SITE } from "../sites/youtube/identity.ts";
 import { youtubeTimedtextAdapter } from "../sites/youtube/timedtext-naming.ts";
 
@@ -17,11 +20,19 @@ export interface PageWorldSiteAdapter {
   readonly identity: SiteAdapterIdentity;
   /** Именование документа субтитров по адресу (сессия 13b2). */
   readonly subtitleNaming?: SubtitleNamingAdapter;
+  /** Белый список руки-функции: что изолированный мир может попросить вызвать у плеера сайта (14b, решение 282). */
+  readonly playerHand?: PlayerHandActions;
 }
 
 export const PAGE_WORLD_SITES: readonly PageWorldSiteAdapter[] = [
   { identity: YOUTUBE_SITE, subtitleNaming: youtubeTimedtextAdapter },
+  { identity: BENCH_SERIES_SITE, playerHand: BENCH_SERIES_PLAYER_HAND },
 ];
+
+/** Белый список руки-функции сайта `siteId`; `undefined` — у сайта её нет (или сайта нет). */
+export function playerHandActionsOf(siteId: string): PlayerHandActions | undefined {
+  return PAGE_WORLD_SITES.find((site) => site.identity.id === siteId)?.playerHand;
+}
 
 /** Порядок важен: первый адаптер, узнавший адрес, называет дорожку. Общий читатель — последним. */
 export const SUBTITLE_NAMING_ADAPTERS: readonly SubtitleNamingAdapter[] = [

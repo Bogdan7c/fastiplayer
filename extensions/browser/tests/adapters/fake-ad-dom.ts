@@ -1,5 +1,5 @@
 // Маленькая подделка DOM для читателей рекламы: дерево узлов и взгляд `AdPageView` над ним.
-// Селекторы понимает только простые составные вида `tag#id.class.class` и `a b` не поддерживаются:
+// Селекторы понимает только простые составные вида `tag#id.class.class[attribute]`, `a b` не поддерживаются:
 // читатели ими и ограничены (см. src/adapters/sites/*/ad-selectors.ts).
 import type { AdElement, AdPageView, ElementRect } from "../../src/adapters/capabilities/ad-organs/contract.ts";
 
@@ -10,6 +10,8 @@ export interface FakeNodeOptions {
   readonly rect?: ElementRect;
   /** `false` — как `display:none`: не показан сам (и все потомки). */
   readonly rendered?: boolean;
+  /** Атрибуты узла (адаптеры вариантов, 14b). */
+  readonly attributes?: Readonly<Record<string, string>>;
 }
 
 export class FakeNode implements AdElement {
@@ -21,6 +23,7 @@ export class FakeNode implements AdElement {
   text: string;
   rect: ElementRect;
   rendered: boolean;
+  readonly attributes: Map<string, string>;
   /** Сколько раз по узлу кликнули. */
   clicks = 0;
 
@@ -31,6 +34,7 @@ export class FakeNode implements AdElement {
     this.text = options.text ?? "";
     this.rect = options.rect ?? { left: 10, top: 10, right: 110, bottom: 30 };
     this.rendered = options.rendered ?? true;
+    this.attributes = new Map(Object.entries(options.attributes ?? {}));
   }
 
   add(...nodes: FakeNode[]): this {
@@ -61,11 +65,12 @@ export class FakeNode implements AdElement {
   }
 
   matches(selector: string): boolean {
-    const match = /^([a-z]*)(?:#([\w-]+))?((?:\.[\w-]+)*)$/u.exec(selector);
+    const match = /^([a-z]*)(?:#([\w-]+))?((?:\.[\w-]+)*)(?:\[([\w-]+)\])?$/u.exec(selector);
     if (match === null) throw new Error(`fake DOM does not understand selector: ${selector}`);
-    const [, tag = "", id, classes = ""] = match;
+    const [, tag = "", id, classes = "", attribute] = match;
     if (tag !== "" && tag !== this.tag) return false;
     if (id !== undefined && id !== this.id) return false;
+    if (attribute !== undefined && !this.attributes.has(attribute)) return false;
     return classes
       .split(".")
       .filter((name) => name !== "")

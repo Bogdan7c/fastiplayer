@@ -59,7 +59,7 @@ import type { FileAddressRule } from "./file-address-guard.ts";
 import type { FramePort } from "./frame-port.ts";
 import { playerAbilitiesOf } from "./hls-player-support.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
-import { createSessionAdMirror } from "./ad-skip-mirror.ts";
+import { createSessionSiteAdapters } from "./session-site-adapters.ts";
 import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 import type { SessionPhase } from "./session-phase.ts";
 
@@ -131,13 +131,15 @@ export function startHandoffSession(
     armFrames: (leaseMs) => dependencies.armNextVideo(presence.tabId(), leaseMs),
     onWaitExpired: () => endForNoNextVideo(),
   });
-  // Дублёр кнопки пропуска рекламы (09d): аренда наблюдения во фреймах, сводка `ad_state`, команды плеера.
-  const adMirror = createSessionAdMirror({
+  // Адаптеры сайтов (09d, 14b): реклама и меню вариантов — аренда наблюдения во фреймах, сводки, команды плеера.
+  const siteAdapters = createSessionSiteAdapters({
     currentTabId: () => presence.tabId(),
+    sessionFrameId: () => portFrameId,
     scheduler: dependencies.scheduler,
-    browser: dependencies.adMirrorBrowser,
+    browsers: dependencies,
     sessionSaysAdOnScreen: () => relocation.adOnScreen(),
-    sendAdState: (ad) => socket?.enqueue({ kind: "message", message: { type: "ad_state", ad } }),
+    agreedProtocol: () => agreedProtocol,
+    send: (message) => socket?.enqueue({ kind: "message", message }),
     note: dependencies.noteForDeveloper,
   });
   const releaseDemand = dependencies.door.acquireDemand(DEMAND_REASON);
@@ -518,7 +520,7 @@ export function startHandoffSession(
     shownRef = incomingRef;
     silenceWatch.start();
     relocation.videoStarted(incomingVideo);
-    adMirror.videoStarted();
+    siteAdapters.videoStarted();
     resolveOutcome({ kind: "started", player_window: playerWindow });
   }
 
@@ -625,9 +627,7 @@ export function startHandoffSession(
         }
         return;
       }
-      case "skip_ad":
-        adMirror.skipAd();
-        return;
+      case "site_adapter": return void siteAdapters.command(action.command);
       case "show_page": return void pageReveal.show(); // сбои разобраны внутри, наружу не бросает
       case "fetch_resource":
         // Ресурсы HLS просят только в поколении HLS; в другом поколении фид сам ответит `refused`.
@@ -753,7 +753,7 @@ export function startHandoffSession(
     endTimer.cancel();
     silenceWatch.stop();
     relocation.stop();
-    adMirror.stop();
+    siteAdapters.stop();
     // Текущие загрузки источников обрываются: ни рамки после конца сеанса или ухода страницы.
     feeds.dispose();
     // Закачки субтитров страницы тоже: после конца сеанса или ухода страницы ничего не шлётся.
@@ -796,5 +796,5 @@ export function startHandoffSession(
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
-  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), adWatchReport: adMirror.acceptFrameReport };
+  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
 }

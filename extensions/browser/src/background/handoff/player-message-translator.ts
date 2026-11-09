@@ -5,6 +5,7 @@ import type { HandoffEndPosition, HandoffEndResume, ShadowCommand } from "../../
 import type { BufferIntake, PlayerSessionMessage, StreamGeneration } from "../../protocol/index.ts";
 import type { ResourceFetchRequest } from "./hls/resource-fetcher.ts";
 import type { RangeRequest } from "./range-fetcher.ts";
+import type { SiteAdapterCommand } from "./session-site-adapters.ts";
 
 export type PlayerAction =
   /** Плеер принял `attach`: можно отдавать очередь. */
@@ -22,13 +23,16 @@ export type PlayerAction =
     }
   /** Плеер просит байты файла `<video src>` (сессия 09b): их качает загрузчик диапазонов. */
   | { readonly kind: "fetch_range"; readonly request: RangeRequest }
-  /** Плеер просит нажать кнопку пропуска рекламы (сессия 09d); решает сеанс: целевой фрейм знает только он. */
-  | { readonly kind: "skip_ad" }
   /** Зритель хочет увидеть страницу (протокол 1.6): вкладку сеанса — на передний план. Решает сеанс: вкладка у него. */
   | { readonly kind: "show_page" }
   /** Плеер просит ресурс нативного HLS по номерку (10a2): его качает загрузчик поколения HLS. */
   | { readonly kind: "fetch_resource"; readonly request: ResourceFetchRequest }
-  /** Не относится к передаче (варианты — 14, следующая серия — 15) или к старому поколению — пропустить. */
+  /**
+   * Команда адаптеру сайта: пропуск рекламы (09d), выбор варианта или следующая серия (14b). Целевой фрейм
+   * знает только сеанс: тот, что сказал «кнопка доступна» или прислал меню.
+   */
+  | { readonly kind: "site_adapter"; readonly command: SiteAdapterCommand }
+  /** Не относится к передаче или к старому поколению — пропустить. */
   | { readonly kind: "ignore" };
 
 /**
@@ -71,7 +75,7 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
     case "fetch_range":
       return { kind: "fetch_range", request: { request_id: message.request_id, offset: message.offset, length: message.length } };
     case "skip_ad":
-      return { kind: "skip_ad" };
+      return { kind: "site_adapter", command: { kind: "skip_ad" } };
     case "show_page":
       return { kind: "show_page" };
     case "fetch_resource":
@@ -81,9 +85,9 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
         request: { request_id: message.request_id, resource: message.resource, byte_range: message.byte_range, max_bytes: message.max_bytes },
       };
     case "select_variant":
+      return { kind: "site_adapter", command: { kind: "select_variant", variantKind: message.kind, variantId: message.variant_id } };
     case "next_episode":
-      // Меню вариантов — 14, следующая серия — 15: пока их не бывает.
-      return { kind: "ignore" };
+      return { kind: "site_adapter", command: { kind: "next_episode" } };
     case "subtitle_choice":
       // 14a P2: выбор субтитров зрителем (протокол 1.7) экстеншен запомнит позже; пока пропускается.
       return { kind: "ignore" };

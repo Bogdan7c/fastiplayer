@@ -40,6 +40,7 @@ import { isAutoHandoffPageCommand, isPointerQuery, isViewerOfferPageCommand } fr
 import { capturePointerReaders, PointerVideo } from "./pointer-video.ts";
 import { installPageSubtitles, type InstalledPageSubtitles, type PageSubtitleWindow } from "./page-subtitles/index.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
+import { createAdapterHandExecutor } from "./adapter-hand.ts";
 
 /** Окно, против которого работает MAIN-мир. */
 export interface PageBridgeWindow
@@ -189,6 +190,8 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     isInPlayer: (element) => controller.isHandingOffElement(element),
   });
   let pagePort: PagePort | null = null;
+  // Рука-функция адаптеров (14b): исполняет только белый список сайта и отвечает по тому же порту.
+  const adapterHand = createAdapterHandExecutor({ page: win, send: (reply) => pagePort?.send(reply) });
   listenForPageChannel(
     win,
     channel,
@@ -203,6 +206,10 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
         if (message.kind === "watch_handed_off_video") {
           anchor?.setEventName(message.event_name);
           viewerOffer?.setEventName(message.event_name);
+          return;
+        }
+        if (message.kind === "adapter_hand_call") {
+          void adapterHand.handle(message);
           return;
         }
         // Предложение «Ask» (12b): держать или снять задержанное видео — дело сторожа.

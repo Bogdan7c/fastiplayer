@@ -15,6 +15,7 @@
 // конец старого сеанса не теряется, а удаление старой записи не стирает новую. Если новый сеанс не
 // состоялся, а старый ещё жив, старая запись возвращается на место.
 
+import type { VariantWatchReport } from "../../shared/variant-watch-contract.ts";
 import type { ReloadReason, HandOffTabOutcome, HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
 import type { SurveyTabReply, TabPlayerPresence } from "../../shared/survey-contract.ts";
 import type { PageAdState } from "../../protocol/index.ts";
@@ -66,6 +67,8 @@ export interface TabHandoffs {
   isAdOnScreen(tabId: number): boolean;
   /** Донесение фрейма о рекламе (09d). Нет сеанса у вкладки — игнорируется: страница вне передачи молчит. */
   adWatchReport(tabId: number, frameId: number, ad: PageAdState): void;
+  /** Донесение фрейма о меню вариантов страницы (14b). Нет сеанса у вкладки — игнорируется. */
+  variantWatchReport(tabId: number, frameId: number, report: VariantWatchReport): void;
   /** Вкладки, у которых передача стартует или идёт. */
   activeTabIds(): number[];
   /**
@@ -443,6 +446,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     heldVideo: (tabId, frameId, report) => entries.get(tabId)?.session?.heldVideo(frameId, report) ?? "release",
     isAdOnScreen: (tabId) => entries.get(tabId)?.session?.adOnScreen() ?? false,
     adWatchReport: (tabId, frameId, ad) => entries.get(tabId)?.session?.adWatchReport(frameId, ad),
+    variantWatchReport: (tabId, frameId, report) => entries.get(tabId)?.session?.variantWatchReport(frameId, report),
     activeTabIds: () => [...entries.keys()],
     onSessionEnded: (listener) => void sessionEndedListeners.push(listener),
     onSessionStarted: (listener) => void sessionStartedListeners.push(listener),

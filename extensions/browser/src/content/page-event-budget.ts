@@ -47,6 +47,13 @@ export const PAGE_EVENT_LIMITS_PER_SECOND: Readonly<Record<PageEventBudgetKind, 
   malformed: 256,
 };
 
+/**
+ * Ответы руки-функции адаптеров в секунду (14b, решение 282) — отдельное ведро клиента руки
+ * (`adapter-hand-client.ts`), не связанное с передачей: рука работает и между видео. Адаптер зовёт руку на
+ * каждое чтение (не чаще четырёх в секунду, `variant-watch.ts`) по 2–3 действия: настоящих ответов ~12/с.
+ */
+export const ADAPTER_HAND_REPLIES_PER_SECOND = 64;
+
 /** События снимка в начале повтора: на каждый из 8 SourceBuffer `added` и смещение, плюс длительность и конец. */
 const JOURNAL_SNAPSHOT_EVENTS = 18;
 

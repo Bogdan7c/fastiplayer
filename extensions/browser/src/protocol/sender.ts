@@ -3,7 +3,7 @@
 // Протокол строгий и «негодный» заголовок или слишком крупную рамку не исправляет,
 // а отвергает. Поэтому чистит и режет сам экстеншен.
 
-import { MAX_DATA_FRAME_PAYLOAD_BYTES, MAX_PAGE_TITLE_BYTES } from "./limits.ts";
+import { MAX_DATA_FRAME_PAYLOAD_BYTES, MAX_PAGE_TITLE_BYTES, MAX_VARIANT_LABEL_BYTES } from "./limits.ts";
 import { isAllowedDisplayCodePoint } from "./text.ts";
 
 /**
@@ -19,19 +19,18 @@ function isWordSeparatingBreak(codePoint: number): boolean {
 }
 
 /**
- * Готовит заголовок страницы к отправке:
+ * Готовит текст страницы к показу в плеере:
  * - разрывы строки и табуляцию заменяет одним пробелом (подряд идущие разрывы и пробелы
  *   перед ними дают ровно один пробел);
  * - прочие управляющие символы, символы переворота направления текста
  *   (U+202A-202E, U+2066-2069) и одиночные суррогаты убирает;
- * - обрезает до 1024 байт UTF-8 по границе символа.
- * Результат всегда проходит строгую проверку текста `title` в `open_session`.
+ * - обрезает до `maxBytes` байт UTF-8 по границе символа.
  */
-export function sanitizePageTitle(rawTitle: string): string {
+function sanitizeDisplayText(rawText: string, maxBytes: number): string {
   let cleaned = "";
   let byteLength = 0;
   // Итерация по строке идёт кодовыми точками; одиночный суррогат приходит как отдельный символ.
-  for (const rawCharacter of rawTitle) {
+  for (const rawCharacter of rawText) {
     const rawCodePoint = rawCharacter.codePointAt(0) ?? 0;
     if (isWordSeparatingBreak(rawCodePoint) && cleaned.endsWith(" ")) {
       continue; // пробел-разделитель уже стоит: второй не нужен
@@ -44,13 +43,30 @@ export function sanitizePageTitle(rawTitle: string): string {
       continue;
     }
     const characterBytes = codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
-    if (byteLength + characterBytes > MAX_PAGE_TITLE_BYTES) {
+    if (byteLength + characterBytes > maxBytes) {
       break; // следующий символ не помещается целиком: обрезаем по границе символа
     }
     cleaned += character;
     byteLength += characterBytes;
   }
   return cleaned;
+}
+
+/**
+ * Готовит заголовок страницы к отправке (`sanitizeDisplayText` с пределом 1024 байта).
+ * Результат всегда проходит строгую проверку текста `title` в `open_session`.
+ */
+export function sanitizePageTitle(rawTitle: string): string {
+  return sanitizeDisplayText(rawTitle, MAX_PAGE_TITLE_BYTES);
+}
+
+/**
+ * Готовит подпись варианта страницы («Dub B», «720p») к `variant_menu_changed` (сессия 14b): та же чистка,
+ * предел 256 байт, пробелы по краям срезаются. Пустой результат — подписи нет: такой пункт не отправляется
+ * (протокол пустую подпись отвергает).
+ */
+export function sanitizeVariantLabel(rawLabel: string): string {
+  return sanitizeDisplayText(rawLabel.trim(), MAX_VARIANT_LABEL_BYTES).trim();
 }
 
 /**

@@ -250,7 +250,7 @@ describe("приёмник донесений фреймов", () => {
 
 describe("переводчик сообщений плеера", () => {
   it("skip_ad — своё действие, а не «игнорировать»", () => {
-    assert.deepEqual(translatePlayerMessage({ type: "skip_ad" }, undefined), { kind: "skip_ad" });
+    assert.deepEqual(translatePlayerMessage({ type: "skip_ad" }, undefined), { kind: "site_adapter", command: { kind: "skip_ad" } });
   });
 });
 

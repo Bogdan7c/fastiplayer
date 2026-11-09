@@ -175,7 +175,8 @@ export type { BridgeSoftware, ProtocolVersion, VersionNegotiation } from "./vers
 export { capabilitiesToTokens, cheapCodecToken, featureToken, parseCapabilityTokens } from "./capability.ts";
 export type { OptionalFeature, ParsedCapabilities, PeerCapabilities, VideoCodecFamily } from "./capability.ts";
 
-export { sanitizePageTitle, splitAppendPayload } from "./sender.ts";
+export { sanitizePageTitle, sanitizeVariantLabel, splitAppendPayload } from "./sender.ts";
+export { isValidVariantId } from "./text.ts";
 export { splitPageSubtitleDocument } from "./page-subtitle-sender.ts";
 export type { PageSubtitleDocumentPiece, PageSubtitleDocumentSending, PageSubtitleOfferFields } from "./page-subtitle-sender.ts";
 export { utf8ByteLength } from "./text.ts";

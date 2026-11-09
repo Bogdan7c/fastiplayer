@@ -28,6 +28,7 @@ import type { PointerQuery } from "../shared/entry-contract.ts";
 import { parsePointerQuery } from "../shared/entry-validation.ts";
 import { parseWatchHandedOffVideo, type WatchHandedOffVideoMessage } from "../shared/handed-off-video-contract.ts";
 import { parseViewerOfferPageCommand, type ViewerOfferPageCommand } from "../shared/viewer-offer-contract.ts";
+import { parseAdapterHandCall, type AdapterHandCall } from "../shared/adapter-hand-contract.ts";
 
 /** Что MAIN-мир принимает по порту. */
 export type IncomingPageMessage = DescribeCandidatesQuery | PageCommand | NextVideoCommand;
@@ -203,10 +204,16 @@ export function isAutoHandoffPageCommand(message: ChannelMessage): message is Au
 
 /**
  * Всё, что MAIN-мир принимает по порту: команды контроллера передачи, вопросы про указатель (10c), имя
- * события якоря переданного видео (11a), команды режима 2 (12a) и предложения «Ask» (12b). Все, кроме первых, — местные дела миров, фону
- * они не уходят и до контроллера передачи не доходят.
+ * события якоря переданного видео (11a), команды режима 2 (12a), предложения «Ask» (12b) и вызовы руки-функции
+ * адаптеров (14b). Все, кроме первых, — местные дела миров, фону они не уходят и до контроллера передачи не доходят.
  */
-export type ChannelMessage = IncomingPageMessage | PointerQuery | WatchHandedOffVideoMessage | AutoHandoffPageCommand | ViewerOfferPageCommand;
+export type ChannelMessage =
+  | IncomingPageMessage
+  | PointerQuery
+  | WatchHandedOffVideoMessage
+  | AutoHandoffPageCommand
+  | ViewerOfferPageCommand
+  | AdapterHandCall;
 
 /**
  * Разобрать сообщение порта целиком. Вопросы про указатель (`describe_right_clicked`, `video_at_point`)
@@ -220,6 +227,7 @@ export function parseChannelMessage(candidate: unknown): ChannelMessage | null {
     parseAutoHandoffWatchCommand(candidate) ??
     parseGrantPlayCreditCommand(candidate) ??
     parseViewerOfferPageCommand(candidate) ??
+    parseAdapterHandCall(candidate) ??
     parseIncomingPageMessage(candidate)
   );
 }

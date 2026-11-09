@@ -22,6 +22,7 @@ import {
 } from "../shared/page-channel-handshake.ts";
 import type { CandidatesReply, PageEvent } from "../shared/handoff-contract.ts";
 import type { PointerReply } from "../shared/entry-contract.ts";
+import type { AdapterHandReply } from "../shared/adapter-hand-contract.ts";
 import { parseChannelMessage, type ChannelMessage } from "./page-command-guard.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
 
@@ -46,7 +47,7 @@ export interface ChannelOriginals {
 }
 
 /** Что уходит по порту из MAIN-мира. */
-export type OutgoingPageMessage = PageEvent | CandidatesReply | PointerReply;
+export type OutgoingPageMessage = PageEvent | CandidatesReply | PointerReply | AdapterHandReply;
 
 /** Личный порт MAIN-мира после рукопожатия. */
 export interface PagePort {

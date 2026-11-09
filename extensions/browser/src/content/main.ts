@@ -10,12 +10,14 @@ import { parseWithdrawViewerOfferRequest } from "../shared/viewer-offer-contract
 import { RIGHT_CLICKED_VIDEO_FUNCTION_NAME } from "../shared/entry-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME, type ScriptedFrameAnswer } from "../shared/video-candidates-probe.ts";
 import { installAdWatch } from "./ad-watch-entry.ts";
+import { createAdapterHandClient } from "./adapter-hand-client.ts";
 import { installAutoHandoffWatch } from "./auto-handoff-watch-entry.ts";
 import { listenForHandedOffVideo } from "./handed-off-video-listener.ts";
 import { installPageUi } from "./page-ui/page-ui-entry.ts";
 import { openPageChannel, type PageChannelPort } from "./page-channel.ts";
 import { createContentRelay, type ContentRelay } from "./relay.ts";
 import { listenForViewerOffer } from "./viewer-offer-listener.ts";
+import { installVariantWatch } from "./variant-watch-entry.ts";
 
 /** Сериализация непрозрачного происхождения (`about:blank`, `data:`). */
 const OPAQUE_ORIGIN = "null";
@@ -50,6 +52,16 @@ const relay: ContentRelay = createContentRelay({
   }),
 });
 
+// Клиент руки-функции адаптеров (14b): свои вызовы MAIN-миру и свой пограничник ответов.
+const adapterHand = createAdapterHandClient({
+  sendToPage: (call) => sendToPageWorld(call),
+  timers: {
+    setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  },
+  now: () => performance.now(),
+});
+
 const channel = openPageChannel(
   {
     createChannel: () => {
@@ -60,7 +72,10 @@ const channel = openPageChannel(
     rendezvous: window,
     createCancelableEvent: (type) => new Event(type, { cancelable: true }),
   },
-  (message) => relay.handlePageMessage(message),
+  // Ответы руки забирает её клиент; всё остальное — пограничник передачи.
+  (message) => {
+    if (!adapterHand.acceptPageMessage(message)) relay.handlePageMessage(message);
+  },
 );
 sendToPageWorld = (message) => channel.send(message);
 
@@ -104,6 +119,9 @@ installAutoHandoffWatch(relay);
 
 // Наблюдение за рекламой (сессия 09d): спит, пока фон не возьмёт его в аренду.
 installAdWatch();
+
+// Наблюдение за вариантами страницы (сессия 14b): тоже спит до аренды от фона.
+installVariantWatch(adapterHand);
 
 // Функция для executeScript фона живёт в глобале ИЗОЛИРОВАННОГО мира: странице она не видна.
 Object.defineProperty(globalThis, VIDEO_CANDIDATES_FUNCTION_NAME, {

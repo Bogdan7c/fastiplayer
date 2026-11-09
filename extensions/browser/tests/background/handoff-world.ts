@@ -5,6 +5,8 @@ import type { FrameInjectionResult } from "../../src/background/handoff/frame-su
 import type { HandoffSessionEnd } from "../../src/background/handoff/handoff-session.ts";
 import { NO_LOCAL_ADDRESS_CONSENT, type LocalAddressConsent } from "../../src/background/handoff/file-address-guard.ts";
 import type { AdMirrorBrowser } from "../../src/background/handoff/ad-skip-mirror.ts";
+import type { VariantMirrorBrowser } from "../../src/background/handoff/variant-mirror.ts";
+import type { VariantActionOutcome, VariantCommand } from "../../src/shared/variant-watch-contract.ts";
 import type { PressSkipOutcome } from "../../src/shared/ad-watch-contract.ts";
 import { createFileReferrerRules } from "../../src/background/handoff/file-referrer-rule.ts";
 import { createLocalAddressBlock, localAddressBlockRules } from "../../src/background/handoff/local-address-block-rules.ts";
@@ -64,6 +66,21 @@ export function createFakeAdMirrorBrowser() {
   return { browser, armings, pressed, notes, behavior };
 }
 
+/** Фейк браузерной стороны меню вариантов (14b): журнал аренд и команд, исход команды задаёт сценарий. */
+export function createFakeVariantMirrorBrowser() {
+  const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
+  const commands: { readonly tabId: number; readonly frameId: number; readonly command: VariantCommand }[] = [];
+  const behavior: { outcome: VariantActionOutcome | Error } = { outcome: "done" };
+  const browser: VariantMirrorBrowser = {
+    armVariantWatch: (tabId, leaseMs) => void armings.push({ tabId, leaseMs }),
+    sendVariantCommand: (tabId, frameId, command) => {
+      commands.push({ tabId, frameId, command });
+      return behavior.outcome instanceof Error ? Promise.reject(behavior.outcome) : Promise.resolve(behavior.outcome);
+    },
+  };
+  return { browser, armings, commands, behavior };
+}
+
 /** Хост страниц экстеншена в тестах (инициатор его запросов). */
 export const EXTENSION_HOST = "extension-id";
 
@@ -121,6 +138,7 @@ export function setup(
   const framePorts = recordFramePorts();
   const ended: HandoffSessionEnd[] = [];
   const adMirrorFake = createFakeAdMirrorBrowser();
+  const variantMirrorFake = createFakeVariantMirrorBrowser();
   const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
   // Ответ фреймов на опрос; сценарий может его сменить (страница убрала видео, поставила другое).
   let currentFrames = frames;
@@ -148,6 +166,7 @@ export function setup(
     connectFrame: framePorts.connect,
     armNextVideo: (tabId, leaseMs) => void armings.push({ tabId, leaseMs }),
     adMirrorBrowser: adMirrorFake.browser,
+    variantMirrorBrowser: variantMirrorFake.browser,
     noteForDeveloper: (message) => void adMirrorFake.notes.push(message),
     executeInAllFrames: () => {
       surveyCount += 1;
@@ -178,6 +197,7 @@ export function setup(
     ended,
     armings,
     adMirror: adMirrorFake,
+    variantMirror: variantMirrorFake,
     sessionRules,
     settingFailures,
     handoffs,
