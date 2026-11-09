@@ -1,6 +1,6 @@
 # Субтитры страницы браузера в плеере (мост, сессия 13b1, 2026-11-09, решения 270–274)
 
-План: `user/browser-bridge/13b1-page-subtitles-player.md`, отчёт `results/13b1.md`. Экстеншен-часть — 13b2.
+План: `user/browser-bridge/13b1-page-subtitles-player.md`, отчёт `results/13b1.md`. Экстеншен-часть (13b2, DONE 2026-11-09) — `mem:browser-bridge/page-subtitles-extension-13b2`.
 
 ## Протокол 1.5 (`browser-bridge-protocol`)
 - `PageSessionMessage::SubtitleTrackOffered { track: PageSubtitleTrackId(u32≥1), language: PageSubtitleLanguage{Unknown{}|Known{tag: SubtitleLanguageTag}}, label: PageSubtitleLabel{None{}|Text{text}}, format_hint: SubtitleFormatHint{WebVtt,Srt,Ttml,Srv3,Json3,Unknown}, origin: PageSubtitleOrigin{PageDownload,TrackElement,TextTrackCues}, page_display: PageSubtitleDisplay{Showing,NotShowing}, byte_length: PageSubtitleByteLength(1..=8 МиБ) }` — `session/page_subtitles.rs`, scope Unbound (вне поколений). Необязательные значения — помеченные объекты, а не отсутствие поля (конвенция протокола).
@@ -20,3 +20,4 @@
 - Журнал: `Page subtitle document received …`, `Page subtitle track ready` (track, language, format, cues, selected), `Page subtitle track failed`, поле `subtitle_overlay_frames=` в `Browser playback summary` (считает отправки в рендер, может быть больше `presented_frames`).
 - Тесты: сборщик `page_subtitles/assembly_tests.rs`, склад, `translator/tests/page_subtitles.rs`, `session_media/tests/page_subtitles.rs`, `state/subtitles/page_load_job_tests.rs`, владелец `state/subtitles/tests/page_tracks.rs`, GPU `tests/page_gpu.rs`, процесс `tests/browser_session_process/page_subtitles.rs` (kwin: selected=true и кадры со слоем; с рекламой 0).
 - Ограничения: памяти выбора между видео нет (14); безоконный тестовый путь субтитры страницы игнорирует; очистка дорожек при следующей серии — 16.
+- Для судей стенда/журнала: `Page subtitle track ready` пишется только при разборе (лениво — выбранная/показанная дорожка); наличие дорожки на складе видно по `Page subtitle document received`.

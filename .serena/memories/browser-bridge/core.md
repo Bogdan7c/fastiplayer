@@ -410,6 +410,9 @@ YouTube (видео, микс, live, Shorts, субтитры, дорожки), 
 - 13b разделена на 13b1 (протокол 1.5, json3, плеер) и 13b2 (хуки экстеншена, память до передачи, `<track>` качает фон, стенд, живая). Решения: 271 «скачала = включено» (последний документ, скачанный плеером сайта, — `showing`), 272 выключенные `<track>` качает фон экстеншена, 273 json3 через `serde_json`.
 - Протокол **1.5**: `subtitle_track_offered` + рамка вида 3 (байты документа, не текст JSON: лимит 128 КиБ и кодировки cp1251), бюджет сеанса `MAX_PAGE_SUBTITLE_SESSION_BYTES` 32 МиБ. Плеер: склад дорожек страницы на сеанс (переживает поколения), `CoreStep.page_subtitles`, в рекламе не рисуются, выбор зрителя на весь сеанс. Подробно — `mem:subtitles/page-tracks-13b1`.
 
+
+## Субтитры страницы — экстеншен (сессия 13b2, 2026-11-09, решения 275–276, `results/13b2.md`, итог 13b — `results/13b.md`)
+- MAIN ловит `fetch`/XHR (фильтр по адресу/типу/размеру ДО тела, проверка содержимым `sniffSubtitleDocument`), `<track src>` (качает ФОН — и включённые, решение 275), реплики `TextTrack` → WebVTT; склад документа до передачи 16 МиБ/32 документа, отдача сразу за журналом MSE. Фон: номера дорожек на сеанс по «фрейм + метка документа + ключ», 64 дорожки / 32 МиБ, только версия ≥ 1.5. Адаптер timedtext YouTube (`kind=asr` → «(auto-generated)», решение 276). Стенд `page-subtitles` 4/4 в обоих браузерах; живьём YouTube, Ashdi, Tortuga. Подробно — `mem:browser-bridge/page-subtitles-extension-13b2`.
 ## Связи
 Пересылка второго запуска и D-Bus `org.freedesktop.Application`: `mem:app-egui/instance-forwarding-ux13`. Демуксеры fMP4/WebM: `mem:symphonia-demux/iso-bmff-fmp4-s28a-2026-07-22`, `mem:symphonia-demux/matroska-webm-s28b-2026-07-22`. Швы под Windows — как у рендера (`mem:gles2-renderer/render-shell-contract`).
 
