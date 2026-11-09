@@ -7,6 +7,7 @@ use fastiplayer_config::{
 
 use super::error::EnvironmentError;
 use super::options::PlayerConfigProfile;
+use super::startup_marker;
 
 /// Имя каталога приложения внутри `XDG_CONFIG_HOME` (константа слоя config плеера).
 const APP_CONFIG_DIRECTORY: &str = "fastiplayer";
@@ -22,7 +23,8 @@ const APP_CONFIG_DIRECTORY: &str = "fastiplayer";
 /// без `config.toml`; плеер сам создаёт настройки по умолчанию.
 pub(crate) fn config_for(profile: PlayerConfigProfile) -> Option<AppConfig> {
     match profile {
-        PlayerConfigProfile::Clean => None,
+        // Настроек нет: Auto задаёт умолчание; след старта Vulkan кладёт `write_config`.
+        PlayerConfigProfile::Clean | PlayerConfigProfile::AutoWithVulkanStartupMarker => None,
         PlayerConfigProfile::Gles2Vaapi => {
             let mut config = AppConfig::default();
             // Рендер OpenGL ES (GLES2) — главная цель проекта (старое железо).
@@ -74,10 +76,13 @@ pub(crate) fn write_config(
     xdg_config_home: &Path,
     profile: PlayerConfigProfile,
 ) -> Result<Option<PathBuf>, EnvironmentError> {
+    let directory = xdg_config_home.join(APP_CONFIG_DIRECTORY);
+    if profile == PlayerConfigProfile::AutoWithVulkanStartupMarker {
+        startup_marker::plant_vulkan_unfinished_startup(&directory)?;
+    }
     let Some(config) = config_for(profile) else {
         return Ok(None);
     };
-    let directory = xdg_config_home.join(APP_CONFIG_DIRECTORY);
     std::fs::create_dir_all(&directory).map_err(|source| EnvironmentError::Io {
         action: "create player config directory",
         path: directory.clone(),
@@ -147,5 +152,19 @@ mod tests {
         );
         // Рендер остаётся прежним: ограничение даёт только список кодеков.
         assert_eq!(loaded.config.render.profile, RenderProfile::Auto);
+    }
+
+    #[test]
+    fn forecast_profile_keeps_auto_render_and_plants_the_marker() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let written = write_config(dir.path(), PlayerConfigProfile::AutoWithVulkanStartupMarker)
+            .expect("write");
+        // Настроек нет (Auto по умолчанию), а метка лежит рядом.
+        assert_eq!(written, None);
+        assert!(
+            dir.path()
+                .join("fastiplayer/renderer-startup.marker")
+                .is_file()
+        );
     }
 }

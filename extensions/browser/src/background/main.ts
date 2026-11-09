@@ -7,6 +7,7 @@ import { createHostLink } from "./host-link/host-link.ts";
 import { createChromeNativePortFactory, createRealScheduler } from "./host-link/native-port.ts";
 import type { BridgeStatusProvider } from "./status-provider.ts";
 import { startCodecPolicy } from "./codec-policy/browser-wiring.ts";
+import { createFirstLabelRequest } from "./codec-policy/first-label-request.ts";
 import { installTabModel } from "./tab-model/browser-wiring.ts";
 import { installTabHandoffs } from "./handoff/browser-wiring.ts";
 import { createBrowserEntryReporter, installEntries } from "./entries/browser-wiring.ts";
@@ -24,15 +25,32 @@ const hostLink = createHostLink({
   scheduler,
   hostName: NATIVE_HOST_NAME,
   extensionVersion: chrome.runtime.getManifest().version,
-  // Метка «дешёвых» кодеков плеера из каждого hello_accepted уходит в кэш политики.
-  onPlayerCheapVideoCodecs: (families) => void codecPolicy.reportPlayerCheapCodecs(families),
+  // Метка «дешёвых» кодеков плеера из каждого hello_accepted уходит в кэш политики; первый вопрос
+  // о метке (13a) на этом ответе отпускает связь.
+  onPlayerCheapVideoCodecs: (families) => {
+    void codecPolicy.reportPlayerCheapCodecs(families);
+    firstLabelRequest.playerAnswered();
+  },
+});
+
+// Первый вопрос о метке (решение 266): пока плеер ни разу не отвечал, спросить его сразу, а не на
+// первой передаче — иначе первое видео после установки идёт без политики кодеков.
+const firstLabelRequest = createFirstLabelRequest({
+  knowsPlayerLabel: () => codecPolicy.knowsPlayerLabel(),
+  acquireDemand: (reason) => hostLink.acquireDemand(reason),
+  scheduler,
 });
 const statusProvider: BridgeStatusProvider = hostLink;
 
 // Проба «посредник установлен?» — только при старте браузера и установке/обновлении экстеншена.
-// Плеер при этом не будится: посредник трогает шину лишь на первом сообщении.
-chrome.runtime.onStartup.addListener(() => hostLink.probeHostPresence());
-chrome.runtime.onInstalled.addListener(() => hostLink.probeHostPresence());
+// Плеер при этом не будится: посредник трогает шину лишь на первом сообщении. Исключение — пока
+// метка кодеков неизвестна: тогда вместо пустой пробы идёт настоящий hello (первый вопрос, 13a).
+function checkHostOnBrowserEvent(): void {
+  hostLink.probeHostPresence();
+  void firstLabelRequest.askIfUnknown();
+}
+chrome.runtime.onStartup.addListener(checkHostOnBrowserEvent);
+chrome.runtime.onInstalled.addListener(checkHostOnBrowserEvent);
 
 // Значок следует за статусом: подписка живёт всё время работы фона.
 // Начальный статус («unknown») на значок НЕ кладём: браузер хранит значок, пока фон спит,

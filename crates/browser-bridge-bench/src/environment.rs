@@ -16,6 +16,7 @@ mod install;
 pub mod options;
 mod player_config;
 pub(crate) mod process;
+mod startup_marker;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

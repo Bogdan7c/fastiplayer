@@ -41,6 +41,16 @@ impl ChosenCodec {
     }
 }
 
+/// Что запускает hello к плееру в случае: попап (прежний путь) или ничего (фон сам).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HelloTrigger {
+    /// Робот открывает попап: он будит плеера и приносит метку.
+    PopupOpened,
+    /// Робот ничего не открывает: метку должен запросить сам фон экстеншена при установке
+    /// (`onInstalled`), без попапа и без передачи видео (сессия 13a).
+    BackgroundOnInstall,
+}
+
 /// Один случай сценария.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CodecCase {
@@ -51,6 +61,9 @@ pub(super) struct CodecCase {
     /// Значение настройки `codecSetting`, которое робот пишет в `storage.local` до hello
     /// (`None` — не трогать, остаётся `auto`).
     pub(super) setting: Option<&'static str>,
+    /// Кто запускает hello (попап или сам фон). Хранилище экстеншена в каждом случае свежее:
+    /// у случая своё окружение и свой профиль браузера.
+    pub(super) hello: HelloTrigger,
     /// Что страница обязана выбрать.
     pub(super) expected: ChosenCodec,
     /// Файл динамического курьера, который обязан быть зарегистрирован, пока действует политика
@@ -65,6 +78,7 @@ pub(super) const CASES: &[CodecCase] = &[
         name: "auto-default-codec-order",
         player_config: PlayerConfigProfile::Clean,
         setting: None,
+        hello: HelloTrigger::PopupOpened,
         expected: ChosenCodec::Vp9,
         expected_carrier_file: Some("codec-policy-av1.js"),
     },
@@ -73,6 +87,7 @@ pub(super) const CASES: &[CodecCase] = &[
         name: "auto-h264-first-order",
         player_config: PlayerConfigProfile::H264FirstCodecOrder,
         setting: None,
+        hello: HelloTrigger::PopupOpened,
         expected: ChosenCodec::H264,
         expected_carrier_file: Some("codec-policy-av1-vp9-hevc.js"),
     },
@@ -81,6 +96,7 @@ pub(super) const CASES: &[CodecCase] = &[
         name: "auto-gles2-player",
         player_config: PlayerConfigProfile::Gles2Vaapi,
         setting: None,
+        hello: HelloTrigger::PopupOpened,
         expected: ChosenCodec::H264,
         expected_carrier_file: Some("codec-policy-av1-vp9-hevc.js"),
     },
@@ -89,6 +105,7 @@ pub(super) const CASES: &[CodecCase] = &[
         name: "prefer-vp9",
         player_config: PlayerConfigProfile::Clean,
         setting: Some("prefer_vp9"),
+        hello: HelloTrigger::PopupOpened,
         expected: ChosenCodec::Vp9,
         expected_carrier_file: Some("codec-policy-av1.js"),
     },
@@ -97,6 +114,7 @@ pub(super) const CASES: &[CodecCase] = &[
         name: "always-h264",
         player_config: PlayerConfigProfile::Clean,
         setting: Some("always_h264"),
+        hello: HelloTrigger::PopupOpened,
         expected: ChosenCodec::H264,
         expected_carrier_file: Some("codec-policy-av1-vp9-hevc-vp8.js"),
     },
@@ -105,8 +123,31 @@ pub(super) const CASES: &[CodecCase] = &[
         name: "off-gles2-player",
         player_config: PlayerConfigProfile::Gles2Vaapi,
         setting: Some("off"),
+        hello: HelloTrigger::PopupOpened,
         expected: ChosenCodec::Av1,
         expected_carrier_file: None,
+    },
+    // Render profile Auto + метка «Vulkan не стартовал» от обычного плеера: прогноз рендера
+    // окна браузерного режима = GLES2, метка = {h264}, сайтам отдаётся H.264 (сессия 13a).
+    // Раньше Auto не давал ограничения вообще: выбрался бы VP9/AV1.
+    CodecCase {
+        name: "auto-render-forecast-gles2",
+        player_config: PlayerConfigProfile::AutoWithVulkanStartupMarker,
+        setting: None,
+        hello: HelloTrigger::PopupOpened,
+        expected: ChosenCodec::H264,
+        expected_carrier_file: Some("codec-policy-av1-vp9-hevc.js"),
+    },
+    // Свежая установка: попап не открывается, передачи видео нет. Фон сам делает hello при
+    // `onInstalled`/`onStartup` и регистрирует курьера (сессия 13a). Раньше метка приходила
+    // только с первым попапом/передачей, и первая страница после установки шла без политики.
+    CodecCase {
+        name: "first-hello-without-popup",
+        player_config: PlayerConfigProfile::Gles2Vaapi,
+        setting: None,
+        hello: HelloTrigger::BackgroundOnInstall,
+        expected: ChosenCodec::H264,
+        expected_carrier_file: Some("codec-policy-av1-vp9-hevc.js"),
     },
 ];
 

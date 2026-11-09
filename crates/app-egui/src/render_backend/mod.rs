@@ -8,8 +8,10 @@
 //!
 //! Создание рендера идёт только отсюда: при старте ([`create_startup_renderer`]: ленивые
 //! пробы, [`select_renderer`](selection::select_renderer), фолбэк при ошибке создания) и при
-//! пересоздании внутри семейства ([`create_renderer`]).
+//! пересоздании внутри семейства ([`create_renderer`]). Прогноз «каким рендером встанет окно»
+//! без окна ([`forecast_window_renderer`]) — та же выборка с теми же пробами.
 
+mod forecast;
 mod gles2;
 mod probe_leftovers;
 mod report;
@@ -28,6 +30,7 @@ use winit::window::Window;
 
 use crate::settings_runtime::InitialRenderSettings;
 
+pub(crate) use forecast::{WindowRendererForecast, forecast_window_renderer};
 pub(crate) use probe_leftovers::ProbeLeftovers;
 pub(crate) use report::RendererStartupReport;
 pub(crate) use selection::RendererStartupMarker;

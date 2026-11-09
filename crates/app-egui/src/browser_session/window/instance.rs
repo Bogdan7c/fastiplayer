@@ -35,8 +35,9 @@ use super::driver::WindowPlaybackDriver;
 use super::end_notice::CenterStatusChange;
 use super::geometry::{apply_remembered_fullscreen, browser_window_attributes, observe_window};
 use super::player_port::AppStateWindowPlayer;
+use super::render_path::renderer_startup_marker;
 use crate::ad_plate::AdPlate;
-use crate::app_shell::{ReadOnlyRendererStartupMarker, ShellKeyOutcome, handle_shell_key_event};
+use crate::app_shell::{ShellKeyOutcome, handle_shell_key_event};
 use crate::app_wake::{AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::browser_session::hls_bridge::capabilities::BrowserDecodeCapabilities;
 use crate::frame_prepare::{render_frame, with_lifecycle_settings_adapter};
@@ -732,14 +733,6 @@ pub(super) fn apply_redraw_action(
     event_loop.set_control_flow(action.control_flow);
     if action.request_redraw() {
         window.request_redraw();
-    }
-}
-
-/// Метка старта рендера обычного плеера — только для чтения.
-fn renderer_startup_marker() -> ReadOnlyRendererStartupMarker {
-    match fastiplayer_config::ConfigPaths::discover() {
-        Ok(paths) => ReadOnlyRendererStartupMarker::read_from(paths.renderer_startup_marker_file()),
-        Err(_) => ReadOnlyRendererStartupMarker::absent(),
     }
 }
 

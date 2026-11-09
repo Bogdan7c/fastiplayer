@@ -5,7 +5,15 @@
 // приводят к `resync()`. Пересинхронизации идут строго по очереди — две одновременные не должны гоняться
 // за регистрацией.
 import type { CodecPolicy, VideoCodecFamily } from "../../shared/codec-policy.ts";
-import { CHEAP_CODECS_KEY, CODEC_SETTING_KEY, readCachedCheapCodecs, readCodecSetting, writeCachedCheapCodecs, type KeyValueStore } from "../../shared/codec-storage.ts";
+import {
+  CHEAP_CODECS_KEY,
+  CODEC_SETTING_KEY,
+  hasCachedCheapCodecs,
+  readCachedCheapCodecs,
+  readCodecSetting,
+  writeCachedCheapCodecs,
+  type KeyValueStore,
+} from "../../shared/codec-storage.ts";
 import { syncCarrierRegistration, type CarrierScriptRegistry } from "./carrier-registration.ts";
 import { computeEffectivePolicy } from "./effective-policy.ts";
 
@@ -25,6 +33,8 @@ export interface CodecPolicyService {
   reportPlayerCheapCodecs(families: ReadonlySet<VideoCodecFamily>): Promise<void>;
   /** Политика, применённая последней синхронизацией (`undefined` — ещё не синхронизировали). */
   appliedPolicy(): CodecPolicy | undefined;
+  /** Известна ли метка плеера (он отвечал хоть раз, пусть и «ограничений нет»). Сбой чтения — «неизвестна». */
+  knowsPlayerLabel(): Promise<boolean>;
 }
 
 export function createCodecPolicyService(deps: CodecPolicyServiceDeps): CodecPolicyService {
@@ -53,10 +63,11 @@ export function createCodecPolicyService(deps: CodecPolicyServiceDeps): CodecPol
     isPolicyInputKey: (changedKey) => changedKey === CODEC_SETTING_KEY || changedKey === CHEAP_CODECS_KEY,
     async reportPlayerCheapCodecs(families) {
       try {
-        const before = await readCachedCheapCodecs(deps.store);
+        const [known, before] = await Promise.all([hasCachedCheapCodecs(deps.store), readCachedCheapCodecs(deps.store)]);
         const reported = [...families];
-        // Не пишем в хранилище, если метка не менялась (hello бывает часто).
-        if (!sameFamilies(before, reported)) await writeCachedCheapCodecs(deps.store, reported);
+        // Не пишем в хранилище, если метка известна и не менялась (hello бывает часто). Неизвестную
+        // пишем всегда, даже пустую: иначе «ограничений нет» не отличить от «плеер не отвечал».
+        if (!known || !sameFamilies(before, reported)) await writeCachedCheapCodecs(deps.store, reported);
       } catch (error) {
         deps.warn(`codec policy: метка плеера не сохранена: ${String(error)}`);
         return;
@@ -64,6 +75,14 @@ export function createCodecPolicyService(deps: CodecPolicyServiceDeps): CodecPol
       await resync();
     },
     appliedPolicy: () => applied,
+    async knowsPlayerLabel() {
+      try {
+        return await hasCachedCheapCodecs(deps.store);
+      } catch (error) {
+        deps.warn(`codec policy: кэш метки не прочитан: ${String(error)}`);
+        return false;
+      }
+    },
   };
 }
 

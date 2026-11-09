@@ -30,6 +30,7 @@ use tracing::{debug, info};
 
 use super::BrowserSessionStartFailure;
 use super::buffer_policy::{LiveBufferWindow, source_window};
+use super::codec_label::VideoRenderPath;
 use super::hls_bridge::factory::BridgeHlsFactory;
 use super::inbox::{BrowserSessionInbox, BrowserSessionWake, InboxCapacity};
 use super::intake_notice::IntakeNotice;
@@ -125,10 +126,11 @@ impl BrowserSessionCore {
         wake: Arc<dyn BrowserSessionWake>,
         playback: Box<dyn MediaPlayback>,
         paused_drain: PausedDrain,
+        render_path: VideoRenderPath,
     ) -> Result<Self, BrowserSessionStartFailure> {
         let player_hello =
             super::player_hello::player_hello(super::codec_label::cheap_video_codecs(
-                settings.render_profile(),
+                render_path,
                 settings.preferred_video_codec_order(),
             ))?;
         let source_policy = pushed_source_policy(settings)?;

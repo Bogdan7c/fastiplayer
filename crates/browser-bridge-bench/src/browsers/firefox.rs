@@ -205,6 +205,9 @@ pub(crate) fn launch(
     ];
     let mut env = environment.browser_command_env();
     env.push(("MOZ_CRASHREPORTER_DISABLE".into(), "1".into()));
+    // Firefox 159+ одного флага `--remote-allow-system-access` мало: Marionette:SetContext
+    // (chrome-контекст, нужен стенду) требует ещё и эту переменную окружения.
+    env.push(("MOZ_REMOTE_ALLOW_SYSTEM_ACCESS".into(), "1".into()));
     if environment.display_target() == DisplayTarget::Virtual {
         env.push(("MOZ_ENABLE_WAYLAND".into(), "1".into()));
     }

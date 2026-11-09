@@ -208,6 +208,8 @@ fn run_headless(
         wake.clone(),
         Box::new(playback),
         PausedDrain::ExitAtOnce,
+        // Окна нет — проб рендера нет: GLES2 только по явному профилю.
+        codec_label::VideoRenderPath::from_profile_without_window(settings.render_profile()),
     )?;
     loop {
         match core.step(Instant::now()).verdict {

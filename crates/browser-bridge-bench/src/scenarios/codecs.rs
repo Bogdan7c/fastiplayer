@@ -8,7 +8,9 @@
 
 use std::time::{Duration, Instant};
 
-use super::codec_cases::{CARRIER_SCRIPT_ID, CASES, CODEC_SETTING_KEY, CodecCase, judge_report};
+use super::codec_cases::{
+    CARRIER_SCRIPT_ID, CASES, CODEC_SETTING_KEY, CodecCase, HelloTrigger, judge_report,
+};
 use super::context::{ScenarioError, Stand};
 use super::handoff_run::real_extension_dir;
 use super::outcome::{StepResult, Verdict};
@@ -22,6 +24,9 @@ const CONNECTED_TEXT: &str = "Connected to Fastiplayer";
 const PAGE_REPORT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Сколько ждать, пока фон приведёт регистрацию курьера к нужной.
 const CARRIER_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
+/// Сколько ждать курьера, когда hello делает сам фон: холодный старт плеера по D-Bus
+/// и браузера с экстеншеном идут параллельно, запас больше, чем при открытом попапе.
+const BACKGROUND_HELLO_TIMEOUT: Duration = Duration::from_secs(40);
 /// Шаг опроса регистрации.
 const CARRIER_POLL_STEP: Duration = Duration::from_millis(250);
 /// Пауза, когда регистрации быть НЕ должно: у «ничего не произошло» нет признака, подождём,
@@ -68,15 +73,23 @@ fn drive_case(
             )));
         }
     }
-    // Попап открывает связь с плеером: hello_accepted приносит метку, фон кэширует её и
-    // приводит курьера к политике.
-    let popup = session.open_extension_page(ExtensionPage::popup_with_text(CONNECTED_TEXT))?;
-    if !popup.contains(CONNECTED_TEXT) {
-        return Ok(Verdict::fail(format!(
-            "the popup never said '{CONNECTED_TEXT}': {popup:?}"
-        )));
-    }
-    let carrier = match wait_for_carrier(session, case.expected_carrier_file)? {
+    let carrier_timeout = match case.hello {
+        HelloTrigger::PopupOpened => {
+            // Попап открывает связь с плеером: hello_accepted приносит метку, фон кэширует её
+            // и приводит курьера к политике.
+            let popup =
+                session.open_extension_page(ExtensionPage::popup_with_text(CONNECTED_TEXT))?;
+            if !popup.contains(CONNECTED_TEXT) {
+                return Ok(Verdict::fail(format!(
+                    "the popup never said '{CONNECTED_TEXT}': {popup:?}"
+                )));
+            }
+            CARRIER_REGISTRATION_TIMEOUT
+        }
+        // Ни попапа, ни передачи: только ждём, пока фон сам сходит с hello к плееру.
+        HelloTrigger::BackgroundOnInstall => BACKGROUND_HELLO_TIMEOUT,
+    };
+    let carrier = match wait_for_carrier(session, case.expected_carrier_file, carrier_timeout)? {
         Ok(registered) => registered,
         Err(problem) => return Ok(Verdict::fail(problem)),
     };
@@ -111,12 +124,13 @@ fn drive_case(
 fn wait_for_carrier(
     session: &mut dyn BrowserUnderTest,
     expected_file: Option<&str>,
+    timeout: Duration,
 ) -> Result<Result<String, String>, ScenarioError> {
     let expected = expected_file.map_or_else(|| "[]".to_owned(), |file| format!("[[\"{file}\"]]"));
     if expected_file.is_none() {
         std::thread::sleep(NO_CARRIER_SETTLE);
     }
-    let deadline = Instant::now() + CARRIER_REGISTRATION_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         let registered = session.run_in_extension_page(&read_registration_function())?;
         if registered == expected {

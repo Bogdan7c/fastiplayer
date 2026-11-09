@@ -45,6 +45,7 @@ mod geometry;
 mod instance;
 mod player_port;
 mod remote;
+mod render_path;
 mod settings;
 #[cfg(test)]
 mod test_support;
@@ -94,6 +95,8 @@ pub(super) fn run_windowed_browser_session(
         Box::new(WindowRemote::new(desk.clone())),
         // Окно на паузе ждёт человека, а не закрывается (04b, замена правила 103).
         PausedDrain::WaitForViewer,
+        // Метка кодеков — по рендеру, на который встанет окно (13a), а не по профилю.
+        render_path::forecast_video_render_path(&settings),
     )?;
     let mut app = BrowserWindowApp::new(
         core,

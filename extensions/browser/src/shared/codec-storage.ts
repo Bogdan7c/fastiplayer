@@ -26,7 +26,10 @@ export async function writeCodecSetting(store: KeyValueStore, setting: CodecSett
   await store.set({ [CODEC_SETTING_KEY]: setting });
 }
 
-/** Кэш «дешёвых» кодеков плеера; пусто — плеер ещё ни разу не отвечал (или кэш испорчен). */
+/**
+ * Кэш «дешёвых» кодеков плеера. Пусто — либо метка «ограничений нет», либо плеер ещё ни разу не
+ * отвечал (или кэш испорчен); различает их {@link hasCachedCheapCodecs}.
+ */
 export async function readCachedCheapCodecs(store: KeyValueStore): Promise<readonly VideoCodecFamily[]> {
   const stored = (await store.get([CHEAP_CODECS_KEY]))[CHEAP_CODECS_KEY];
   if (!Array.isArray(stored)) return [];
@@ -35,4 +38,14 @@ export async function readCachedCheapCodecs(store: KeyValueStore): Promise<reado
 
 export async function writeCachedCheapCodecs(store: KeyValueStore, families: readonly VideoCodecFamily[]): Promise<void> {
   await store.set({ [CHEAP_CODECS_KEY]: LABEL_FAMILY_ORDER.filter((family) => families.includes(family)) });
+}
+
+/**
+ * Отвечал ли плеер хоть раз (сессия 13a): в кэше лежит список, пусть даже пустой. Пустая метка —
+ * это «ограничений нет», а не «не знаем»; без этого различия первый вопрос плееру после установки
+ * повторялся бы на каждом старте браузера у всех, кому ограничения не нужны.
+ */
+export async function hasCachedCheapCodecs(store: KeyValueStore): Promise<boolean> {
+  const stored = (await store.get([CHEAP_CODECS_KEY]))[CHEAP_CODECS_KEY];
+  return Array.isArray(stored);
 }

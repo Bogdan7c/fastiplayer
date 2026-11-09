@@ -36,6 +36,8 @@ interface TimerEntry {
 
 export interface FakeWorld {
   readonly link: HostLink;
+  // То же фейковое время, что у связи: соседи связи (первый вопрос о метке) ставят таймеры в него.
+  readonly scheduler: Scheduler;
   readonly ports: FakePort[];
   readonly statuses: BridgeStatus[];
   nowMs(): number;
@@ -67,6 +69,7 @@ export function createWorld(extraDeps: Partial<Pick<HostLinkDeps, "onPlayerCheap
 
   const world: FakeWorld = {
     link: undefined as unknown as HostLink,
+    scheduler,
     ports,
     statuses,
     nowMs: () => nowMs,
