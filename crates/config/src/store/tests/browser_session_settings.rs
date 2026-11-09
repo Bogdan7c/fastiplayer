@@ -51,7 +51,7 @@ fn schema_v27_without_browser_session_loads_defaults_and_keeps_user_values() {
 
     let migrated = load_from_path(&config_path).expect("v27 config loads");
 
-    assert_eq!(migrated.config.schema_version, 31);
+    assert_eq!(migrated.config.schema_version, 32);
     assert_eq!(
         migrated.config.browser_session,
         BrowserSessionConfig::default()
@@ -62,7 +62,7 @@ fn schema_v27_without_browser_session_loads_defaults_and_keeps_user_values() {
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 31"));
+    assert!(saved_text.contains("schema_version = 32"));
     assert!(saved_text.contains("[browser_session]"));
     assert!(saved_text.contains("buffer_ahead_s = 120"));
     assert!(saved_text.contains("max_held_mb = 320"));
@@ -74,7 +74,7 @@ fn schema_v27_without_browser_session_loads_defaults_and_keeps_user_values() {
 /// Файл текущей схемы без таблицы (пользователь удалил её руками) читается с defaults.
 #[test]
 fn current_schema_without_browser_session_table_uses_defaults() {
-    let (_temp_dir, config_path) = config_file_with("schema_version = 31\n");
+    let (_temp_dir, config_path) = config_file_with("schema_version = 32\n");
 
     let loaded = load_from_path(&config_path).expect("config without table loads");
 
@@ -88,7 +88,7 @@ fn current_schema_without_browser_session_table_uses_defaults() {
 #[test]
 fn partial_browser_session_table_keeps_given_key_and_defaults_for_the_rest() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_session]\nbuffer_ahead_s = 45\n");
+        config_file_with("schema_version = 32\n\n[browser_session]\nbuffer_ahead_s = 45\n");
 
     let loaded = load_from_path(&config_path).expect("partial table loads");
     let window = loaded.config.browser_session.buffer_window();
@@ -104,7 +104,7 @@ fn partial_browser_session_table_keeps_given_key_and_defaults_for_the_rest() {
 #[test]
 fn unknown_browser_session_key_is_a_parse_error() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_session]\nbuffer_ahead_ms = 1\n");
+        config_file_with("schema_version = 32\n\n[browser_session]\nbuffer_ahead_ms = 1\n");
 
     assert!(load_from_path(&config_path).is_err());
 }
@@ -115,6 +115,7 @@ fn browser_session_boundary_values_roundtrip_through_file() {
     let low = BrowserSessionConfig {
         buffer_ahead_s: MIN_BROWSER_BUFFER_AHEAD_S,
         max_held_mb: MIN_BROWSER_MAX_HELD_MB,
+        variant_return_window_s: crate::MIN_BROWSER_VARIANT_RETURN_WINDOW_S,
         window: BrowserWindowConfig {
             inner_width_points: MIN_BROWSER_WINDOW_WIDTH_POINTS,
             inner_height_points: MIN_BROWSER_WINDOW_HEIGHT_POINTS,
@@ -124,6 +125,7 @@ fn browser_session_boundary_values_roundtrip_through_file() {
     let high = BrowserSessionConfig {
         buffer_ahead_s: MAX_BROWSER_BUFFER_AHEAD_S,
         max_held_mb: MAX_BROWSER_MAX_HELD_MB,
+        variant_return_window_s: crate::MAX_BROWSER_VARIANT_RETURN_WINDOW_S,
         window: BrowserWindowConfig {
             inner_width_points: MAX_BROWSER_WINDOW_WIDTH_POINTS,
             inner_height_points: MAX_BROWSER_WINDOW_HEIGHT_POINTS,
@@ -200,7 +202,7 @@ fn browser_session_values_out_of_range_are_rejected_with_the_field_path() {
 /// переименован в `.bak`, приложение работает на defaults, причина называет поле.
 #[test]
 fn out_of_range_buffer_at_startup_recovers_through_backup_policy() {
-    let broken_text = "schema_version = 31\n\n[browser_session]\nbuffer_ahead_s = 5\n";
+    let broken_text = "schema_version = 32\n\n[browser_session]\nbuffer_ahead_s = 5\n";
     let (temp_dir, config_path) = config_file_with(broken_text);
     let moment = UNIX_EPOCH + Duration::from_secs(1_791_210_612);
 
@@ -234,7 +236,7 @@ fn schema_v28_without_window_table_gets_default_window() {
 
     let migrated = load_from_path(&config_path).expect("v28 config loads");
 
-    assert_eq!(migrated.config.schema_version, 31);
+    assert_eq!(migrated.config.schema_version, 32);
     assert_eq!(migrated.config.browser_session.buffer_ahead_s, 45);
     assert_eq!(
         migrated.config.browser_session.window,
@@ -263,7 +265,7 @@ fn schema_v28_without_window_table_gets_default_window() {
 #[test]
 fn unknown_key_in_window_table_is_rejected() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_session.window]\nmaximized = true\n");
+        config_file_with("schema_version = 32\n\n[browser_session.window]\nmaximized = true\n");
 
     let error = load_from_path(&config_path).expect_err("unknown window key rejected");
 
@@ -295,7 +297,7 @@ fn schema_v29_drops_buffer_behind_adds_max_held_and_keeps_everything_else() {
 
     let migrated = load_from_path(&config_path).expect("v29 config loads");
 
-    assert_eq!(migrated.config.schema_version, 31);
+    assert_eq!(migrated.config.schema_version, 32);
     let section = migrated.config.browser_session;
     assert_eq!(section.max_held_mb, 320);
     assert_eq!(section.buffer_ahead_s, 45);
@@ -318,7 +320,7 @@ fn schema_v29_drops_buffer_behind_adds_max_held_and_keeps_everything_else() {
 #[test]
 fn current_schema_keeps_user_max_held_and_rejects_the_removed_key() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_session]\nmax_held_mb = 512\n");
+        config_file_with("schema_version = 32\n\n[browser_session]\nmax_held_mb = 512\n");
     let loaded = load_from_path(&config_path).expect("v30 config loads");
     assert_eq!(loaded.config.browser_session.max_held_mb, 512);
     assert_eq!(
@@ -331,6 +333,72 @@ fn current_schema_keeps_user_max_held_and_rejects_the_removed_key() {
     );
 
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_session]\nbuffer_behind_s = 15\n");
+        config_file_with("schema_version = 32\n\n[browser_session]\nbuffer_behind_s = 15\n");
     assert!(load_from_path(&config_path).is_err());
+}
+
+/// Документ v31 (до срока возврата на секунду): свои значения секции и чужой секции.
+const SCHEMA_V31_WITHOUT_VARIANT_RETURN: &str = r#"
+schema_version = 31
+
+[audio]
+volume = 0.4
+
+[browser_session]
+buffer_ahead_s = 45
+max_held_mb = 512
+"#;
+
+/// Миграция v31 -> v32 (сессия 14a): `variant_return_window_s` получает 120 с, значения
+/// пользователя целы; после сохранения ключ записан и повторная загрузка ничего не меняет.
+#[test]
+fn schema_v31_gets_the_default_variant_return_window_and_keeps_user_values() {
+    let (_temp_dir, config_path) = config_file_with(SCHEMA_V31_WITHOUT_VARIANT_RETURN);
+
+    let migrated = load_from_path(&config_path).expect("v31 config loads");
+
+    assert_eq!(migrated.config.schema_version, 32);
+    let section = migrated.config.browser_session;
+    assert_eq!(
+        section.variant_return_window_s,
+        crate::DEFAULT_BROWSER_VARIANT_RETURN_WINDOW_S
+    );
+    assert_eq!(section.variant_return_window(), Duration::from_secs(120));
+    assert_eq!(section.buffer_ahead_s, 45);
+    assert_eq!(section.max_held_mb, 512);
+    assert!((migrated.config.audio.volume - 0.4).abs() < f64::EPSILON);
+
+    save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
+    let saved_text = fs::read_to_string(&config_path).expect("saved text");
+    assert!(saved_text.contains("variant_return_window_s = 120"));
+    let reloaded = load_from_path(&config_path).expect("saved config reloads");
+    assert_eq!(reloaded.config.browser_session, section);
+}
+
+/// Свой срок возврата читается как есть; вне 10..=600 — отказ с путём поля.
+#[test]
+fn the_variant_return_window_keeps_user_values_and_rejects_out_of_range() {
+    let (_temp_dir, config_path) = config_file_with(
+        "schema_version = 32\n\n[browser_session]\nvariant_return_window_s = 300\n",
+    );
+    let loaded = load_from_path(&config_path).expect("v32 config loads");
+    assert_eq!(
+        loaded.config.browser_session.variant_return_window(),
+        Duration::from_secs(300)
+    );
+
+    for out_of_range in [
+        crate::MIN_BROWSER_VARIANT_RETURN_WINDOW_S - 1,
+        crate::MAX_BROWSER_VARIANT_RETURN_WINDOW_S + 1,
+    ] {
+        let mut config = AppConfig::default();
+        config.browser_session.variant_return_window_s = out_of_range;
+        let error = config.validate().expect_err("out of range is rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("browser_session.variant_return_window_s"),
+            "{error}"
+        );
+    }
 }

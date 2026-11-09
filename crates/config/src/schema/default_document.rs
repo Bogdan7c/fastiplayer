@@ -425,6 +425,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "variant_return_window_s = 120",
+        "# Сколько секунд после смены озвучки или качества ждать новое видео страницы, чтобы поставить его на ту же секунду (10..=600; реклама между ними не считается).",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[browser_session.window]",
         "# Запоминаемое окно браузерного режима: окно само пишет размер и полноэкранность (в окне настроек нет).",
     );

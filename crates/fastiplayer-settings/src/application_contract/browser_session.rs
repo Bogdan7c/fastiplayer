@@ -8,8 +8,8 @@
 //!   значение пишется, но живое окно — своё и соседнее — по маршруту не меняется.
 
 use super::{
-    AppRuntimeRoute, POLICY_TESTS, SettingApplicationContract, SettingApplyMechanism,
-    SettingApplyTestScenario, SettingStateOwner,
+    APPLIES_AFTER_RESTART_TESTS, AppRuntimeRoute, POLICY_TESTS, SettingApplicationContract,
+    SettingApplyMechanism, SettingApplyTestScenario, SettingStateOwner,
 };
 
 /// Сценарии запоминаемого состояния: живой runtime не трогается, повтор — no-op,
@@ -33,6 +33,20 @@ pub(super) fn browser_session_contract(setting_name: &str) -> Option<SettingAppl
                 POLICY_TESTS,
             )
         }
+        // Срок возврата на секунду после смены варианта (14a, решение 280): процесс окна
+        // браузерного режима читает его при открытии, живой сеанс свой срок не меняет. Это
+        // смысл `AppliesAfterRestart` (сохранено, действует при следующем открытии окна).
+        // Видимая настройка, поэтому не `RememberedStateOnly`: соседние копии принимают её на
+        // лету и их окно настроек не показывает устаревшее число. Группа маршрута — общая с
+        // окном буфера (`group_for_setting`): владелец буфера получает те же значения, видимого
+        // эффекта нет.
+        "browser_session.variant_return_window_s" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::BrowserSession,
+            SettingStateOwner::BrowserSessionSourcePolicy,
+            SettingApplyMechanism::AppliesAfterRestart,
+            APPLIES_AFTER_RESTART_TESTS,
+        ),
         "browser_session.window.inner_width_points"
         | "browser_session.window.inner_height_points"
         | "browser_session.window.fullscreen" => SettingApplicationContract::new(

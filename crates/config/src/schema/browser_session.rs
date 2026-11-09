@@ -1,4 +1,5 @@
-//! Настройки браузерного режима `[browser_session]` (схема v28, окно — v29, потолок памяти — v30): сколько
+//! Настройки браузерного режима `[browser_session]` (схема v28, окно — v29, потолок памяти — v30,
+//! срок возврата на секунду после смены варианта — v32): сколько
 //! медиа источник «байты от страницы» держит вперёд, потолок его памяти и
 //! запоминаемое окно браузерного режима `[browser_session.window]`.
 //!
@@ -38,6 +39,15 @@ pub const DEFAULT_BROWSER_MAX_HELD_MB: u16 = 320;
 pub const MIN_BROWSER_MAX_HELD_MB: u16 = 64;
 /// Максимум потолка: 2 ГиБ.
 pub const MAX_BROWSER_MAX_HELD_MB: u16 = 2048;
+/// Сколько секунд после смены озвучки или качества плеер ждёт новое видео страницы, чтобы
+/// вернуть его на ту же секунду (решение 280, сессия 14a моста). 120 с — с запасом на рекламу:
+/// Ashdi показывает ролик около 35 с после смены озвучки.
+pub const DEFAULT_BROWSER_VARIANT_RETURN_WINDOW_S: u16 = 120;
+/// Минимум срока возврата: 10 с — меньше не хватает даже на открытие нового потока сайтом.
+pub const MIN_BROWSER_VARIANT_RETURN_WINDOW_S: u16 = 10;
+/// Максимум срока возврата: 10 минут. Дольше возврат мог бы перенести позицию на видео,
+/// которое к выбору зрителя уже не относится.
+pub const MAX_BROWSER_VARIANT_RETURN_WINDOW_S: u16 = 600;
 /// Байт в мебибайте (перевод `max_held_mb` в байты).
 const BYTES_PER_MIB: usize = 1024 * 1024;
 
@@ -99,6 +109,30 @@ pub struct BrowserSessionConfig {
     )]
     pub max_held_mb: u16,
 
+    /// Срок возврата на ту же секунду после смены озвучки или качества (схема v32): сколько
+    /// секунд плеер ждёт новое видео страницы (реклама между ними не считается видео).
+    /// Читается при открытии окна браузерного режима.
+    #[setting(
+        id = "browser_session.variant_return_window_s",
+        path = "browser_session.variant_return_window_s",
+        section = "browser_mode",
+        group = "variants",
+        surface = "main-settings-window",
+        label_id = "settings.browser_session.variant_return_window_s.label",
+        label_ru = "Same second after a dub change",
+        description_id = "settings.browser_session.variant_return_window_s.description",
+        description_ru = "After you change the dub or quality, the page loads a new video. Fastiplayer puts it at the second you were watching if it arrives within this time; ads in between do not count. Takes effect with the next browser window.",
+        help_id = "settings.browser_session.variant_return_window_s.help",
+        help_ru = "Raise it if a site shows long ads after a dub change.",
+        editor = "integer",
+        min = crate::MIN_BROWSER_VARIANT_RETURN_WINDOW_S,
+        max = crate::MAX_BROWSER_VARIANT_RETURN_WINDOW_S,
+        step = 10,
+        unit = "s",
+        apply = "browser_session.apply"
+    )]
+    pub variant_return_window_s: u16,
+
     /// Запоминаемое окно браузерного режима (схема v29): размер и полноэкранность.
     #[serde(default)]
     #[setting(nested)]
@@ -116,14 +150,21 @@ impl BrowserSessionConfig {
             max_held_bytes: usize::from(self.max_held_mb) * BYTES_PER_MIB,
         }
     }
+
+    /// Срок возврата на ту же секунду после смены варианта (`variant_return_window_s`).
+    pub fn variant_return_window(&self) -> Duration {
+        Duration::from_secs(u64::from(self.variant_return_window_s))
+    }
 }
 
 impl Default for BrowserSessionConfig {
-    /// Значения по умолчанию — константы выше (120 с вперёд, 320 МиБ потолок) и окно 1280×720.
+    /// Значения по умолчанию — константы выше (120 с вперёд, 320 МиБ потолок, 120 с возврата)
+    /// и окно 1280×720.
     fn default() -> Self {
         Self {
             buffer_ahead_s: DEFAULT_BROWSER_BUFFER_AHEAD_S,
             max_held_mb: DEFAULT_BROWSER_MAX_HELD_MB,
+            variant_return_window_s: DEFAULT_BROWSER_VARIANT_RETURN_WINDOW_S,
             window: BrowserWindowConfig::default(),
         }
     }

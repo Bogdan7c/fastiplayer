@@ -98,6 +98,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "browser_bridge.offer_on_startup",
     "browser_session.buffer_ahead_s",
     "browser_session.max_held_mb",
+    "browser_session.variant_return_window_s",
     "browser_session.window.inner_width_points",
     "browser_session.window.inner_height_points",
     "browser_session.window.fullscreen",
@@ -327,6 +328,7 @@ fn browser_window_keys_live_on_remembered_state_surface() {
     for id in [
         "browser_session.buffer_ahead_s",
         "browser_session.max_held_mb",
+        "browser_session.variant_return_window_s",
     ] {
         let buffer_descriptor = descriptor(&registry, id);
         assert_eq!(
@@ -430,6 +432,12 @@ fn metadata_ranges_match_validation_constants() {
         "browser_session.max_held_mb",
         u64::from(crate::MIN_BROWSER_MAX_HELD_MB),
         u64::from(crate::MAX_BROWSER_MAX_HELD_MB),
+    );
+    assert_integer_range(
+        &registry,
+        "browser_session.variant_return_window_s",
+        u64::from(crate::MIN_BROWSER_VARIANT_RETURN_WINDOW_S),
+        u64::from(crate::MAX_BROWSER_VARIANT_RETURN_WINDOW_S),
     );
     assert_integer_range(
         &registry,

@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 31;
+pub const CURRENT_SCHEMA_VERSION: u32 = 32;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -187,14 +187,23 @@ pub(crate) const LEGACY_SCHEMA_VERSION_29: u32 = 29;
 /// новее» и файл не трогает.
 pub(crate) const LEGACY_SCHEMA_VERSION_30: u32 = 30;
 
+/// Последняя схема до ключа `browser_session.variant_return_window_s` (сессия 14a моста).
+///
+/// Решение 280: после смены озвучки или качества плеер возвращает новое видео страницы на ту
+/// же секунду, если оно пришло в течение срока (по умолчанию 120 с). Переписывать нечего,
+/// миграция v31 -> v32 только поднимает версию (старый файл без ключа получает default). Bump
+/// нужен ради старых бинарей: строгий парсер v31 (`deny_unknown_fields`) счёл бы незнакомый
+/// ключ битым файлом, а с bump-ом видит «схема новее» и файл не трогает.
+pub(crate) const LEGACY_SCHEMA_VERSION_31: u32 = 31;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v31 и полная цепочка поддерживаемых legacy-версий v2..v30.
+    /// Текущая схема v32 и полная цепочка поддерживаемых legacy-версий v2..v31.
     #[test]
-    fn schema_v31_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 31);
+    fn schema_v32_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 32);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -226,10 +235,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_28,
                 LEGACY_SCHEMA_VERSION_29,
                 LEGACY_SCHEMA_VERSION_30,
+                LEGACY_SCHEMA_VERSION_31,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25, 26, 27, 28, 29, 30
+                25, 26, 27, 28, 29, 30, 31
             ]
         );
     }

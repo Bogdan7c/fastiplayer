@@ -7,14 +7,15 @@
 
 use crate::{
     BrowserSessionConfig, BrowserWindowConfig, ConfigResult, MAX_BROWSER_BUFFER_AHEAD_S,
-    MAX_BROWSER_MAX_HELD_MB, MAX_BROWSER_WINDOW_HEIGHT_POINTS, MAX_BROWSER_WINDOW_WIDTH_POINTS,
-    MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_MAX_HELD_MB, MIN_BROWSER_WINDOW_HEIGHT_POINTS,
+    MAX_BROWSER_MAX_HELD_MB, MAX_BROWSER_VARIANT_RETURN_WINDOW_S, MAX_BROWSER_WINDOW_HEIGHT_POINTS,
+    MAX_BROWSER_WINDOW_WIDTH_POINTS, MIN_BROWSER_BUFFER_AHEAD_S, MIN_BROWSER_MAX_HELD_MB,
+    MIN_BROWSER_VARIANT_RETURN_WINDOW_S, MIN_BROWSER_WINDOW_HEIGHT_POINTS,
     MIN_BROWSER_WINDOW_WIDTH_POINTS,
 };
 
 use super::validate_u16_range;
 
-/// Проверяет запас вперёд и потолок памяти потока.
+/// Проверяет запас вперёд, потолок памяти потока и срок возврата на секунду.
 pub(super) fn validate_browser_session_section(
     browser_session: &BrowserSessionConfig,
 ) -> ConfigResult<()> {
@@ -29,6 +30,12 @@ pub(super) fn validate_browser_session_section(
         browser_session.max_held_mb,
         MIN_BROWSER_MAX_HELD_MB,
         MAX_BROWSER_MAX_HELD_MB,
+    )?;
+    validate_u16_range(
+        "browser_session.variant_return_window_s",
+        browser_session.variant_return_window_s,
+        MIN_BROWSER_VARIANT_RETURN_WINDOW_S,
+        MAX_BROWSER_VARIANT_RETURN_WINDOW_S,
     )?;
     validate_browser_window(&browser_session.window)
 }

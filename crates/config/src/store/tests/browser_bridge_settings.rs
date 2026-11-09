@@ -34,7 +34,7 @@ fn schema_v30_without_browser_bridge_loads_offer_enabled_and_keeps_user_values()
 
     let migrated = load_from_path(&config_path).expect("v30 config loads");
 
-    assert_eq!(migrated.config.schema_version, 31);
+    assert_eq!(migrated.config.schema_version, 32);
     assert!(migrated.config.browser_bridge.offer_on_startup);
     assert_eq!(
         migrated.config.browser_bridge,
@@ -47,7 +47,7 @@ fn schema_v30_without_browser_bridge_loads_offer_enabled_and_keeps_user_values()
 
     save_validated_atomic_at(&config_path, &migrated.config).expect("migrated config saves");
     let saved_text = fs::read_to_string(&config_path).expect("saved TOML readable");
-    assert!(saved_text.contains("schema_version = 31"));
+    assert!(saved_text.contains("schema_version = 32"));
     assert!(saved_text.contains("[browser_bridge]"));
     assert!(saved_text.contains("offer_on_startup = true"));
     let reloaded = load_from_path(&config_path).expect("saved config reloads");
@@ -58,7 +58,7 @@ fn schema_v30_without_browser_bridge_loads_offer_enabled_and_keeps_user_values()
 #[test]
 fn offer_on_startup_false_round_trips_through_save_and_load() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_bridge]\noffer_on_startup = false\n");
+        config_file_with("schema_version = 32\n\n[browser_bridge]\noffer_on_startup = false\n");
 
     let loaded = load_from_path(&config_path).expect("config with false loads");
     assert!(!loaded.config.browser_bridge.offer_on_startup);
@@ -75,7 +75,7 @@ fn offer_on_startup_false_round_trips_through_save_and_load() {
 #[test]
 fn unknown_browser_bridge_key_is_a_parse_error() {
     let (_temp_dir, config_path) =
-        config_file_with("schema_version = 31\n\n[browser_bridge]\noffer_forever = true\n");
+        config_file_with("schema_version = 32\n\n[browser_bridge]\noffer_forever = true\n");
 
     assert!(load_from_path(&config_path).is_err());
 }

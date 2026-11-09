@@ -9,6 +9,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
     LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
     LEGACY_SCHEMA_VERSION_28, LEGACY_SCHEMA_VERSION_29, LEGACY_SCHEMA_VERSION_30,
+    LEGACY_SCHEMA_VERSION_31,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -122,6 +123,10 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // браузеры при запуске); старый файл без неё получает `offer_on_startup = true`
             // через `serde(default)`, переписывать нечего.
             | LEGACY_SCHEMA_VERSION_30
+            // v31 -> v32: добавлен `browser_session.variant_return_window_s` (срок возврата на
+            // секунду после смены варианта, 14a); старый файл без него получает 120 через
+            // `serde(default)`, переписывать нечего.
+            | LEGACY_SCHEMA_VERSION_31
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
