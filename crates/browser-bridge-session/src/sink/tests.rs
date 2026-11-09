@@ -137,3 +137,42 @@ fn the_page_names_a_reason_only_with_one_of_our_codes() {
         assert_eq!(not_by_page.reason_named_by_page(), None, "{not_by_page:?}");
     }
 }
+
+#[test]
+fn counts_page_subtitle_chunks_per_track_without_touching_media_counters() {
+    let sink = CountingByteSink::new();
+    let session = key("tab-3");
+    let track = |number| match PageSubtitleTrackId::new(number) {
+        Ok(track) => track,
+        Err(violation) => panic!("дорожка {number}: {violation}"),
+    };
+    for (number, payload) in [(1, b"WEBVTT".as_slice()), (1, b"\n\n"), (2, b"x")] {
+        sink.accept(SessionChunk {
+            session: &session,
+            source: ChunkSource::PageSubtitle(PageSubtitleChunk {
+                track: track(number),
+                offset: 0,
+                payload,
+            }),
+        });
+    }
+
+    let snapshot = sink.snapshot();
+    assert_eq!(
+        snapshot.page_subtitles[&track(1)],
+        StreamCounters {
+            frames: 2,
+            bytes: 8
+        }
+    );
+    assert_eq!(
+        snapshot.page_subtitles[&track(2)],
+        StreamCounters {
+            frames: 1,
+            bytes: 1
+        }
+    );
+    // Субтитры не попадают ни в счётчики SourceBuffer, ни в запросы диапазонов.
+    assert!(snapshot.source_buffers.is_empty());
+    assert!(snapshot.ranges.is_empty());
+}

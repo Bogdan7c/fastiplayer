@@ -90,7 +90,7 @@ test("новые сообщения доходят только до собес�
   const agreed = negotiateProtocolVersion(PROTOCOL_VERSION_1_3, CURRENT_PROTOCOL_VERSION);
   assert.deepEqual(agreed, { ok: true, version: PROTOCOL_VERSION_1_3 });
   assert.equal(agreed.ok && versionIncludes(agreed.version, PROTOCOL_VERSION_1_4), false);
-  const both = negotiateProtocolVersion(CURRENT_PROTOCOL_VERSION, CURRENT_PROTOCOL_VERSION);
+  const both = negotiateProtocolVersion(PROTOCOL_VERSION_1_4, CURRENT_PROTOCOL_VERSION);
   assert.deepEqual(both, { ok: true, version: PROTOCOL_VERSION_1_4 });
   assert.equal(both.ok && versionIncludes(both.version, PROTOCOL_VERSION_1_4), true);
 });

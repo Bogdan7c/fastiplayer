@@ -20,7 +20,8 @@
     "resource_fetch_finished": "1.1",
     "page_left": "1.4",
     "page_returned": "1.4",
-    "page_reopen_failed": "1.4"
+    "page_reopen_failed": "1.4",
+    "subtitle_track_offered": "1.5"
   },
   "player_session": {
     "attached": "1.0",

@@ -139,6 +139,10 @@ impl WindowPlayer for AppStateWindowPlayer<'_> {
     fn video_frames_presented(&self) -> u64 {
         self.telemetry.video_frames_presented()
     }
+
+    fn subtitle_overlay_frames_shown(&self) -> u64 {
+        self.app_state.subtitle_overlay_frames_shown()
+    }
 }
 
 /// Отказ загрузки по ошибке пути открытия; `None` — открытие отменено (любой причиной).

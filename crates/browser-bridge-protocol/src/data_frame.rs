@@ -7,7 +7,8 @@
 //!
 //! ```text
 //! смещение  размер  поле
-//!  0        1       вид рамки: 1 — байты SourceBuffer, 2 — байты файла <video src>
+//!  0        1       вид рамки: 1 — байты SourceBuffer, 2 — байты файла <video src>,
+//!                   3 — байты документа субтитров страницы (протокол 1.5)
 //!  1        1       флаги — пока 0 (резерв для будущих minor)
 //!  2        2       резерв — 0
 //!
@@ -22,18 +23,28 @@
 //!  8        8       смещение первого байта в файле (до 2^53 − 1)
 //! 16        8       резерв — 0
 //!
+//!  вид 3, байты документа субтитров страницы (протокол 1.5, после `subtitle_track_offered`):
+//!  4        4       номер дорожки (от 1)
+//!  8        8       смещение первого байта в документе (до 2^53 − 1)
+//! 16        8       резерв — 0
+//!
 //! 24        1…1 МиБ полезный груз
 //! ```
 //!
 //! Ненулевой резерв — ошибка (строгая политика): если будущая `minor` займёт
 //! резерв, её рамки старой стороне никто не пошлёт (`crate::version`).
+//!
+//! Разбор рамки версию сеанса не знает: вид 3 разбирается всегда, а «рамки вида 3 нет в
+//! общей версии ниже 1.5» решает сторож потока по [`DataFrameHeader::introduced_in`].
 
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{DATA_FRAME_HEADER_BYTES, MAX_DATA_FRAME_PAYLOAD_BYTES};
+use crate::session::page_subtitles::{PAGE_SUBTITLES_INTRODUCED_IN, PageSubtitleTrackId};
 use crate::stream::{AppendSequence, RangeRequestId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::strict_label;
 use crate::time::ByteOffset;
+use crate::version::ProtocolVersion;
 
 // Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
 // только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
@@ -43,6 +54,8 @@ strict_label!(DataFrameError);
 const SOURCE_BUFFER_BYTES_KIND: u8 = 1;
 /// Код вида рамки «байты файла `<video src>`».
 const RANGE_BYTES_KIND: u8 = 2;
+/// Код вида рамки «байты документа субтитров страницы» (протокол 1.5).
+const PAGE_SUBTITLE_BYTES_KIND: u8 = 3;
 
 /// Заголовок рамки байтов SourceBuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,13 +77,40 @@ pub struct RangeBytesHeader {
     pub offset: ByteOffset,
 }
 
-/// Заголовок рамки одного из двух видов.
+/// Заголовок рамки байтов документа субтитров страницы (протокол 1.5).
+///
+/// Смещение — внутри документа, подряд с 0 для каждого предложения дорожки
+/// (`crate::session::page_subtitles`); сверяет его сторож потока.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSubtitleBytesHeader {
+    /// Номер дорожки из `subtitle_track_offered`.
+    pub track: PageSubtitleTrackId,
+    /// Смещение первого байта груза в документе.
+    pub offset: ByteOffset,
+}
+
+/// Заголовок рамки одного из видов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFrameHeader {
     /// Байты, которые плеер страницы отдал `appendBuffer`.
     SourceBufferBytes(SourceBufferBytesHeader),
     /// Байты файла `<video src>`, скачанные по запросу плеера.
     RangeBytes(RangeBytesHeader),
+    /// Байты документа субтитров страницы (протокол 1.5).
+    PageSubtitleBytes(PageSubtitleBytesHeader),
+}
+
+impl DataFrameHeader {
+    /// В какой версии протокола появился вид этой рамки (`crate::version`, правило 5).
+    ///
+    /// Рамка новее общей версии сеанса — нарушение отправителя: сторож потока её отвергает.
+    #[must_use]
+    pub const fn introduced_in(&self) -> ProtocolVersion {
+        match self {
+            Self::SourceBufferBytes(_) | Self::RangeBytes(_) => ProtocolVersion::V1_0,
+            Self::PageSubtitleBytes(_) => PAGE_SUBTITLES_INTRODUCED_IN,
+        }
+    }
 }
 
 /// Разобранная рамка: заголовок и груз без копирования.
@@ -101,7 +141,7 @@ pub enum DataFrameError {
     /// Груз больше лимита.
     #[error("data frame payload exceeds the limit")]
     PayloadTooLarge,
-    /// Поле вне диапазона (поколение 0, SourceBuffer ≥ 8, смещение > 2⁵³ − 1).
+    /// Поле вне диапазона (поколение 0, SourceBuffer ≥ 8, дорожка 0, смещение > 2⁵³ − 1).
     #[error("data frame field is out of range")]
     NumberOutOfRange,
 }
@@ -156,6 +196,7 @@ fn decode_header(
     match kind {
         SOURCE_BUFFER_BYTES_KIND => decode_source_buffer_header(header),
         RANGE_BYTES_KIND => decode_range_header(header),
+        PAGE_SUBTITLE_BYTES_KIND => decode_page_subtitle_header(header),
         _ => Err(DataFrameError::UnknownFrameKind),
     }
 }
@@ -195,6 +236,22 @@ fn decode_range_header(
     }))
 }
 
+/// Поля вида 3 (байты документа субтитров страницы).
+fn decode_page_subtitle_header(
+    header: &[u8; DATA_FRAME_HEADER_BYTES],
+) -> Result<DataFrameHeader, DataFrameError> {
+    if read_u64(header, 16) != 0 {
+        return Err(DataFrameError::ReservedBitsSet);
+    }
+    let track = PageSubtitleTrackId::new(read_u32(header, 4))
+        .map_err(|_| DataFrameError::NumberOutOfRange)?;
+    let offset =
+        ByteOffset::new(read_u64(header, 8)).map_err(|_| DataFrameError::NumberOutOfRange)?;
+    Ok(DataFrameHeader::PageSubtitleBytes(
+        PageSubtitleBytesHeader { track, offset },
+    ))
+}
+
 /// Записывает 24 байта заголовка; резервные байты остаются нулями.
 fn encode_header(header: &DataFrameHeader) -> [u8; DATA_FRAME_HEADER_BYTES] {
     let mut bytes = [0_u8; DATA_FRAME_HEADER_BYTES];
@@ -208,6 +265,11 @@ fn encode_header(header: &DataFrameHeader) -> [u8; DATA_FRAME_HEADER_BYTES] {
         DataFrameHeader::RangeBytes(fields) => {
             bytes[0] = RANGE_BYTES_KIND;
             bytes[4..8].copy_from_slice(&fields.request_id.0.to_le_bytes());
+            bytes[8..16].copy_from_slice(&fields.offset.as_bytes().to_le_bytes());
+        }
+        DataFrameHeader::PageSubtitleBytes(fields) => {
+            bytes[0] = PAGE_SUBTITLE_BYTES_KIND;
+            bytes[4..8].copy_from_slice(&fields.track.get().to_le_bytes());
             bytes[8..16].copy_from_slice(&fields.offset.as_bytes().to_le_bytes());
         }
     }

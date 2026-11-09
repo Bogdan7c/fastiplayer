@@ -272,6 +272,7 @@ impl SubtitleOwner {
     /// выбрал дорожку сам. Принудительная дорожка пересчитывается всегда.
     pub(super) fn reselect_automatically(&mut self) {
         let preferred = self.preferred_languages();
+        let page_preference = self.page_viewer.track_preference();
         let Some(media) = self.media.as_mut() else {
             return;
         };
@@ -289,9 +290,14 @@ impl SubtitleOwner {
             .forced_objects_fallback
             .and_then(|index| media.tracks.id_at(index));
         if !media.user_chose_track {
-            media.selected = selection
-                .for_enabled
-                .and_then(|index| media.tracks.id_at(index));
+            // Дорожка страницы браузера (выбранная зрителем в этом сеансе, иначе показанная
+            // страницей, решение 271) главнее выбора по языку; выбор зрителя в этом медиа
+            // (`user_chose_track`) главнее всего.
+            media.selected = media.page_tracks.picked_track(page_preference).or_else(|| {
+                selection
+                    .for_enabled
+                    .and_then(|index| media.tracks.id_at(index))
+            });
         }
     }
 

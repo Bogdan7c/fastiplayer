@@ -36,6 +36,9 @@
 //! страницу заново (`page_returned`) или сообщает отказ (`page_reopen_failed`, затем 4002).
 //! Договор целиком — [`page_reopen`]; коды закрытия не менялись.
 //!
+//! Протокол 1.5 (решения 270–274) добавил субтитры страницы: заголовок
+//! `subtitle_track_offered` и байты документа рамками вида 3. Договор — [`page_subtitles`].
+//!
 //! Обычное 1000 от страницы и кадр без кода ничего не объясняют: плеер кончает сеанс
 //! молча.
 
@@ -43,6 +46,7 @@ pub mod ad_state;
 pub mod live_window;
 pub mod page;
 pub mod page_reopen;
+pub mod page_subtitles;
 pub mod player;
 pub mod variants;
 
@@ -56,6 +60,10 @@ pub use page::{
     ResourceSize, SeekCause, StreamScope, TabGoneReason,
 };
 pub use page_reopen::PageReopenFailure;
+pub use page_subtitles::{
+    PAGE_SUBTITLES_INTRODUCED_IN, PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel,
+    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SubtitleFormatHint,
+};
 pub use player::{
     BufferIntake, ClockSequence, ClockState, PlayerSessionMessage, ResumeState, StreamRejection,
 };

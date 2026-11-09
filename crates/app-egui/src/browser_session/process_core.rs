@@ -52,6 +52,7 @@ use super::translator::ProtocolTranslator;
 use super::translator::file_port::PushedFileFactory;
 use super::translator::stream_port::PushedStreamFactory;
 use crate::ad_plate::AdPlate;
+use crate::page_subtitles::PageSubtitleShelfView;
 use crate::settings_runtime::BrowserBufferWindowOwner;
 use crate::viewer_transport::ViewerTransportIntent;
 
@@ -61,7 +62,7 @@ use crate::viewer_transport::ViewerTransportIntent;
 const INTAKE_SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
 /// Итог одного шага ядра.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CoreStep {
     /// Что решила машина «когда выходить» (с учётом сроков медиа-части).
     pub(super) verdict: LifecycleVerdict,
@@ -85,6 +86,9 @@ pub(super) struct CoreStep {
     /// Плашка рекламы на этот шаг (09d): окно рисует её поверх видео и закрывает
     /// перемотку со скоростью; безоконный процесс её не читает.
     pub(super) ad_plate: Option<AdPlate>,
+    /// Склад субтитров страницы текущего сеанса (13b1): окно отдаёт его каждому
+    /// установленному медиа; безоконный процесс его не читает.
+    pub(super) page_subtitles: PageSubtitleShelfView,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -266,6 +270,7 @@ impl BrowserSessionCore {
             viewer_seek_notice: self.media.take_viewer_seek_notice(),
             page_reopen_notice: self.media.take_page_reopen_notice(),
             ad_plate: self.media.ad_plate(now),
+            page_subtitles: self.media.page_subtitle_shelf(),
         }
     }
 

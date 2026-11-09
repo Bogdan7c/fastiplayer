@@ -26,19 +26,27 @@
 //!   молчит — любое сообщение, кроме `page_returned`, `page_reopen_failed` и `tab_gone`,
 //!   и любые байты — нарушение; `page_returned` и `page_reopen_failed` при странице на
 //!   месте — тоже нарушение; поколение, ушедшее со страницей, навсегда «устаревшее»;
+//! - субтитры страницы (протокол 1.5, `page_subtitles`): рамка вида 3 продолжает открытое
+//!   предложение своей дорожки (`subtitle_track_offered`) ровно с того байта, где оно
+//!   остановилось, и не выходит за `byte_length`; рамка для непредложенной или уже готовой
+//!   дорожки — нарушение; разных дорожек за сеанс не больше 64, повторное предложение —
+//!   замена. Поколений и SourceBuffer-ов документы не трогают. При общей версии ниже 1.5
+//!   и сообщение, и рамка вида 3 — нарушение;
 //! - SourceBuffer объявляют (`source_buffer_added`) до его байтов и только раз;
 //! - порядковые номера рамок SourceBuffer идут подряд с 0: пропуск значит
 //!   потерю куска, и склеивать байты дальше нельзя.
 
 mod page_presence;
+mod page_subtitles;
 
-use crate::data_frame::SourceBufferBytesHeader;
+use crate::data_frame::{DataFrameHeader, PageSubtitleBytesHeader, SourceBufferBytesHeader};
 use crate::limits::MAX_SOURCE_BUFFERS_PER_GENERATION;
 use crate::session::page::{PageSessionMessage, StreamScope};
 use crate::stream::{AppendSequence, SourceBufferIndex, StreamGeneration};
 use crate::version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
 
 use self::page_presence::{PagePresence, PresenceReaction};
+use self::page_subtitles::PageSubtitleOffers;
 
 /// Что делать с сообщением или рамкой.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +120,34 @@ pub enum StreamViolation {
         /// значения (`PageSessionMessage::required_version`).
         introduced_in: ProtocolVersion,
     },
+    /// Рамка новее общей версии сеанса (1.5: вид 3 при общей 1.4 и ниже).
+    #[error("data frame kind is not part of the agreed protocol version")]
+    DataFrameNotInAgreedVersion {
+        /// Общая версия сеанса.
+        agreed: ProtocolVersion,
+        /// С какой версии есть такой вид рамки (`DataFrameHeader::introduced_in`).
+        introduced_in: ProtocolVersion,
+    },
+    /// Новая дорожка субтитров сверх предела сеанса (`MAX_PAGE_SUBTITLE_TRACKS`, протокол 1.5).
+    #[error("too many page subtitle tracks in one session")]
+    TooManyPageSubtitleTracks,
+    /// Байты субтитров для дорожки, которую не предлагали (`subtitle_track_offered`).
+    #[error("page subtitle bytes for a track that was not offered")]
+    PageSubtitleTrackNotOffered,
+    /// Байты субтитров для дорожки, чей документ уже пришёл целиком.
+    #[error("page subtitle bytes for a document that is already complete")]
+    PageSubtitleDocumentComplete,
+    /// Смещение рамки субтитров не продолжает документ: кусок потерян или повторён.
+    #[error("page subtitle data frame offset has a gap")]
+    PageSubtitleOffsetGap {
+        /// Какое смещение ожидалось (сколько байт предложения уже пришло).
+        expected: u64,
+        /// Какое пришло.
+        received: u64,
+    },
+    /// Рамка субтитров выходит за объявленную длину документа (`byte_length`).
+    #[error("page subtitle bytes exceed the declared document length")]
+    PageSubtitleBeyondByteLength,
     /// Порядковый номер рамки не тот, что ожидался: кусок потерян или повторён.
     #[error("data frame sequence has a gap")]
     SequenceGap {
@@ -255,6 +291,9 @@ pub struct StreamGate {
     /// даже когда страница вернулась (инвариант 6). Следующее поколение после возврата —
     /// ровно на 1 больше текущего, как и раньше.
     left_with_page: Option<StreamGeneration>,
+    /// Предложения дорожек субтитров страницы (протокол 1.5): живут весь сеанс, поколений
+    /// не касаются.
+    page_subtitles: PageSubtitleOffers,
 }
 
 impl Default for StreamGate {
@@ -283,6 +322,7 @@ impl StreamGate {
             current: None,
             presence: PagePresence::Present,
             left_with_page: None,
+            page_subtitles: PageSubtitleOffers::new(),
         }
     }
 
@@ -347,6 +387,9 @@ impl StreamGate {
             PageSessionMessage::HlsSourceAdded { generation, .. } => {
                 self.announce_whole_source(*generation, WholeSource::Hls)
             }
+            PageSessionMessage::SubtitleTrackOffered {
+                track, byte_length, ..
+            } => self.page_subtitles.offer(*track, *byte_length),
             other => self.check_scope(other.stream_scope()),
         }
     }
@@ -403,6 +446,34 @@ impl StreamGate {
     /// [`StreamViolation::PageIsAway`] — страница ушла или не вернулась.
     pub fn admit_range_bytes(&self) -> Result<GateDecision, StreamViolation> {
         self.presence.admit_bytes().map(|()| GateDecision::Accept)
+    }
+
+    /// Пропускает рамку вида 3 — байты документа субтитров страницы (протокол 1.5).
+    ///
+    /// Сервер ОБЯЗАН вызывать это для каждой такой рамки. Принятая рамка сдвигает ожидаемое
+    /// смещение документа своей дорожки; поколений и SourceBuffer-ов она не трогает.
+    /// «Устаревших» байтов субтитров не бывает: замену документа страница объявляет новым
+    /// предложением, и после него рамки снова идут с 0.
+    ///
+    /// # Errors
+    /// [`StreamViolation::DataFrameNotInAgreedVersion`] — общая версия ниже 1.5;
+    /// [`StreamViolation::PageIsAway`] — страница ушла; нарушения порядка документа
+    /// (`PageSubtitle*`). Отвергнутая рамка состояние сторожа не меняет.
+    pub fn admit_page_subtitle_bytes(
+        &mut self,
+        header: &PageSubtitleBytesHeader,
+        payload: &[u8],
+    ) -> Result<GateDecision, StreamViolation> {
+        let introduced_in = DataFrameHeader::PageSubtitleBytes(*header).introduced_in();
+        if !self.agreed_version.includes(introduced_in) {
+            return Err(StreamViolation::DataFrameNotInAgreedVersion {
+                agreed: self.agreed_version,
+                introduced_in,
+            });
+        }
+        // Страница ушла — байтов быть не может никаких, и субтитров тоже (протокол 1.4).
+        self.presence.admit_bytes()?;
+        self.page_subtitles.admit_bytes(header, payload.len())
     }
 
     /// Страница ушла: текущее поколение уходит с ней и навсегда становится устаревшим.

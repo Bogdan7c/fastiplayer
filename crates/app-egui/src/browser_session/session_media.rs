@@ -96,6 +96,7 @@ mod install_reconcile;
 mod live_hls;
 mod page_clock;
 mod page_reopen;
+mod page_subtitles;
 mod resource_requests;
 mod scrub_range;
 mod seams;
@@ -243,6 +244,8 @@ pub(crate) struct SessionMedia {
     ad: AdPresence,
     /// Возврат ушедшей страницы в тот же сеанс («сирота», 11b1, [`page_reopen`]).
     page_reopen: PageReopen,
+    /// Склад субтитров страницы: живёт весь сеанс, поколения его не трогают (13b1).
+    page_subtitles: super::page_subtitles::shelf::PageSubtitleShelf,
 }
 
 impl SessionMedia {
@@ -274,6 +277,7 @@ impl SessionMedia {
             seek_answers_seen: PlayerSeekAnswers::default(),
             ad: AdPresence::default(),
             page_reopen: PageReopen::default(),
+            page_subtitles: Default::default(),
         }
     }
 
@@ -298,6 +302,7 @@ impl SessionMedia {
         // Реклама прежней страницы к новой не относится, возврат прежней — тоже.
         self.ad.clear();
         self.page_reopen = PageReopen::default();
+        self.page_subtitles.start_new_session();
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
             self.command("pause for a new session", |playback| playback.pause());
@@ -380,6 +385,9 @@ impl SessionMedia {
             IntakeNotice::PageIntent { intent, .. } => self.follow_page(intent),
             IntakeNotice::AdState { state, .. } => self.apply_ad_state(state),
             IntakeNotice::PageLink { change, .. } => self.follow_page_link(change),
+            IntakeNotice::PageSubtitleReady { document, .. } => {
+                self.shelve_page_subtitle(*document)
+            }
             IntakeNotice::PlayerSeekAcknowledged {
                 seek_id, target, ..
             } => {

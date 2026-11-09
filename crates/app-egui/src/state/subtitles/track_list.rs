@@ -25,6 +25,7 @@ use super::embedded_track::EmbeddedTrackDescription;
 use super::menu_view::{
     SubtitleFileOrigin, SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason,
 };
+use super::page_track::PageTrackDescription;
 use super::sidecar_job::SubtitleLoadFailure;
 use super::stream_track::StreamTrackDescription;
 use super::web_track::WebTrackDescription;
@@ -43,6 +44,8 @@ pub(super) enum TrackDescription {
     Web(WebTrackDescription),
     /// Дорожка потока (рендиция HLS): реплики дописывает фоновая лента, файла нет.
     Stream(StreamTrackDescription),
+    /// Документ субтитров страницы (мост): байты уже в памяти склада сеанса, файла нет.
+    Page(PageTrackDescription),
 }
 
 impl TrackDescription {
@@ -50,7 +53,7 @@ impl TrackDescription {
     pub(super) fn sidecar_candidate(&self) -> Option<&SidecarSubtitleCandidate> {
         match self {
             Self::Sidecar(candidate) => Some(candidate),
-            Self::Embedded(_) | Self::Web(_) | Self::Stream(_) => None,
+            Self::Embedded(_) | Self::Web(_) | Self::Stream(_) | Self::Page(_) => None,
         }
     }
 
@@ -58,7 +61,7 @@ impl TrackDescription {
     pub(super) fn web(&self) -> Option<&WebTrackDescription> {
         match self {
             Self::Web(description) => Some(description),
-            Self::Sidecar(_) | Self::Embedded(_) | Self::Stream(_) => None,
+            Self::Sidecar(_) | Self::Embedded(_) | Self::Stream(_) | Self::Page(_) => None,
         }
     }
 
@@ -66,7 +69,15 @@ impl TrackDescription {
     pub(super) fn stream(&self) -> Option<&StreamTrackDescription> {
         match self {
             Self::Stream(description) => Some(description),
-            Self::Sidecar(_) | Self::Embedded(_) | Self::Web(_) => None,
+            Self::Sidecar(_) | Self::Embedded(_) | Self::Web(_) | Self::Page(_) => None,
+        }
+    }
+
+    /// Описание дорожки страницы; у остальных его нет.
+    pub(super) fn page(&self) -> Option<&PageTrackDescription> {
+        match self {
+            Self::Page(description) => Some(description),
+            Self::Sidecar(_) | Self::Embedded(_) | Self::Web(_) | Self::Stream(_) => None,
         }
     }
 
@@ -74,7 +85,7 @@ impl TrackDescription {
     pub(super) fn embedded(&self) -> Option<&EmbeddedTrackDescription> {
         match self {
             Self::Embedded(description) => Some(description),
-            Self::Sidecar(_) | Self::Web(_) | Self::Stream(_) => None,
+            Self::Sidecar(_) | Self::Web(_) | Self::Stream(_) | Self::Page(_) => None,
         }
     }
 
@@ -92,6 +103,7 @@ impl TrackDescription {
             Self::Embedded(_) => SubtitleFileOrigin::Embedded,
             Self::Web(description) => SubtitleFileOrigin::Web(description.kind()),
             Self::Stream(_) => SubtitleFileOrigin::Stream,
+            Self::Page(_) => SubtitleFileOrigin::Page,
         }
     }
 
@@ -101,6 +113,7 @@ impl TrackDescription {
             Self::Embedded(description) => description.label(),
             Self::Web(description) => description.label(),
             Self::Stream(description) => description.label(),
+            Self::Page(description) => description.label(),
             Self::Sidecar(candidate) => SubtitleTrackLabel {
                 language: candidate.language.clone(),
                 format: Some(candidate.format.to_subtitle_format()),
@@ -125,7 +138,8 @@ impl TrackDescription {
             Self::Embedded(description) => description.is_renderable_now(),
             // Srv3 и WebVTT показываем всегда. Автоперевод показать МОЖНО (выбор вручную), но
             // автовыбор его не рассматривает: см. `TrackEntry::traits`.
-            Self::Web(_) | Self::Stream(_) => true,
+            // Документ страницы: формат узнаёт разбор; не разобрался — дорожка недоступна.
+            Self::Web(_) | Self::Stream(_) | Self::Page(_) => true,
         }
     }
 }
@@ -265,6 +279,15 @@ impl TrackEntry {
                 is_renderable: is_renderable && description.is_eligible_for_auto_select(),
                 has_per_object_forced_flags: false,
             },
+            TrackDescription::Page(description) => TrackTraits {
+                origin: TrackOrigin::Page,
+                is_default: false,
+                language: description.language(),
+                is_forced: false,
+                is_hearing_impaired: false,
+                is_renderable,
+                has_per_object_forced_flags: false,
+            },
         }
     }
 }
@@ -360,6 +383,8 @@ impl SubtitleTrackList {
             TrackDescription::Web(_) => TrackLoadState::NotLoaded,
             // Дорожка потока готовится владельцем (`Ready` с пустым таймлайном, как встроенная).
             TrackDescription::Stream(_) => TrackLoadState::NotLoaded,
+            // Документ страницы разбирается в фоне при первом показе (байты уже в памяти).
+            TrackDescription::Page(_) => TrackLoadState::NotLoaded,
         }
     }
 
@@ -422,6 +447,42 @@ impl SubtitleTrackList {
             load,
         });
         id
+    }
+
+    /// Добавляет дорожку страницы в КОНЕЦ списка (порядок меню = порядок появления).
+    pub(super) fn push_page_track(&mut self, description: PageTrackDescription) -> SubtitleTrackId {
+        let description = TrackDescription::Page(description);
+        let id = self.allocate_id();
+        self.entries.push(TrackEntry {
+            id,
+            load: Self::initial_state_of(&description),
+            description,
+        });
+        id
+    }
+
+    /// Заменяет документ дорожки страницы на месте: тот же идентификатор (выбор остаётся), а
+    /// таймлайн разбирается заново из нового документа.
+    pub(super) fn replace_page_track(
+        &mut self,
+        id: SubtitleTrackId,
+        description: PageTrackDescription,
+    ) {
+        if let Some(entry) = self.get_mut(id) {
+            entry.description = TrackDescription::Page(description);
+            entry.load = TrackLoadState::NotLoaded;
+        }
+    }
+
+    /// Описания всех дорожек страницы (для различения одинаковых имён).
+    pub(super) fn page_descriptions_mut(&mut self) -> Vec<&mut PageTrackDescription> {
+        self.entries
+            .iter_mut()
+            .filter_map(|entry| match &mut entry.description {
+                TrackDescription::Page(description) => Some(description),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Добавляет файл пользователя в конец списка.

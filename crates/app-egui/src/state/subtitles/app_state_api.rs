@@ -15,9 +15,10 @@ use super::owner_stream::StreamSubtitleNotice;
 use super::render_worker::clock_tracker::PlaybackObservation;
 use super::stream_position::StreamPlaybackObservation;
 use super::{
-    CurrentMediaForSubtitles, EmbeddedUpdate, PlacedSubtitleOverlay, SubmittedFrameForSubtitles,
-    subtitle_source_of,
+    CurrentMediaForSubtitles, EmbeddedUpdate, PageAdPresence, PlacedSubtitleOverlay,
+    SubmittedFrameForSubtitles, subtitle_source_of,
 };
+use crate::page_subtitles::{PageSubtitleShelfView, PageTracksUpdate};
 use crate::state::notifications::{NotificationCenter, TransientReplaceKey};
 use crate::state::{ActiveMediaSource, AppState};
 use crate::subtitle_message::{
@@ -199,6 +200,32 @@ impl AppState {
             render_generation: self.last_player_snapshot.render_generation,
         };
         self.subtitles.placed_overlay_for_frame(current, frame)
+    }
+
+    // ---- Браузерное окно (мост): субтитры страницы, реклама, сводка ----
+
+    /// Склад субтитров страницы (каждый проход браузерного окна): его документы становятся
+    /// дорожками текущего media. `Changed` — меню или кадр изменились.
+    pub(crate) fn offer_page_subtitle_shelf(
+        &mut self,
+        shelf: &PageSubtitleShelfView,
+    ) -> PageTracksUpdate {
+        self.subtitles.attach_page_tracks(shelf)
+    }
+
+    /// Плашка рекламы появилась или ушла: пока она на экране, слой субтитров не рисуется.
+    pub(in crate::state) fn follow_ad_plate_for_subtitles(&mut self) {
+        let presence = if self.ad_plate().is_some() {
+            PageAdPresence::AdOnScreen
+        } else {
+            PageAdPresence::NoAd
+        };
+        self.subtitles.set_page_ad_presence(presence);
+    }
+
+    /// Сколько кадров ушло в рендер со слоем субтитров (накопительно; сводка окна).
+    pub(crate) fn subtitle_overlay_frames_shown(&self) -> u64 {
+        self.subtitles.shown_overlay_frames()
     }
 
     // ---- Intent-API для UI (кнопка CC, меню, хоткеи, внешнее открытие) ----

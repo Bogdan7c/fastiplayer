@@ -27,6 +27,7 @@
 //! - `settings` + `limits` + `user_style`: настройки из `[subtitles]` конфига.
 //! - `appearance_edit` + `owner_appearance_edit` + `sample_cue` + `owner_fonts_bootstrap`: правка
 //!   внешнего вида на видео (черновик вживую, образец реплики, отмена/сохранение).
+//! - `page_track` + `page_load_job` + `owner_page`: дорожки страницы браузера (мост, 13b1).
 //!
 //! # Точка запуска (единая для всех способов открыть файл)
 //! Любой путь установки media (кнопка Open, drag&drop, playlist next, пересборка после
@@ -75,10 +76,14 @@ mod owner_fonts_bootstrap;
 mod owner_intents;
 mod owner_loading;
 mod owner_memory;
+mod owner_page;
 mod owner_placement;
 mod owner_render;
 mod owner_stream;
 mod owner_web;
+mod page_load_job;
+mod page_track;
+mod page_viewer_choice;
 mod presentation;
 mod render_worker;
 mod sample_cue;
@@ -130,7 +135,10 @@ use self::owner_embedded::EmbeddedFeedState;
 pub(crate) use self::owner_embedded::EmbeddedUpdate;
 use self::owner_memory::PendingRememberedChoice;
 pub(crate) use self::owner_memory::{SubtitleMemoryChanges, SubtitleRestoreRequest};
+use self::owner_page::PageAdPresence;
+use self::owner_page::ShownOverlayFrames;
 pub(crate) use self::owner_placement::PlacedSubtitleOverlay;
+use self::page_viewer_choice::PageViewerChoice;
 #[cfg(test)]
 use self::presentation::PresentationStats;
 pub(crate) use self::presentation::SubmittedFrameForSubtitles;
@@ -292,6 +300,12 @@ pub(super) struct SubtitleOwner {
     attached_fonts: AttachedFontsState,
     /// Какие шрифты строить новой задаче; тесты выбирают встроенные.
     font_plan_for_new_library: FontLibraryPlan,
+    /// Реклама страницы на экране (браузерное окно): слой субтитров не рисуется.
+    page_ad: PageAdPresence,
+    /// Выбор зрителя о субтитрах страницы за сеанс моста (переживает смены поколения).
+    page_viewer: PageViewerChoice,
+    /// Кадры, ушедшие в рендер со слоем субтитров (сводка браузерного окна).
+    shown_overlay_frames: ShownOverlayFrames,
 }
 
 impl SubtitleOwner {
@@ -336,6 +350,9 @@ impl SubtitleOwner {
             embedded_feed: EmbeddedFeedState::default(),
             attached_fonts: AttachedFontsState::default(),
             font_plan_for_new_library: FontLibraryPlan::BuildWithSystemFonts,
+            page_ad: PageAdPresence::NoAd,
+            page_viewer: PageViewerChoice::default(),
+            shown_overlay_frames: ShownOverlayFrames::default(),
         }
     }
 

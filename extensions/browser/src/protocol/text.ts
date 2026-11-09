@@ -20,6 +20,8 @@ import {
   MAX_SESSION_TOKEN_BYTES,
   MAX_SITE_DOMAIN_BYTES,
   MAX_SOFTWARE_VERSION_BYTES,
+  MAX_SUBTITLE_LABEL_BYTES,
+  MAX_SUBTITLE_LANGUAGE_TAG_BYTES,
   MAX_VARIANT_LABEL_BYTES,
   MIN_SESSION_TOKEN_BYTES,
 } from "./limits.ts";
@@ -105,6 +107,11 @@ function isAllowedCapabilityCodePoint(codePoint: number): boolean {
 /** Версия программы: буквы, цифры, `.`, `-`, `+`. */
 function isAllowedVersionCodePoint(codePoint: number): boolean {
   return isAsciiAlphanumeric(codePoint) || codePoint === 0x2e || codePoint === 0x2d || codePoint === 0x2b;
+}
+
+/** Тег языка BCP-47: буквы и цифры ASCII и дефис-разделитель. */
+function isAllowedLanguageTagCodePoint(codePoint: number): boolean {
+  return isAsciiAlphanumeric(codePoint) || codePoint === 0x2d;
 }
 
 /** Проверяет строку целиком; нарушение — исключение с видом причины. */
@@ -213,3 +220,45 @@ export const sessionTokenCodec: Codec<string> = textCodec({
   maxBytes: MAX_SESSION_TOKEN_BYTES,
   allowedCodePoint: isAllowedOpaqueCodePoint,
 });
+
+/** Подпись дорожки субтитров страницы (протокол 1.5): текст для человека, 1-256 байт UTF-8. */
+export const subtitleLabelCodec: Codec<string> = textCodec({
+  emptyAllowed: false,
+  minBytes: 1,
+  maxBytes: MAX_SUBTITLE_LABEL_BYTES,
+  allowedCodePoint: isAllowedDisplayCodePoint,
+});
+
+/** Посимвольное правило тега языка: длина и алфавит. Расстановку дефисов проверяет кодек ниже. */
+const SUBTITLE_LANGUAGE_TAG_RULE: TextRule = {
+  emptyAllowed: false,
+  minBytes: 1,
+  maxBytes: MAX_SUBTITLE_LANGUAGE_TAG_BYTES,
+  allowedCodePoint: isAllowedLanguageTagCodePoint,
+};
+
+/**
+ * Проверяет тег языка BCP-47 (`en`, `pt-BR`, `zh-Hant-TW`). Зеркало `SubtitleLanguageTag::new`
+ * (text.rs): сначала посимвольное правило (пустота -> длина -> символы), потом дефисы - только
+ * между частями (не первым, не последним, не два подряд), иначе `text_forbidden_character`.
+ * Регистр не нормализуется.
+ */
+export function checkSubtitleLanguageTag(tag: string): void {
+  checkText(SUBTITLE_LANGUAGE_TAG_RULE, tag);
+  // Части тега («en», «US») непустые: пустая часть - это дефис с краю или два подряд.
+  if (tag.split("-").some((part) => part.length === 0)) {
+    throw new ProtocolFailure("text_forbidden_character");
+  }
+}
+
+/** Тег языка дорожки субтитров страницы (протокол 1.5). */
+export const subtitleLanguageTagCodec: Codec<string> = {
+  decode(json) {
+    if (json.kind !== "string") {
+      throw new ProtocolFailure("wrong_value_type");
+    }
+    checkSubtitleLanguageTag(json.text);
+    return json.text;
+  },
+  encode: (value) => value,
+};

@@ -49,7 +49,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use browser_bridge_protocol::session::TabGoneReason;
+use browser_bridge_protocol::session::{PageSubtitleTrackId, TabGoneReason};
 use browser_bridge_protocol::{
     AppendSequence, PageSessionMessage, ProtocolVersion, RangeRequestId, SessionCloseReason,
     SourceBufferIndex, StreamGeneration,
@@ -85,6 +85,24 @@ pub struct RangeChunk<'payload> {
     pub payload: &'payload [u8],
 }
 
+/// Кусок документа субтитров страницы (протокол 1.5, рамка вида 3).
+///
+/// В отличие от [`RangeChunk`] его порядок уже проверил сторож потока: дорожку предложили
+/// (`subtitle_track_offered` пришёл раньше этого куска тем же порядком провода), `offset`
+/// ровно продолжает принятые байты этого предложения, и кусок не выходит за `byte_length`.
+/// Приёмнику остаётся сложить куски по порядку; документ готов, когда сложено ровно
+/// `byte_length` байт. Повторное предложение той же дорожки — замена: следующий кусок снова
+/// с `offset` 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSubtitleChunk<'payload> {
+    /// Номер дорожки из `subtitle_track_offered`.
+    pub track: PageSubtitleTrackId,
+    /// Смещение первого байта куска в документе.
+    pub offset: u64,
+    /// Байты документа.
+    pub payload: &'payload [u8],
+}
+
 /// Откуда кусок.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkSource<'payload> {
@@ -92,6 +110,8 @@ pub enum ChunkSource<'payload> {
     SourceBuffer(SourceBufferChunk<'payload>),
     /// Байты файла `<video src>`.
     Range(RangeChunk<'payload>),
+    /// Байты документа субтитров страницы (протокол 1.5).
+    PageSubtitle(PageSubtitleChunk<'payload>),
 }
 
 /// Кусок байтов сеанса.
@@ -266,6 +286,8 @@ pub struct CountingSnapshot {
     pub source_buffers: BTreeMap<(StreamGeneration, SourceBufferIndex), StreamCounters>,
     /// По номеру запроса диапазона.
     pub ranges: BTreeMap<RangeRequestId, StreamCounters>,
+    /// По номеру дорожки субтитров страницы (протокол 1.5).
+    pub page_subtitles: BTreeMap<PageSubtitleTrackId, StreamCounters>,
     /// Сеансы, о завершении которых сообщили, по порядку.
     pub ended_sessions: Vec<SessionRef>,
 }
@@ -318,6 +340,10 @@ impl SessionByteSink for CountingByteSink {
             ChunkSource::Range(range) => add_frame(
                 state.ranges.entry(range.request_id).or_default(),
                 range.payload.len(),
+            ),
+            ChunkSource::PageSubtitle(subtitle) => add_frame(
+                state.page_subtitles.entry(subtitle.track).or_default(),
+                subtitle.payload.len(),
             ),
         }
     }

@@ -7,6 +7,7 @@
 //!
 //! 3. `BuildFontsOnly` — только построить библиотеку шрифтов (образец в режиме правки).
 //! 4. `LoadWebTrack` — скачать и разобрать web-дорожку (`web_load_job`).
+//! 5. `ParsePageTrack` — разобрать документ субтитров страницы из памяти (`page_load_job`).
 //!
 //! Это чистая функция без потоков и без знания об `AppState`: поток и доставку результата
 //! обеспечивает `job_runner`, а здесь только последовательность шагов с проверками отмены
@@ -36,8 +37,10 @@ use super::auto_select::{
 };
 use super::file_loader::{FileLoadError, LoadedSidecarTrack, load_candidate_timeline};
 use super::limits::LoadLimits;
+use super::page_load_job::{ParsedPageTrack, run_page_track_parse};
 use super::web_download::WebSubtitleDownloader;
 use super::web_load_job::{LoadedWebTrack, run_web_track_load};
+use crate::page_subtitles::PageSubtitleDocument;
 
 /// Нужна ли задаче новая библиотека шрифтов.
 ///
@@ -101,6 +104,11 @@ pub(super) enum SidecarJobTask {
         /// Отмена блокирующей загрузки: её переворачивает `SidecarJob::cancel`/`Drop`.
         cancellation: CancellationToken,
     },
+    /// Разобрать документ субтитров страницы: байты уже в памяти (склад сеанса моста).
+    ParsePageTrack {
+        /// Документ (общий `Arc` склада: байты не копируются).
+        document: Arc<PageSubtitleDocument>,
+    },
 }
 
 impl SidecarJobTask {
@@ -109,7 +117,10 @@ impl SidecarJobTask {
     pub(super) fn cancellation_token(&self) -> Option<&CancellationToken> {
         match self {
             Self::LoadWebTrack { cancellation, .. } => Some(cancellation),
-            Self::DiscoverNextToVideo { .. } | Self::LoadFile { .. } | Self::BuildFontsOnly => None,
+            Self::DiscoverNextToVideo { .. }
+            | Self::LoadFile { .. }
+            | Self::BuildFontsOnly
+            | Self::ParsePageTrack { .. } => None,
         }
     }
 }
@@ -166,6 +177,10 @@ pub(super) enum SubtitleLoadFailure {
     /// субтитров). Показать нечего, поэтому это отказ, а не «готовая» пустая дорожка.
     #[error("subtitle file contains no cues")]
     NoCuesFound,
+    /// Формат документа не опознан: подсказки нет, а содержимое не похоже ни на один
+    /// известный формат (документ субтитров страницы).
+    #[error("subtitle format could not be recognized")]
+    UnrecognizedFormat,
     /// Не удалось подготовить библиотеку шрифтов.
     #[error("subtitle fonts could not be prepared: {0}")]
     FontLibraryFailed(FontLibraryError),
@@ -252,6 +267,13 @@ pub(super) enum SidecarJobOutcome {
         /// Новая библиотека шрифтов, если она требовалась.
         fonts: Option<SubtitleFontLibrary>,
     },
+    /// Документ субтитров страницы разобран.
+    PageTrackParsed {
+        /// Дорожка.
+        track: Box<ParsedPageTrack>,
+        /// Новая библиотека шрифтов, если она требовалась.
+        fonts: Option<SubtitleFontLibrary>,
+    },
     /// Библиотека шрифтов построена (`None` - растеризатор уже есть, строить не пришлось).
     FontsBuilt(Option<SubtitleFontLibrary>),
     /// Задача не дала результата по типизированной причине (для `LoadFile` — дорожка
@@ -294,6 +316,9 @@ pub(super) fn run_sidecar_job(
             cancellation,
             is_cancelled,
         ),
+        SidecarJobTask::ParsePageTrack { document } => {
+            run_page_track_parse(request, document, is_cancelled)
+        }
         SidecarJobTask::BuildFontsOnly => match build_fonts_unless_cancelled(request, is_cancelled)
         {
             FontStep::Built(fonts) => SidecarJobOutcome::FontsBuilt(fonts),

@@ -70,6 +70,7 @@ mod journal;
 mod normal_player_pause;
 mod opened_page;
 mod outbound;
+mod page_subtitles;
 mod playback;
 mod player_hello;
 mod process_core;

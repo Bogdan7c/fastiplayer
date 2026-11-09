@@ -41,6 +41,8 @@ struct ScriptedPlayer {
     events: Vec<CorrelatedPlayerEvent>,
     /// Накопительно отданные на показ кадры.
     presented: u64,
+    /// Накопительно ушедшие в рендер кадры со слоем субтитров.
+    subtitle_overlay_frames: u64,
     /// Что водитель передал о скачанном последним.
     downloaded_range: crate::downloaded_range::DownloadedRange,
     /// Сколько событий подслушка потеряла с прошлого забора.
@@ -98,6 +100,10 @@ impl WindowPlayer for ScriptedPlayer {
 
     fn video_frames_presented(&self) -> u64 {
         self.presented
+    }
+
+    fn subtitle_overlay_frames_shown(&self) -> u64 {
+        self.subtitle_overlay_frames
     }
 }
 
@@ -386,13 +392,17 @@ fn the_journal_counts_frames_the_player_presented_and_the_end() {
         .push_back(LoadPoll::Installed(instance(1)));
     harness.player.show(1, PlaybackState::Playing);
     harness.player.presented = 4;
+    harness.player.subtitle_overlay_frames = 3;
     harness.pass();
     harness.player.presented = 10;
+    harness.player.subtitle_overlay_frames = 8;
     harness.player.show(1, PlaybackState::Ended);
     harness.pass();
 
     let summary = harness.driver.summary();
     assert_eq!(summary.counters.presented_frames, 10);
+    // Кадры со слоем субтитров считаются так же накопительно, без двойного счёта.
+    assert_eq!(summary.counters.subtitle_overlay_frames, 8);
     assert_eq!(summary.counters.loads, 1);
     assert_eq!(summary.state, PlaybackState::Ended);
 }

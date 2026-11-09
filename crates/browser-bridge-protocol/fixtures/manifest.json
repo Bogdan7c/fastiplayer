@@ -1550,7 +1550,7 @@
       }
     },
     {
-      "file": "data/invalid/unknown-kind-3.bin",
+      "file": "data/invalid/unknown-kind-4.bin",
       "schema": "data_frame",
       "expect": {
         "result": "error",
@@ -1611,6 +1611,64 @@
       "expect": {
         "result": "error",
         "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "data/valid/page-subtitle-first-frame.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "ok",
+        "frame": {
+          "kind": "page_subtitle_bytes",
+          "track": 1,
+          "offset": 0,
+          "payload_len": 45
+        }
+      }
+    },
+    {
+      "file": "data/valid/page-subtitle-max-fields.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "ok",
+        "frame": {
+          "kind": "page_subtitle_bytes",
+          "track": 4294967295,
+          "offset": 9007199254740991,
+          "payload_len": 1
+        }
+      }
+    },
+    {
+      "file": "data/invalid/page-subtitle-track-zero.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "data/invalid/page-subtitle-offset-beyond-js-safe-integer.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "data/invalid/page-subtitle-reserved-set.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "reserved_bits_set"
+      }
+    },
+    {
+      "file": "data/invalid/page-subtitle-without-payload.bin",
+      "schema": "data_frame",
+      "expect": {
+        "result": "error",
+        "kind": "payload_empty"
       }
     },
     {
@@ -2032,6 +2090,376 @@
     {
       "file": "session/invalid/player-shape-live-window-seekable-kind-as-index.json",
       "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/valid/page-subtitle-track-offered-full.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-subtitle-track-offered-unknown-language-no-label.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-subtitle-track-offered-max-fields.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-subtitle-track-offered-format-srt.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-subtitle-track-offered-format-ttml.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-subtitle-track-offered-format-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-unknown-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-extra-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-unknown-with-tag.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-none-with-text.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-missing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-missing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-byte-length-missing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-missing.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-kind-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-empty.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_empty"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-too-long.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_too_long"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-underscore.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-space.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-cyrillic.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-leading-dash.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-trailing-dash.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-tag-double-dash.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-empty.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_empty"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-too-long.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_too_long"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-line-break.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-bidi-override.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-byte-length-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-byte-length-above-limit.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-byte-length-negative.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-byte-length-fractional.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-byte-length-string.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-track-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-track-beyond-u32.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-format-hint-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-format-hint-upper-case.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-format-hint-with-dashes.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-origin-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-page-display-unknown.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-null.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-as-string.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-as-array.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-language-kind-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-label-as-string.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-format-hint-as-map.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-format-hint-as-index.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-subtitle-track-offered-page-display-as-map.json",
+      "schema": "page_session",
       "expect": {
         "result": "error",
         "kind": "wrong_value_type"

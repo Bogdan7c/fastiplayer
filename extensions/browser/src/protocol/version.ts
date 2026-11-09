@@ -16,6 +16,9 @@
 // 1.4 (сессия 11b1, решения 240-241) - «возврат вкладки»: страница -> плеер `page_left`,
 // `page_returned`, `page_reopen_failed`; плеер -> страница `reopen_page` (договор -
 // `session/page-reopen.ts`). `tab_gone` не менялся, коды закрытия не менялись.
+// 1.5 (сессия 13b1, решения 270-274) - субтитры страницы: страница -> плеер
+// `subtitle_track_offered` и байты документа двоичной рамкой вида 3 (договор -
+// `session/page-subtitles.ts`). При общей версии ниже 1.5 экстеншен субтитры не шлёт.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -41,8 +44,11 @@ export const PROTOCOL_VERSION_1_3: ProtocolVersion = Object.freeze({ major: 1, m
 /** Возврат вкладки: `page_left`, `page_returned`, `page_reopen_failed`, `reopen_page` (сессия 11b1, решения 240-241). */
 export const PROTOCOL_VERSION_1_4: ProtocolVersion = Object.freeze({ major: 1, minor: 4 });
 
+/** Субтитры страницы: `subtitle_track_offered` и рамка вида 3 (сессия 13b1, решения 270-274). */
+export const PROTOCOL_VERSION_1_5: ProtocolVersion = Object.freeze({ major: 1, minor: 5 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_4;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_5;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

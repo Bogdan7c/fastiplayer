@@ -276,7 +276,12 @@ impl AppState {
     /// скорость запираются. `true` — плашка изменилась, окну нужен кадр. Обычному окну
     /// плашка не нужна: сведение игнорируется.
     pub(crate) fn note_ad_plate(&mut self, plate: Option<AdPlate>) -> bool {
-        self.window_mode.note_ad_plate(plate)
+        let changed = self.window_mode.note_ad_plate(plate);
+        if changed {
+            // Во время рекламы субтитры не рисуются (решение 274), после неё — снова.
+            self.follow_ad_plate_for_subtitles();
+        }
+        changed
     }
 
     /// Плашка рекламы для рисования (`None` — рекламы нет).

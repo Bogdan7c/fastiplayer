@@ -123,6 +123,9 @@ function replay(directory: string, steps: readonly StreamStep[]): ReplayOutcome 
         outcome.resourceBodies.set(header.request_id, [...(outcome.resourceBodies.get(header.request_id) ?? []), payload]);
         continue;
       }
+      // Субтитры страницы (1.5) в записанных потоках не встречаются (их случаи - page-subtitle-gate.json).
+      assert.notEqual(header.kind, "page_subtitle_bytes", `${step.binary}: субтитры в записанном потоке`);
+      if (header.kind === "page_subtitle_bytes") continue;
       if (header.generation < newestGeneration) {
         outcome.droppedFrames += 1;
         continue;

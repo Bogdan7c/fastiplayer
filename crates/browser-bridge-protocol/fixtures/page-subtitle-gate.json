@@ -1,0 +1,770 @@
+{
+  "cases": [
+    {
+      "name": "document-in-two-frames",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "binary_hex": "03000000010000001600000000000000000000000000000030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "ok",
+        "documents": [
+          {
+            "track": 1,
+            "utf8": "WEBVTT\n\n00:00.000 --> 00:01.000\nПривіт\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "document-between-media-source-bytes",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"generation_started\",\"generation\":1}"
+        },
+        {
+          "text": "{\"type\":\"source_buffer_added\",\"generation\":1,\"source_buffer\":0,\"mime_type\":\"video/mp4; codecs=\\\"avc1.42c00a\\\"\"}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0100000001000000000000000000000000000000000000000000000866726565"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "text": "{\"type\":\"generation_started\",\"generation\":2}"
+        },
+        {
+          "binary_hex": "03000000010000001600000000000000000000000000000030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "ok",
+        "documents": [
+          {
+            "track": 1,
+            "utf8": "WEBVTT\n\n00:00.000 --> 00:01.000\nПривіт\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-tracks-interleaved",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":2,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":38}"
+        },
+        {
+          "binary_hex": "0300000002000000000000000000000000000000000000005745425654540a0a30303a30312e303030202d2d3e2030303a30322e3030300a48656c6c6f0a"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "ok",
+        "documents": [
+          {
+            "track": 1,
+            "utf8": "WEBVTT\n\n00:00.000 --> 00:01.000\nПривіт\n"
+          },
+          {
+            "track": 2,
+            "utf8": "WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "re-offer-replaces-partial",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":38}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30312e303030202d2d3e2030303a30322e3030300a48656c6c6f0a"
+        }
+      ],
+      "expect": {
+        "result": "ok",
+        "documents": [
+          {
+            "track": 1,
+            "utf8": "WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "re-offer-replaces-complete",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "binary_hex": "03000000010000001600000000000000000000000000000030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":38}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30312e303030202d2d3e2030303a30322e3030300a48656c6c6f0a"
+        }
+      ],
+      "expect": {
+        "result": "ok",
+        "documents": [
+          {
+            "track": 1,
+            "utf8": "WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "max-tracks-and-replacing-one",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":2,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":3,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":4,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":5,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":6,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":7,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":8,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":9,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":10,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":11,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":12,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":13,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":14,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":15,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":16,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":17,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":18,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":19,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":20,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":21,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":22,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":23,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":24,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":25,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":26,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":27,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":28,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":29,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":30,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":31,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":32,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":33,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":34,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":35,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":36,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":37,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":38,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":39,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":40,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":41,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":42,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":43,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":44,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":45,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":46,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":47,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":48,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":49,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":50,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":51,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":52,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":53,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":54,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":55,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":56,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":57,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":58,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":59,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":60,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":61,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":62,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":63,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":64,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "ok",
+        "documents": [
+          {
+            "track": 1,
+            "utf8": "WEBVTT\n\n00:00.000 --> 00:01.000\nПривіт\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "frame-for-unknown-track",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000002000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 1,
+        "violation": "page_subtitle_track_not_offered"
+      }
+    },
+    {
+      "name": "frame-before-any-offer",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 0,
+        "violation": "page_subtitle_track_not_offered"
+      }
+    },
+    {
+      "name": "frame-for-complete-document",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "binary_hex": "03000000010000001600000000000000000000000000000030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        },
+        {
+          "binary_hex": "03000000010000002d00000000000000000000000000000078"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 3,
+        "violation": "page_subtitle_document_complete"
+      }
+    },
+    {
+      "name": "offset-gap",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "binary_hex": "030000000100000017000000000000000000000000000000303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 2,
+        "violation": "page_subtitle_offset_gap"
+      }
+    },
+    {
+      "name": "offset-repeat",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 2,
+        "violation": "page_subtitle_offset_gap"
+      }
+    },
+    {
+      "name": "offset-after-re-offer-continues-old",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e20"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "03000000010000001600000000000000000000000000000030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 3,
+        "violation": "page_subtitle_offset_gap"
+      }
+    },
+    {
+      "name": "overflow-past-byte-length",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a78"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 1,
+        "violation": "page_subtitle_beyond_byte_length"
+      }
+    },
+    {
+      "name": "sixty-fifth-track",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":2,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":3,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":4,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":5,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":6,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":7,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":8,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":9,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":10,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":11,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":12,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":13,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":14,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":15,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":16,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":17,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":18,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":19,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":20,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":21,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":22,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":23,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":24,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":25,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":26,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":27,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":28,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":29,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":30,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":31,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":32,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":33,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":34,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":35,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":36,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":37,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":38,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":39,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":40,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":41,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":42,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":43,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":44,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":45,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":46,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":47,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":48,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":49,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":50,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":51,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":52,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":53,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":54,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":55,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":56,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":57,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":58,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":59,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":60,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":61,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":62,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":63,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":64,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":65,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":1}"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 64,
+        "violation": "too_many_page_subtitle_tracks"
+      }
+    },
+    {
+      "name": "offer-under-1-4",
+      "agreed": "1.4",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 0,
+        "violation": "message_not_in_agreed_version"
+      }
+    },
+    {
+      "name": "frame-under-1-4",
+      "agreed": "1.4",
+      "steps": [
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 0,
+        "violation": "data_frame_not_in_agreed_version"
+      }
+    },
+    {
+      "name": "offer-while-page-away",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"page_left\",\"reason\":\"closed\"}"
+        },
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 1,
+        "violation": "page_is_away"
+      }
+    },
+    {
+      "name": "frame-while-page-away",
+      "agreed": "1.5",
+      "steps": [
+        {
+          "text": "{\"type\":\"subtitle_track_offered\",\"track\":1,\"language\":{\"kind\":\"known\",\"tag\":\"en\"},\"label\":{\"kind\":\"text\",\"text\":\"English\"},\"format_hint\":\"web_vtt\",\"origin\":\"page_download\",\"page_display\":\"showing\",\"byte_length\":45}"
+        },
+        {
+          "text": "{\"type\":\"page_left\",\"reason\":\"closed\"}"
+        },
+        {
+          "binary_hex": "0300000001000000000000000000000000000000000000005745425654540a0a30303a30302e303030202d2d3e2030303a30312e3030300ad09fd180d0b8d0b2d196d1820a"
+        }
+      ],
+      "expect": {
+        "result": "violation",
+        "at_step": 2,
+        "violation": "page_is_away"
+      }
+    }
+  ]
+}

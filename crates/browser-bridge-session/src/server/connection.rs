@@ -51,7 +51,9 @@ use super::farewell::FarewellSlot;
 use super::shared::{CloseRequest, ConnectionHandle, DeliveryGate, Shared};
 use crate::policy::BrowserSessionPolicy;
 use crate::registry::{AttachedSession, ConnectionId, SessionRef};
-use crate::sink::{ChunkSource, IntakeRoom, RangeChunk, SessionChunk, SourceBufferChunk};
+use crate::sink::{
+    ChunkSource, IntakeRoom, PageSubtitleChunk, RangeChunk, SessionChunk, SourceBufferChunk,
+};
 
 /// Наибольшее сообщение WebSocket: двоичная рамка протокола (заголовок + груз).
 /// JSON короче (128 КиБ) и дополнительно проверяется при разборе.
@@ -430,6 +432,27 @@ impl Link<'_> {
                     return self.violate();
                 }
             },
+            // Субтитры страницы (1.5): сторож сверяет версию, присутствие страницы, номер
+            // предложенной дорожки, смещение и длину документа; приёмнику — уже проверенное.
+            DataFrameHeader::PageSubtitleBytes(header) => {
+                match gate.admit_page_subtitle_bytes(&header, frame.payload) {
+                    Ok(GateDecision::Accept) => ChunkSource::PageSubtitle(PageSubtitleChunk {
+                        track: header.track,
+                        offset: header.offset.as_bytes(),
+                        payload: frame.payload,
+                    }),
+                    // Сейчас сторож устаревшими байты субтитров не считает (замена документа —
+                    // новое предложение), но решение «выбросить» уважаем так же, как у вида 1.
+                    Ok(GateDecision::DropStale) => {
+                        self.shared.count_stale_frame();
+                        return Flow::Continue;
+                    }
+                    Err(violation) => {
+                        tracing::warn!(%violation, "browser session stream violation");
+                        return self.violate();
+                    }
+                }
+            }
         };
         // Через калитку: если сеанс закончился между проверкой и выдачей, байты
         // не уйдут приёмнику после его `session_ended`.

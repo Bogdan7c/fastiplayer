@@ -84,7 +84,7 @@ fn open_window(desk: &mut EntryDesk, caller: &EntryCaller) -> SessionGrant {
 }
 
 /// Весь вход как у экстеншена: `hello` версии `version`, `open_session`, `attach`.
-fn attached_after_hello(env: &Env, version: ProtocolVersion) -> Socket {
+pub(crate) fn attached_after_hello(env: &Env, version: ProtocolVersion) -> Socket {
     let mut desk = desk_of(env);
     let caller = EntryCaller::new(":1.42").unwrap();
     say_hello(&mut desk, &caller, version);
@@ -97,7 +97,7 @@ fn session_ref() -> SessionRef {
 }
 
 /// Ждёт событие `Attached` первого экземпляра и возвращает его версию.
-fn attached_version(env: &Env) -> ProtocolVersion {
+pub(crate) fn attached_version(env: &Env) -> ProtocolVersion {
     let seen = env.events.seen.wait_for("Attached", |seen| {
         seen.lifecycle
             .iter()
@@ -116,7 +116,7 @@ fn attached_version(env: &Env) -> ProtocolVersion {
 }
 
 /// Ждёт конец сеанса нарушением протокола.
-fn wait_for_violation_end(env: &Env) {
+pub(crate) fn wait_for_violation_end(env: &Env) {
     env.wait_lifecycle("Ended(4003)", |event| {
         matches!(
             event,

@@ -18,6 +18,7 @@
 | `media/` | Крошечные синтетические медиа (fMP4 H.264, fMP4 AAC, WebM VP9+Opus) и `generate.sh` |
 | `message-versions.json` | В какой версии протокола появилось каждое сообщение сеанса (с протокола 1.1) |
 | `value-versions.json` | В какой версии протокола появилось каждое ЗНАЧЕНИЕ старого сообщения, у которого значения добавлялись (с протокола 1.3; с 1.4 — и значения нового сообщения `page_reopen_failed`) |
+| `page-subtitle-gate.json` | Случаи сторожа для субтитров страницы (протокол 1.5): шаги на проводе и итог — принято (с готовыми документами) или нарушение на шаге N |
 | `resource-addresses.json` | Верные и неверные адреса-заглушки номерков ресурсов HLS (протокол 1.1) |
 | `generate_fixtures.py` | Генератор всего, кроме `media/`; независимая от Rust реализация формата |
 
@@ -144,3 +145,24 @@ cargo test -p browser-bridge-protocol
 - `firefox.gecko_id` — значение `browser_specific_settings.gecko.id`.
 
 Rust-константы (`extension_identity.rs`) сверяет с этим файлом `tests/extension_identity.rs`, включая вывод ID Chrome из ключа. Посредник пускает только эти ID; ID из Chrome Web Store добавится в сессии 24.
+
+## Субтитры страницы (протокол 1.5, сессия 13b1, решения 270–274)
+
+Версия протокола — **1.5**. Новое — одно сообщение страница → плеер (`message-versions.json`) и один вид двоичной рамки:
+
+- `{"type":"subtitle_track_offered","track":1,"language":{"kind":"known","tag":"en"},"label":{"kind":"text","text":"English"},"format_hint":"web_vtt","origin":"page_download","page_display":"showing","byte_length":1234}` — заголовок документа дорожки субтитров. Поля:
+  - `track` — номер дорожки на сеанс, `u32` от 1; тот же номер ещё раз — **замена** документа (в том числе недокачанного);
+  - `language` — метка, а не необязательное поле: `{"kind":"unknown"}` или `{"kind":"known","tag":T}`, где `T` — форма BCP-47: 1…35 байт ASCII `[A-Za-z0-9-]`, дефис только между частями (не первым, не последним, не два подряд — иначе `text_forbidden_character`), регистр не нормализуется;
+  - `label` — тоже метка: `{"kind":"none"}` или `{"kind":"text","text":L}`, `L` — текст для человека 1…256 байт UTF-8 (правила `text.rs`: без управляющих, разрывов строки и переворота направления);
+  - `format_hint` — `web_vtt | srt | ttml | srv3 | json3 | unknown` (подсказка: плеер всё равно узнаёт формат по содержимому);
+  - `origin` — `page_download | track_element | text_track_cues`;
+  - `page_display` — `showing | not_showing` («скачала — значит включено», решение 271);
+  - `byte_length` — точная длина документа, 1…8 МиБ (`MAX_PAGE_SUBTITLE_DOCUMENT_BYTES`).
+  Все поля обязательны (отсутствие — `missing_field`, `null` — `wrong_value_type`), лишние поля и внутри меток — `unknown_field`. Сообщение не привязано к поколению потока.
+- рамка **вида 3** — байты документа: `@0 kind=3`, `@1 flags=0`, `@2 reserved u16=0`, `@4 track u32 (≥ 1)`, `@8 offset u64 (≤ 2⁵³ − 1)`, `@16..24 reserved = 0`, груз 1 Б…1 МиБ. В манифесте её поля — `{"kind":"page_subtitle_bytes","track":N,"offset":N,"payload_len":N}`. Прежняя фикстура «незнакомый вид» теперь — `unknown-kind-4`.
+
+**Правила сторожа** (`StreamGate`, на сеанс): рамка вида 3 допустима только для дорожки с открытым (недокачанным) предложением, её `offset` — ровно сколько байт этого предложения уже пришло, а `offset + len ≤ byte_length`. Документ готов, когда пришло ровно `byte_length` байт (отдельного «готово» нет); рамка для готового документа — нарушение. Разных `track` за сеанс не больше 64 (`MAX_PAGE_SUBTITLE_TRACKS`), повторное предложение места не занимает. При общей версии ниже 1.5 и сообщение (`message_not_in_agreed_version`), и рамка вида 3 (`data_frame_not_in_agreed_version`) — нарушение. Пока страница ушла (1.4, `page_left`), нельзя ни предлагать, ни слать байты (`page_is_away`). Байты документа не трогают поколений и SourceBuffer-ов. Любое нарушение — закрытие 4003.
+
+**Случаи сторожа** — `page-subtitle-gate.json`: `{"cases":[{"name", "agreed":"1.5", "steps":[{"text":"<JSON на проводе>"} | {"binary_hex":"<рамка>"}], "expect": {"result":"ok","documents":[{"track":N,"utf8":"…"}]} | {"result":"violation","at_step":N,"violation":"<имя>"}}]}`. Имена нарушений — варианты `StreamViolation` в snake_case. У `ok` в `documents` — ровно готовые документы (недокачанные не перечисляются). Сторож есть только у плеера (Rust, `tests/protocol_1_5.rs`); TypeScript проверяет, что каждый шаг разбирается его кодеками.
+
+Фикстуры — `session/valid/page-subtitle-track-offered-*`, `session/invalid/page-subtitle-track-offered-*`, `data/valid/page-subtitle-*`, `data/invalid/page-subtitle-*`.

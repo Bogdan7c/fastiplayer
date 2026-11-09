@@ -78,6 +78,7 @@ fn counters_accumulate_into_the_summary() {
             position_regressions: 0,
             loads: 1,
             buffering_entries: 2,
+            subtitle_overlay_frames: 0,
         }
     );
     assert_eq!(summary.position, ms(220));
@@ -201,6 +202,7 @@ fn summary_line_has_stable_keys() {
             position_regressions: 0,
             loads: 1,
             buffering_entries: 2,
+            subtitle_overlay_frames: 7,
         },
         audio: AudioMeterReading {
             written: ms(1_000),
@@ -215,7 +217,7 @@ fn summary_line_has_stable_keys() {
         summary.to_string(),
         "presented_frames=10 taken_frames=10 audio_written_ms=1000 audio_played_ms=987 \
          audio_output=unavailable position_regressions=0 loads=1 buffering_entries=2 \
-         position_ms=1234 state=ended"
+         position_ms=1234 state=ended subtitle_overlay_frames=7"
     );
 }
 

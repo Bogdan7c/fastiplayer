@@ -39,6 +39,8 @@ impl SubtitleOwner {
             media.visibility = visibility;
             media.note_user_choice();
         }
+        // Страница больше не включает субтитры за зрителя во всём сеансе моста.
+        self.note_viewer_visibility_choice(visibility);
         if visibility == SubtitleVisibility::Shown {
             self.select_automatically_if_nothing_selected();
         }
@@ -96,6 +98,8 @@ impl SubtitleOwner {
         if was_hidden {
             self.enabled_preference_change = Some(SubtitleVisibility::Shown);
         }
+        // Выбор зрителя главнее `showing` страницы и в следующих медиа сеанса моста.
+        self.note_viewer_track_choice(track_id);
         self.presenter.forget_shown_overlay();
         self.ensure_display_track_loading();
         SelectTrackOutcome::Selected

@@ -32,18 +32,21 @@ use browser_bridge_protocol::limits::{
 };
 use browser_bridge_protocol::session::{
     BufferIntake, ClockSequence, ClockState, PagePlaybackRequest, PageReopenFailure,
-    RangeFetchFailure, RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause,
-    StreamRejection, TabGoneReason, VariantKind, VariantMenu, VariantOption, VariantSelection,
+    PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel, PageSubtitleLanguage,
+    PageSubtitleOrigin, PageSubtitleTrackId, RangeFetchFailure, RangeFetchOutcome, RemovalEnd,
+    ResourceSize, ResumeState, SeekCause, StreamRejection, SubtitleFormatHint, TabGoneReason,
+    VariantKind, VariantMenu, VariantOption, VariantSelection,
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
     ExtensionControlMessage, GateDecision, HttpStatusCode, LiveSeekable, MediaDuration, MediaTime,
-    MediaTimeOffset, MessageErrorKind, MimeType, PageSessionMessage, PageTitle, PlaybackRate,
-    PlayerControlMessage, PlayerSessionMessage, ProtocolMessage, ProtocolVersion, RangeBytesHeader,
-    RangeFetchLength, RangeRequestId, ResourceBodySize, ResourceByteRange, ResourceFetchFailure,
-    ResourceFetchLength, ResourceFetchOutcome, ResourceHandle, SeekId, SessionKey, SessionToken,
-    SiteDomain, SoftwareVersion, SourceBufferBytesHeader, SourceBufferIndex, StreamGate,
-    StreamGeneration, VariantId, VariantLabel, decode_data_frame, decode_message,
+    MediaTimeOffset, MessageErrorKind, MimeType, PageSessionMessage, PageSubtitleBytesHeader,
+    PageTitle, PlaybackRate, PlayerControlMessage, PlayerSessionMessage, ProtocolMessage,
+    ProtocolVersion, RangeBytesHeader, RangeFetchLength, RangeRequestId, ResourceBodySize,
+    ResourceByteRange, ResourceFetchFailure, ResourceFetchLength, ResourceFetchOutcome,
+    ResourceHandle, SeekId, SessionKey, SessionToken, SiteDomain, SoftwareVersion,
+    SourceBufferBytesHeader, SourceBufferIndex, StreamGate, StreamGeneration, SubtitleLabel,
+    SubtitleLanguageTag, VariantId, VariantLabel, decode_data_frame, decode_message,
     encode_data_frame, encode_message,
 };
 
@@ -298,7 +301,7 @@ fn random_tab_gone_reason(generator: &mut Generator) -> TabGoneReason {
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
-    match generator.below(19) {
+    match generator.below(20) {
         0 => PageSessionMessage::Attach {
             session_key: session_key(generator),
             token: session_token(generator),
@@ -409,6 +412,8 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
             reason: random_tab_gone_reason(generator),
         },
         17 => PageSessionMessage::PageReturned {},
+        // Протокол 1.5: заголовок документа субтитров страницы.
+        18 => subtitle_track_offered(generator),
         _ => PageSessionMessage::PageReopenFailed {
             reason: *generator.pick(&[
                 PageReopenFailure::NoBrowserWindow,
@@ -417,6 +422,46 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
                 PageReopenFailure::VideoDidNotStart,
             ]),
         },
+    }
+}
+
+/// Тег языка — только из верных форм BCP-47 (правило формы проверяют фикстуры).
+const LANGUAGE_TAGS: &[&str] = &["en", "uk", "pt-BR", "zh-Hant-TW", "es-419", "x-klingon"];
+
+fn subtitle_track_offered(generator: &mut Generator) -> PageSessionMessage {
+    let language = if generator.coin() {
+        PageSubtitleLanguage::Known {
+            tag: SubtitleLanguageTag::new(*generator.pick(LANGUAGE_TAGS)).unwrap(),
+        }
+    } else {
+        PageSubtitleLanguage::Unknown {}
+    };
+    let label = match SubtitleLabel::new(text_from_pool(generator, DISPLAY_POOL, 1, 256)) {
+        Ok(text) => PageSubtitleLabel::Text { text },
+        Err(_) => PageSubtitleLabel::None {},
+    };
+    PageSessionMessage::SubtitleTrackOffered {
+        track: PageSubtitleTrackId::new(generator.between(1, u64::from(u32::MAX)) as u32).unwrap(),
+        language,
+        label,
+        format_hint: *generator.pick(&[
+            SubtitleFormatHint::WebVtt,
+            SubtitleFormatHint::Srt,
+            SubtitleFormatHint::Ttml,
+            SubtitleFormatHint::Srv3,
+            SubtitleFormatHint::Json3,
+            SubtitleFormatHint::Unknown,
+        ]),
+        origin: *generator.pick(&[
+            PageSubtitleOrigin::PageDownload,
+            PageSubtitleOrigin::TrackElement,
+            PageSubtitleOrigin::TextTrackCues,
+        ]),
+        page_display: *generator.pick(&[
+            PageSubtitleDisplay::Showing,
+            PageSubtitleDisplay::NotShowing,
+        ]),
+        byte_length: PageSubtitleByteLength::new(generator.between(1, 8 * 1024 * 1024)).unwrap(),
     }
 }
 
@@ -602,17 +647,22 @@ fn random_valid_messages_round_trip_unchanged() {
 fn random_data_frame_headers_round_trip_unchanged() {
     let mut generator = Generator::new(0xda7a_f4a3);
     for iteration in 0..5000 {
-        let header = if generator.coin() {
-            DataFrameHeader::SourceBufferBytes(SourceBufferBytesHeader {
+        let header = match generator.below(3) {
+            0 => DataFrameHeader::SourceBufferBytes(SourceBufferBytesHeader {
                 generation: generation(&mut generator),
                 source_buffer: source_buffer(&mut generator),
                 sequence: AppendSequence(generator.next_u64()),
-            })
-        } else {
-            DataFrameHeader::RangeBytes(RangeBytesHeader {
+            }),
+            1 => DataFrameHeader::RangeBytes(RangeBytesHeader {
                 request_id: RangeRequestId(generator.next_u64() as u32),
                 offset: ByteOffset::new(generator.below(MAX_JSON_SAFE_INTEGER + 1)).unwrap(),
-            })
+            }),
+            // Протокол 1.5: байты документа субтитров страницы.
+            _ => DataFrameHeader::PageSubtitleBytes(PageSubtitleBytesHeader {
+                track: PageSubtitleTrackId::new(generator.between(1, u64::from(u32::MAX)) as u32)
+                    .unwrap(),
+                offset: ByteOffset::new(generator.below(MAX_JSON_SAFE_INTEGER + 1)).unwrap(),
+            }),
         };
         let payload: Vec<u8> = (0..generator.between(1, 64))
             .map(|_| generator.next_u64() as u8)

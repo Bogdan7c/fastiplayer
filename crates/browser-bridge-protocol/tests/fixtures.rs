@@ -134,6 +134,13 @@ fn frame_summary(frame: &DataFrame<'_>) -> Value {
             "offset": header.offset.as_bytes(),
             "payload_len": frame.payload.len(),
         }),
+        // Протокол 1.5: байты документа субтитров страницы.
+        DataFrameHeader::PageSubtitleBytes(header) => json!({
+            "kind": "page_subtitle_bytes",
+            "track": header.track.get(),
+            "offset": header.offset.as_bytes(),
+            "payload_len": frame.payload.len(),
+        }),
     }
 }
 
@@ -438,6 +445,13 @@ fn replay(directory: &Path, steps: &[StreamStep]) -> ReplayOutcome {
                             "{file}: смещение не продолжает тело ответа"
                         );
                         body.extend_from_slice(frame.payload);
+                        continue;
+                    }
+                    // Субтитры страницы (1.5) в записанных потоках не встречаются; их порядок
+                    // проверяют случаи `page-subtitle-gate.json` (`tests/protocol_1_5.rs`).
+                    DataFrameHeader::PageSubtitleBytes(header) => {
+                        gate.admit_page_subtitle_bytes(&header, frame.payload)
+                            .unwrap();
                         continue;
                     }
                 };

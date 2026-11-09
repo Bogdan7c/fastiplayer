@@ -255,6 +255,9 @@ impl BrowserWindowApp {
                 self.driver.drive_loads(&mut player);
             }
             instance.drain_queue_each_pass();
+            // Субтитры страницы (13b1) — после загрузок прохода: медиа, установленное прямо
+            // сейчас, получает весь склад раньше своего первого кадра.
+            instance.apply_page_subtitles(&step.page_subtitles);
             // Размер/фуллскрин окна пишутся после паузы тишины (решение 138).
             instance.persist_window_geometry_if_due(now);
             if let Some(desktop) = self.desktop.as_mut() {

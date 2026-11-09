@@ -11,6 +11,7 @@ import {
   PROTOCOL_VERSION_1_2,
   PROTOCOL_VERSION_1_3,
   PROTOCOL_VERSION_1_4,
+  PROTOCOL_VERSION_1_5,
   type ProtocolVersion,
 } from "../version.ts";
 import type { PageSessionMessage, TabGoneReason } from "./page.ts";
@@ -39,6 +40,7 @@ const PAGE_SESSION_INTRODUCED_IN: Readonly<Record<PageSessionMessage["type"], Pr
   page_left: PROTOCOL_VERSION_1_4,
   page_returned: PROTOCOL_VERSION_1_4,
   page_reopen_failed: PROTOCOL_VERSION_1_4,
+  subtitle_track_offered: PROTOCOL_VERSION_1_5,
 };
 
 const PLAYER_SESSION_INTRODUCED_IN: Readonly<Record<PlayerSessionMessage["type"], ProtocolVersion>> = {

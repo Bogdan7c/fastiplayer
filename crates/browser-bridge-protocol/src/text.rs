@@ -20,7 +20,8 @@ use crate::error::ValueViolation;
 use crate::limits::{
     MAX_CAPABILITY_TOKEN_BYTES, MAX_MIME_TYPE_BYTES, MAX_OPAQUE_ID_BYTES, MAX_PAGE_TITLE_BYTES,
     MAX_SESSION_TOKEN_BYTES, MAX_SITE_DOMAIN_BYTES, MAX_SOFTWARE_VERSION_BYTES,
-    MAX_VARIANT_LABEL_BYTES, MIN_SESSION_TOKEN_BYTES,
+    MAX_SUBTITLE_LABEL_BYTES, MAX_SUBTITLE_LANGUAGE_TAG_BYTES, MAX_VARIANT_LABEL_BYTES,
+    MIN_SESSION_TOKEN_BYTES,
 };
 
 /// Можно ли строке быть пустой.
@@ -105,6 +106,11 @@ fn is_allowed_capability_char(character: char) -> bool {
     character.is_ascii_lowercase()
         || character.is_ascii_digit()
         || matches!(character, '_' | '.' | '-')
+}
+
+/// Символ допустим в теге языка BCP-47: буквы и цифры ASCII и дефис-разделитель.
+fn is_allowed_language_tag_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '-'
 }
 
 /// Символ допустим в строке версии программы (`0.2.0`, `1.4.0-beta.2+abc`).
@@ -263,6 +269,77 @@ checked_text!(
         allowed_char: is_allowed_version_char,
     }
 );
+
+checked_text!(
+    /// Подпись дорожки субтитров страницы («English (auto-generated)», протокол 1.5).
+    /// Текст для человека: те же правила, что у подписи варианта; пустой подписи нет —
+    /// её отсутствие протокол пишет меткой (`crate::session::page_subtitles`).
+    #[derive(Debug)]
+    SubtitleLabel,
+    TextRule {
+        emptiness: Emptiness::Forbidden,
+        min_bytes: 1,
+        max_bytes: MAX_SUBTITLE_LABEL_BYTES,
+        allowed_char: is_allowed_display_char,
+    }
+);
+
+/// Тег языка дорожки субтитров страницы по BCP-47 (`en`, `pt-BR`, `zh-Hant-TW`; протокол 1.5).
+///
+/// Протокол проверяет только форму, а не словарь языков: 1…35 байт ASCII из букв, цифр и
+/// дефиса, дефис только между частями (не первым, не последним и не два подряд). Регистр
+/// не нормализуется — тег передаётся как есть, сравнивать его без учёта регистра — дело
+/// получателя (так велит BCP-47). Неверная форма — `text_forbidden_character`: у протокола
+/// нет отдельного вида «плохая структура строки», а символ здесь стоит не на своём месте.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SubtitleLanguageTag(String);
+
+impl SubtitleLanguageTag {
+    /// Посимвольное правило тега: длина и алфавит. Расстановку дефисов проверяет
+    /// [`Self::new`] после него, чтобы порядок причин отказа был тем же, что у остальных
+    /// строк (пустота → длина → символы).
+    const RULE: TextRule = TextRule {
+        emptiness: Emptiness::Forbidden,
+        min_bytes: 1,
+        max_bytes: MAX_SUBTITLE_LANGUAGE_TAG_BYTES,
+        allowed_char: is_allowed_language_tag_char,
+    };
+
+    /// Проверяет тег и оборачивает его.
+    ///
+    /// # Errors
+    /// Пустой, длиннее 35 байт, чужой символ или дефис не между частями.
+    pub fn new(text: impl Into<String>) -> Result<Self, ValueViolation> {
+        let text = text.into();
+        Self::RULE.check(&text)?;
+        // Части тега («en», «US») непустые: пустая часть — это дефис с краю или два подряд.
+        if text.split('-').any(str::is_empty) {
+            return Err(ValueViolation::TextForbiddenCharacter);
+        }
+        Ok(Self(text))
+    }
+
+    /// Тег как есть.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SubtitleLanguageTag {
+    type Error = ValueViolation;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(text)
+    }
+}
+
+impl From<SubtitleLanguageTag> for String {
+    fn from(tag: SubtitleLanguageTag) -> Self {
+        tag.0
+    }
+}
 
 checked_text!(
     /// Одноразовый пропуск в сеанс по WebSocket (решение 82).

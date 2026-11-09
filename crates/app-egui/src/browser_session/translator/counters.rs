@@ -32,6 +32,10 @@ pub(crate) struct TranslatorCounters {
     pub(crate) discarded_after_consumer_closed: u64,
     /// Разбор входа упал с паникой (дефект): экземпляр закрыт.
     pub(crate) internal_failures: u64,
+    /// Документы субтитров страницы, собранные целиком и отданные складу.
+    pub(crate) page_subtitle_documents: u64,
+    /// Отказы дорожкам субтитров страницы (кусок не по предложению, лишняя дорожка).
+    pub(crate) page_subtitle_refusals: u64,
     /// Ресурсы HLS-поколений (рамки и итоги очереди ресурсов).
     pub(crate) resources: HlsResourceCounters,
 }

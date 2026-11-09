@@ -31,7 +31,9 @@
 //! `crate::resource`, `crate::resource_address`; 1.2 (решение 232) — окно эфира
 //! `live_window`; 1.3 (решение 237) — значение `tab_gone{page_player_failed}`;
 //! 1.4 (решения 240–241) — возврат вкладки: `page_left`, `page_returned`,
-//! `page_reopen_failed`, `reopen_page` (`crate::session::page_reopen`).
+//! `page_reopen_failed`, `reopen_page` (`crate::session::page_reopen`); 1.5 (решения
+//! 270–274) — субтитры страницы: `subtitle_track_offered` и рамка вида 3
+//! (`crate::session::page_subtitles`).
 //! История версий — `crate::version`.
 
 pub mod capability;
@@ -60,8 +62,8 @@ pub use control::{
     PositionHint, RefusalReason, ReplyTarget, SessionGrant, SessionIntent,
 };
 pub use data_frame::{
-    DataFrame, DataFrameError, DataFrameHeader, RangeBytesHeader, SourceBufferBytesHeader,
-    decode_data_frame, encode_data_frame,
+    DataFrame, DataFrameError, DataFrameHeader, PageSubtitleBytesHeader, RangeBytesHeader,
+    SourceBufferBytesHeader, decode_data_frame, encode_data_frame,
 };
 pub use error::{MessageError, MessageErrorKind, ValueViolation};
 pub use open_session::{OpenSessionDecision, decide_open_session};
@@ -77,7 +79,7 @@ pub use stream::{AppendSequence, RangeRequestId, SeekId, SourceBufferIndex, Stre
 pub use stream_gate::{GateDecision, StreamGate, StreamViolation};
 pub use text::{
     CapabilityToken, MimeType, PageTitle, SessionKey, SessionToken, SiteDomain, SoftwareVersion,
-    VariantId, VariantLabel,
+    SubtitleLabel, SubtitleLanguageTag, VariantId, VariantLabel,
 };
 pub use time::{
     ByteOffset, MediaDuration, MediaTime, MediaTimeOffset, PlaybackRate, RangeFetchLength,

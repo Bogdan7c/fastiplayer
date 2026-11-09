@@ -783,6 +783,7 @@ mod live_hls;
 mod live_scrub_real_player;
 mod opening_clock;
 mod page_reopen;
+mod page_subtitles;
 mod seek_handover;
 mod viewer_click_claim;
 mod viewer_transport;

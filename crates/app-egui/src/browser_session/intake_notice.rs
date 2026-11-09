@@ -25,6 +25,7 @@ use pushed_media_source::{
 };
 
 use super::hls_bridge::opener::HlsGenerationOpener;
+use crate::page_subtitles::PageSubtitleDocument;
 
 /// Что случилось со страницей сеанса, пока связь держится (протокол 1.4, «сирота»).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +199,14 @@ pub(crate) enum IntakeNotice {
         /// Что случилось.
         change: PageLinkChange,
     },
+    /// Документ субтитров страницы собран целиком (протокол 1.5): он идёт на склад сеанса.
+    /// В коробке: метаданные со строками раздули бы все уведомления ящика.
+    PageSubtitleReady {
+        /// Сеанс.
+        session: SessionRef,
+        /// Готовый документ.
+        document: Box<PageSubtitleDocument>,
+    },
     /// Сеанс надо закрыть этим кодом (`SessionControl::close_session` — только
     /// этот экземпляр, не тот, что успел его заменить).
     CloseSession {
@@ -219,6 +228,7 @@ impl IntakeNotice {
             | Self::PlayerSeekAcknowledged { session, .. }
             | Self::InstanceSealed { session }
             | Self::PageLink { session, .. }
+            | Self::PageSubtitleReady { session, .. }
             | Self::Reject { session, .. }
             | Self::CloseSession { session, .. } => session,
         }
@@ -241,7 +251,10 @@ impl IntakeNotice {
     /// - состояние рекламы — терять НЕЛЬЗЯ (потерянное «рекламы нет» оставило бы плашку
     ///   навсегда), но важно только последнее: при переполнении новое слово вытесняет
     ///   прежнее неисполненное того же сеанса, поэтому страница не раздует ящик;
-    /// - новый поток, отказ, закрытие — единичные события, без них сеанс зависнет.
+    /// - новый поток, отказ, закрытие — единичные события, без них сеанс зависнет;
+    /// - готовый документ субтитров страницы — терять НЕЛЬЗЯ: страница его второй раз не
+    ///   пришлёт. Ящик не раздувается: документов за сеанс не больше, чем предложений, а
+    ///   главный цикл выбирает ящик каждый проход.
     pub(crate) const fn overflow_rule(&self) -> OverflowRule {
         match self {
             Self::PageIntent {
@@ -256,6 +269,7 @@ impl IntakeNotice {
             | Self::BytesAppended { .. }
             | Self::InstanceSealed { .. }
             | Self::PageLink { .. }
+            | Self::PageSubtitleReady { .. }
             | Self::Reject { .. }
             | Self::CloseSession { .. } => OverflowRule::Keep,
         }

@@ -442,3 +442,27 @@ fn a_full_notice_queue_keeps_only_the_latest_ad_state_of_each_session() {
         "the stale word of session a is gone, the final `none` is delivered"
     );
 }
+
+#[test]
+fn a_finished_page_subtitle_document_is_never_dropped_from_a_full_queue() {
+    let (inbox, _wake) = inbox_with(InboxCapacity {
+        intake_notices: 1,
+        ..InboxCapacity::default()
+    });
+    let document = |track: u32| IntakeNotice::PageSubtitleReady {
+        session: session("a"),
+        document: Box::new(crate::page_subtitles::PageSubtitleDocument {
+            track: crate::page_subtitles::PageSubtitleTrackNumber::new(track),
+            language: crate::page_subtitles::PageSubtitleLanguage::NotNamed,
+            label: crate::page_subtitles::PageSubtitleLabel::NotGiven,
+            format_hint: crate::page_subtitles::PageSubtitleFormatHint::Srt,
+            display: crate::page_subtitles::PageSubtitleDisplay::NotShowingOnPage,
+            bytes: std::sync::Arc::from(b"1".as_slice()),
+        }),
+    };
+    // Страница второй раз документ не пришлёт: оба ложатся даже сверх ёмкости.
+    let delivery = inbox.post_intake_notices([document(1), document(2)]);
+    assert_eq!(delivery.queued, 2);
+    assert_eq!(delivery.dropped_hints, 0);
+    assert_eq!(inbox.take_batch().intake_notices.len(), 2);
+}

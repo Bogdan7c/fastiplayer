@@ -4,7 +4,8 @@
 // 24 байта, все числа little-endian:
 //
 //   смещение  размер  поле
-//    0        1       вид рамки: 1 - байты SourceBuffer, 2 - байты файла <video src>
+//    0        1       вид рамки: 1 - байты SourceBuffer, 2 - байты файла <video src>,
+//                     3 - байты документа субтитров страницы (протокол 1.5)
 //    1        1       флаги - пока 0
 //    2        2       резерв - 0
 //   вид 1, байты SourceBuffer:
@@ -16,10 +17,18 @@
 //    4        4       номер запроса
 //    8        8       смещение первого байта в файле (до 2^53 - 1)
 //   16        8       резерв - 0
+//   вид 3, байты документа субтитров страницы (протокол 1.5, после `subtitle_track_offered`):
+//    4        4       номер дорожки (от 1)
+//    8        8       смещение первого байта в документе (до 2^53 - 1)
+//   16        8       резерв - 0
 //   24        1...1 МиБ полезный груз
 //
 // Ненулевой резерв - ошибка: если будущая minor займёт резерв, её рамки старой
 // стороне никто не пошлёт.
+//
+// Разбор рамки версию сеанса не знает: вид 3 разбирается всегда, а отправитель сверяет
+// `dataFrameIntroducedIn` с общей версией сеанса до отправки (сторож плеера отвергнет
+// рамку вида 3 при общей версии ниже 1.5).
 
 import {
   type DataFrameErrorKind,
@@ -34,9 +43,11 @@ import {
   MAX_JSON_SAFE_INTEGER,
   MAX_SOURCE_BUFFERS_PER_GENERATION,
 } from "./limits.ts";
+import { PROTOCOL_VERSION_1_0, PROTOCOL_VERSION_1_5, type ProtocolVersion } from "./version.ts";
 
 const SOURCE_BUFFER_BYTES_KIND = 1;
 const RANGE_BYTES_KIND = 2;
+const PAGE_SUBTITLE_BYTES_KIND = 3;
 const MAX_U32 = 0xffff_ffff;
 const MAX_U64 = 0xffff_ffff_ffff_ffffn;
 const LITTLE_ENDIAN = true;
@@ -61,7 +72,24 @@ export interface RangeBytesHeader {
   readonly offset: number;
 }
 
-export type DataFrameHeader = SourceBufferBytesHeader | RangeBytesHeader;
+/** Заголовок рамки с байтами документа субтитров страницы (протокол 1.5). */
+export interface PageSubtitleBytesHeader {
+  readonly kind: "page_subtitle_bytes";
+  /** Номер дорожки из `subtitle_track_offered`, 1..2^32-1. */
+  readonly track: number;
+  /** Смещение первого байта груза в документе, 0..2^53-1 (подряд с 0 для каждого предложения). */
+  readonly offset: number;
+}
+
+export type DataFrameHeader = SourceBufferBytesHeader | RangeBytesHeader | PageSubtitleBytesHeader;
+
+/**
+ * В какой версии протокола появился вид рамки. Зеркало `DataFrameHeader::introduced_in`
+ * (data_frame.rs): рамку новее общей версии сеанса отправитель не шлёт.
+ */
+export function dataFrameIntroducedIn(kind: DataFrameHeader["kind"]): ProtocolVersion {
+  return kind === "page_subtitle_bytes" ? PROTOCOL_VERSION_1_5 : PROTOCOL_VERSION_1_0;
+}
 
 /** Разобранная рамка. `payload` - подмассив входного буфера, без копии. */
 export interface DataFrame {
@@ -87,6 +115,9 @@ function decodeHeader(view: DataView): DecodeResult<DataFrameHeader> {
   }
   if (kind === RANGE_BYTES_KIND) {
     return decodeRangeHeader(view);
+  }
+  if (kind === PAGE_SUBTITLE_BYTES_KIND) {
+    return decodePageSubtitleHeader(view);
   }
   return reject("unknown_frame_kind", "header byte 0");
 }
@@ -120,6 +151,21 @@ function decodeRangeHeader(view: DataView): DecodeResult<DataFrameHeader> {
     return reject("number_out_of_range", "offset");
   }
   return succeed({ kind: "range_bytes", request_id: view.getUint32(4, LITTLE_ENDIAN), offset: Number(offset) });
+}
+
+function decodePageSubtitleHeader(view: DataView): DecodeResult<DataFrameHeader> {
+  if (view.getBigUint64(16, LITTLE_ENDIAN) !== 0n) {
+    return reject("reserved_bits_set", "header bytes 16-23");
+  }
+  const track = view.getUint32(4, LITTLE_ENDIAN);
+  if (track === 0) {
+    return reject("number_out_of_range", "track");
+  }
+  const offset = view.getBigUint64(8, LITTLE_ENDIAN);
+  if (offset > BigInt(MAX_JSON_SAFE_INTEGER)) {
+    return reject("number_out_of_range", "offset");
+  }
+  return succeed({ kind: "page_subtitle_bytes", track, offset: Number(offset) });
 }
 
 /**
@@ -160,6 +206,9 @@ function writeHeader(header: DataFrameHeader, view: DataView): DecodeResult<true
     view.setBigUint64(16, header.sequence, LITTLE_ENDIAN);
     return succeed(true);
   }
+  if (header.kind === "page_subtitle_bytes") {
+    return writePageSubtitleHeader(header, view);
+  }
   const valid =
     Number.isInteger(header.request_id) &&
     header.request_id >= 0 &&
@@ -170,6 +219,22 @@ function writeHeader(header: DataFrameHeader, view: DataView): DecodeResult<true
   if (!valid) return reject("number_out_of_range", "range_bytes header");
   view.setUint8(0, RANGE_BYTES_KIND);
   view.setUint32(4, header.request_id, LITTLE_ENDIAN);
+  view.setBigUint64(8, BigInt(header.offset), LITTLE_ENDIAN);
+  return succeed(true);
+}
+
+/** Поля вида 3: номер дорожки от 1 и смещение до 2^53 - 1. */
+function writePageSubtitleHeader(header: PageSubtitleBytesHeader, view: DataView): DecodeResult<true> {
+  const valid =
+    Number.isInteger(header.track) &&
+    header.track >= 1 &&
+    header.track <= MAX_U32 &&
+    Number.isInteger(header.offset) &&
+    header.offset >= 0 &&
+    header.offset <= MAX_JSON_SAFE_INTEGER;
+  if (!valid) return reject("number_out_of_range", "page_subtitle_bytes header");
+  view.setUint8(0, PAGE_SUBTITLE_BYTES_KIND);
+  view.setUint32(4, header.track, LITTLE_ENDIAN);
   view.setBigUint64(8, BigInt(header.offset), LITTLE_ENDIAN);
   return succeed(true);
 }

@@ -43,15 +43,26 @@ fn sniff_sidecar_format(
     bytes: &[u8],
     encoding_hint: LegacyEncodingHint,
 ) -> Option<TextSubtitleFormat> {
-    // Четная граница: обрезанная посреди символа UTF-16 пара байт испортила бы весь префикс.
-    let prefix_len = bytes.len().min(FORMAT_SNIFF_PREFIX_BYTES) & !1;
-    let prefix = bytes.get(..prefix_len).unwrap_or(bytes);
-    let prefix_text = decode_subtitle_bytes(prefix, encoding_hint).text;
-    match sniff_text_subtitle_format(&prefix_text)? {
+    match sniff_text_format_of_bytes(bytes, encoding_hint)? {
         recognized @ (TextSubtitleFormat::Srt
         | TextSubtitleFormat::WebVtt
         | TextSubtitleFormat::Ass) => Some(recognized),
         // TTML/srv3 в файле рядом с видео не поддержаны: оставляем решение расширению.
         _ => None,
     }
+}
+
+/// Любой текстовый формат, который уверенно опознаётся по началу байтов (SRT, WebVTT, ASS,
+/// srv3, TTML, json3); `None` — содержимое ничего однозначного не говорит.
+///
+/// Декодируется только префикс: файл в сотни мегабайт не копируется ради опознания.
+pub(in crate::state::subtitles) fn sniff_text_format_of_bytes(
+    bytes: &[u8],
+    encoding_hint: LegacyEncodingHint,
+) -> Option<TextSubtitleFormat> {
+    // Четная граница: обрезанная посреди символа UTF-16 пара байт испортила бы весь префикс.
+    let prefix_len = bytes.len().min(FORMAT_SNIFF_PREFIX_BYTES) & !1;
+    let prefix = bytes.get(..prefix_len).unwrap_or(bytes);
+    let prefix_text = decode_subtitle_bytes(prefix, encoding_hint).text;
+    sniff_text_subtitle_format(&prefix_text)
 }

@@ -42,6 +42,8 @@ pub(crate) struct PlaybackCounters {
     pub(crate) loads: u64,
     /// Сколько раз плеер вошёл в ожидание данных (Buffering).
     pub(crate) buffering_entries: u64,
+    /// Кадров, ушедших в рендер вместе со слоем субтитров (окно; безоконный — всегда 0).
+    pub(crate) subtitle_overlay_frames: u64,
 }
 
 /// Что журнал заметил и о чём вызывающий должен сообщить отдельной строкой.
@@ -133,6 +135,11 @@ impl PlaybackJournal {
     /// Кадры, забранные выводом видео с прошлого вызова.
     pub(crate) fn note_taken_frames(&mut self, frames: u64) {
         self.counters.taken_frames += frames;
+    }
+
+    /// Кадры со слоем субтитров, ушедшие в рендер с прошлого вызова.
+    pub(crate) fn note_subtitle_overlay_frames(&mut self, frames: u64) {
+        self.counters.subtitle_overlay_frames += frames;
     }
 
     /// Последнее показание счётчика звука (накопительное, заменяет прежнее).
@@ -303,7 +310,7 @@ impl fmt::Display for PlaybackSummary {
             formatter,
             "presented_frames={} taken_frames={} audio_written_ms={} audio_played_ms={} \
              audio_output={} position_regressions={} loads={} buffering_entries={} \
-             position_ms={} state={}",
+             position_ms={} state={} subtitle_overlay_frames={}",
             counters.presented_frames,
             counters.taken_frames,
             self.audio.written.as_millis(),
@@ -314,6 +321,7 @@ impl fmt::Display for PlaybackSummary {
             counters.buffering_entries,
             self.position.as_millis(),
             playback_state_label(self.state),
+            counters.subtitle_overlay_frames,
         )
     }
 }

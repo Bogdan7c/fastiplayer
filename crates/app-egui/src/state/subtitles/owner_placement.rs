@@ -143,7 +143,10 @@ impl SubtitleOwner {
     ) -> Option<PlacedSubtitleOverlay<'_>> {
         let (horizontal_offset_fraction, vertical_offset_fraction) = self.displayed_style_offsets();
         let obstruction = self.controls_obstruction;
-        let has_overlay = if self.appearance_edit.is_some() {
+        let has_overlay = if self.hides_overlay_for_page_ad() {
+            // Реклама страницы на экране (решение 274): слой не рисуется, выбор не меняется.
+            false
+        } else if self.appearance_edit.is_some() {
             gated_edit_overlay(
                 self.media.as_ref(),
                 self.sample_track.as_ref(),
@@ -167,6 +170,8 @@ impl SubtitleOwner {
             self.last_placed_layer_offset = None;
             return None;
         };
+        // Кадр уходит в рендер со слоем субтитров (сводка браузерного окна).
+        self.shown_overlay_frames.note_frame();
         // Правило размещения зависит от того, что именно показано (ASS, картинки PGS или
         // обычные субтитры).
         let policy = self.placement_policy_for_shown_layer(overlay);

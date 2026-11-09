@@ -42,6 +42,9 @@ mod language;
 mod media_reset_order;
 mod memory_chain;
 mod memory_restore;
+mod page_gpu;
+mod page_support;
+mod page_tracks;
 mod placement;
 mod presentation;
 mod real_sidecar;
@@ -136,6 +139,9 @@ pub(super) fn expect_discovery(outcome: SidecarJobOutcome) -> DiscoveryOutcome {
         SidecarJobOutcome::FileLoaded { .. } => panic!("expected a search result, got a file"),
         SidecarJobOutcome::WebTrackLoaded { .. } => {
             panic!("expected a search result, got a web track")
+        }
+        SidecarJobOutcome::PageTrackParsed { .. } => {
+            panic!("expected a search result, got a page track")
         }
         SidecarJobOutcome::FontsBuilt(_) => panic!("expected a search result, got fonts"),
         SidecarJobOutcome::Failed(failure) => panic!("expected a search result, got {failure}"),

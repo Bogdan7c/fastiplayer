@@ -86,6 +86,7 @@ impl SubtitleOwner {
             }
             SidecarJobOutcome::FileLoaded { .. }
             | SidecarJobOutcome::WebTrackLoaded { .. }
+            | SidecarJobOutcome::PageTrackParsed { .. }
             | SidecarJobOutcome::FontsBuilt(_) => {
                 tracing::error!("A search task returned a foreign result; ignoring it");
                 media.discovery = DiscoveryState::Failed(SubtitleLoadFailure::WorkerLost);
@@ -163,7 +164,11 @@ impl SubtitleOwner {
             SidecarJobOutcome::WebTrackLoaded { track, fonts } => {
                 return self.accept_web_track_loaded(track_id, *track, fonts);
             }
+            SidecarJobOutcome::PageTrackParsed { track, fonts } => {
+                return self.accept_page_track_parsed(track_id, *track, fonts);
+            }
             SidecarJobOutcome::Failed(failure) => {
+                self.note_page_track_failure(track_id, &failure);
                 // Сбой скачивания — по одному уведомлению на неудавшуюся попытку.
                 if let SubtitleLoadFailure::DownloadFailed(error) = &failure {
                     self.download_failures.push(error.clone());
@@ -278,6 +283,11 @@ impl SubtitleOwner {
                 return;
             };
             task
+        } else if let Some(page) = entry.description.page() {
+            // Документ страницы уже в памяти: задача только разбирает его (байты не копируются).
+            SidecarJobTask::ParsePageTrack {
+                document: std::sync::Arc::clone(page.document()),
+            }
         } else {
             return;
         };

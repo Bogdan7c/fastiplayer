@@ -81,6 +81,8 @@ pub(super) trait WindowPlayer {
     fn take_player_events(&mut self) -> TappedPlayerEvents;
     /// Сколько кадров видео плеер отдал на показ за всё время (накопительно).
     fn video_frames_presented(&self) -> u64;
+    /// Сколько кадров ушло в рендер со слоем субтитров за всё время (накопительно).
+    fn subtitle_overlay_frames_shown(&self) -> u64;
 }
 
 /// Загрузка, которую плеер окна сейчас ставит.
@@ -100,6 +102,8 @@ pub(super) struct WindowPlaybackDriver {
     waiting: Option<LoadOrder>,
     /// Сколько кадров показа уже учтено в журнале.
     presented_frames_seen: u64,
+    /// Сколько кадров со слоем субтитров уже учтено в журнале.
+    subtitle_overlay_frames_seen: u64,
 }
 
 impl WindowPlaybackDriver {
@@ -113,6 +117,7 @@ impl WindowPlaybackDriver {
             in_flight: None,
             waiting: None,
             presented_frames_seen: 0,
+            subtitle_overlay_frames_seen: 0,
         }
     }
 
@@ -125,6 +130,7 @@ impl WindowPlaybackDriver {
     /// принадлежит экземпляру окна, а журнал — процессу).
     pub(super) fn attach_window(&mut self) {
         self.presented_frames_seen = 0;
+        self.subtitle_overlay_frames_seen = 0;
     }
 
     /// Ждёт ли что-то установки (окну нужно будить цикл, чтобы опрашивать её).
@@ -222,6 +228,11 @@ impl WindowPlaybackDriver {
         self.presented_frames_seen = presented_total;
         self.journal.note_presented_frames(presented_new);
         self.journal.note_taken_frames(presented_new);
+        // Кадры со слоем субтитров — доказательство «субтитры страницы видны» (13b1).
+        let overlays_total = player.subtitle_overlay_frames_shown();
+        let overlays_new = overlays_total.saturating_sub(self.subtitle_overlay_frames_seen);
+        self.subtitle_overlay_frames_seen = overlays_total;
+        self.journal.note_subtitle_overlay_frames(overlays_new);
         self.journal.note_audio(self.audio_meter.reading());
 
         let snapshot = player.snapshot();

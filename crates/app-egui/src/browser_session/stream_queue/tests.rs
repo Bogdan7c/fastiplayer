@@ -437,3 +437,60 @@ fn page_messages_count_against_the_byte_limit_and_memory_stays_bounded() {
     assert_eq!(queue.counters().dropped_overflow_items, 1_000);
     assert_eq!(queue.held_bytes_for_tests(), 0);
 }
+
+/// Субтитры страницы (протокол 1.5): заголовок и куски документа лежат в общей очереди в
+/// порядке провода, куски скопированы целиком и заряжаются своим размером под потолок байтов.
+#[test]
+fn page_subtitle_chunks_follow_their_offer_in_wire_order_and_are_charged() {
+    use browser_bridge_protocol::session::{
+        PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel, PageSubtitleLanguage,
+        PageSubtitleOrigin, PageSubtitleTrackId, SubtitleFormatHint,
+    };
+    use browser_bridge_session::PageSubtitleChunk;
+
+    let (queue, _inbox) = queue_with(QueueLimits::default());
+    let page = session("K1", 1);
+    let track = PageSubtitleTrackId::new(1).expect("valid track");
+    let offer = PageSessionMessage::SubtitleTrackOffered {
+        track,
+        language: PageSubtitleLanguage::Unknown {},
+        label: PageSubtitleLabel::None {},
+        format_hint: SubtitleFormatHint::WebVtt,
+        origin: PageSubtitleOrigin::PageDownload,
+        page_display: PageSubtitleDisplay::Showing,
+        byte_length: PageSubtitleByteLength::new(9).expect("valid length"),
+    };
+    let accept_subtitle = |offset: u64, payload: &[u8]| {
+        queue.accept(SessionChunk {
+            session: &page,
+            source: ChunkSource::PageSubtitle(PageSubtitleChunk {
+                track,
+                offset,
+                payload,
+            }),
+        });
+    };
+
+    queue
+        .publish_page_message(&page, offer.clone())
+        .expect("queue never refuses");
+    accept_subtitle(0, b"WEBVTT");
+    accept_subtitle(6, b"\n\n0");
+    let offer_bytes = encode_message(&offer).expect("encodable").len();
+    assert_eq!(queue.held_bytes_for_tests(), offer_bytes + 9);
+    assert_eq!(queue.counters().received_frames, 2);
+
+    let owned = |offset: u64, payload: &[u8]| OwnedPageSubtitleChunk {
+        track,
+        offset,
+        payload: payload.to_vec(),
+    };
+    assert_eq!(
+        take(&queue),
+        vec![
+            SessionInput::Message(page.clone(), offer),
+            SessionInput::PageSubtitleBytes(page.clone(), owned(0, b"WEBVTT")),
+            SessionInput::PageSubtitleBytes(page, owned(6, b"\n\n0")),
+        ]
+    );
+}

@@ -17,7 +17,11 @@
 //!   в порядке провода ([`SessionInput::RangeBytes`]) и заряжаются своим размером под
 //!   тот же потолок, что байты SourceBuffer: честная страница не упрётся (источник
 //!   держит не больше одного запроса ≤ 16 МиБ), а страница-враг закроет свой сеанс.
-//!   Сверку рамок с выданными запросами делает источник файла, не очередь.
+//!   Сверку рамок с выданными запросами делает источник файла, не очередь;
+//! - байты документов субтитров страницы (протокол 1.5, рамки вида 3) идут туда же в
+//!   порядке провода ([`SessionInput::PageSubtitleBytes`]) после своего заголовка
+//!   `subtitle_track_offered` и заряжаются под тот же потолок; их порядок уже проверил
+//!   сторож сервера.
 //!
 //! # Противодавление (сессия 09b2)
 //!
@@ -48,6 +52,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use browser_bridge_protocol::limits::MAX_JSON_MESSAGE_BYTES;
+use browser_bridge_protocol::session::PageSubtitleTrackId;
 use browser_bridge_protocol::{
     AppendSequence, PageSessionMessage, RangeRequestId, SessionCloseReason, SourceBufferIndex,
     StreamGeneration, encode_message,
@@ -144,6 +149,20 @@ pub(crate) struct OwnedRangeChunk {
     pub(crate) payload: Vec<u8>,
 }
 
+/// Кусок документа субтитров страницы (протокол 1.5), скопированный из кадра.
+///
+/// Сторож сервера уже проверил: дорожку предложили, `offset` ровно продолжает принятые байты
+/// этого предложения, кусок не выходит за объявленную длину.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnedPageSubtitleChunk {
+    /// Номер дорожки из `subtitle_track_offered`.
+    pub(crate) track: PageSubtitleTrackId,
+    /// Смещение первого байта куска в документе.
+    pub(crate) offset: u64,
+    /// Байты документа.
+    pub(crate) payload: Vec<u8>,
+}
+
 /// Элемент единой очереди — в порядке кадров на проводе.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SessionInput {
@@ -153,6 +172,8 @@ pub(crate) enum SessionInput {
     Bytes(SessionRef, OwnedChunk),
     /// Байты файла `<video src>` (ответ на `fetch_range`).
     RangeBytes(SessionRef, OwnedRangeChunk),
+    /// Байты документа субтитров страницы (протокол 1.5, рамка вида 3).
+    PageSubtitleBytes(SessionRef, OwnedPageSubtitleChunk),
     /// Экземпляр сеанса закончился: данных от него больше не будет.
     Ended(SessionRef),
 }
@@ -164,13 +185,14 @@ impl SessionInput {
             Self::Message(session, _)
             | Self::Bytes(session, _)
             | Self::RangeBytes(session, _)
+            | Self::PageSubtitleBytes(session, _)
             | Self::Ended(session) => session,
         }
     }
 
     /// Сколько байтов элемент списывает с потолка [`QueueLimits::max_payload_bytes`].
     ///
-    /// - байты SourceBuffer и файла — их длина (основной вес очереди);
+    /// - байты SourceBuffer, файла и документа субтитров — их длина (основной вес очереди);
     /// - сообщение страницы — длина его компактного JSON. Выбор: точный размер рамки
     ///   до разбора приёмнику не виден, а повторная запись дешёвая (сообщения — единицы
     ///   в секунду, сотни байтов, меню — до 128 КиБ) и честно отражает строки, которые
@@ -182,6 +204,7 @@ impl SessionInput {
         match self {
             Self::Bytes(_, chunk) => chunk.payload.len(),
             Self::RangeBytes(_, chunk) => chunk.payload.len(),
+            Self::PageSubtitleBytes(_, chunk) => chunk.payload.len(),
             Self::Message(_, message) => {
                 encode_message(message).map_or(MAX_JSON_MESSAGE_BYTES, |json| json.len())
             }
@@ -203,7 +226,7 @@ struct QueuedInput {
 /// Счётчики очереди за жизнь процесса.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QueueCounters {
-    /// Рамок байтов, пришедших от сервера (SourceBuffer и `<video src>`), — как
+    /// Рамок байтов, пришедших от сервера (SourceBuffer, `<video src>`, субтитры), — как
     /// у прежнего `CountingByteSink`: считается всё принятое, даже выброшенное.
     pub(crate) received_frames: u64,
     /// Байтов груза в этих рамках.
@@ -452,6 +475,7 @@ impl SessionByteSink for OrderedSessionQueue {
         let payload_len = match chunk.source {
             ChunkSource::SourceBuffer(buffer) => buffer.payload.len(),
             ChunkSource::Range(range) => range.payload.len(),
+            ChunkSource::PageSubtitle(subtitle) => subtitle.payload.len(),
         };
         self.count_received(payload_len);
         match chunk.source {
@@ -470,6 +494,14 @@ impl SessionByteSink for OrderedSessionQueue {
                     request_id: range.request_id,
                     offset: range.offset,
                     payload: range.payload.to_vec(),
+                },
+            )),
+            ChunkSource::PageSubtitle(subtitle) => self.admit(SessionInput::PageSubtitleBytes(
+                chunk.session.clone(),
+                OwnedPageSubtitleChunk {
+                    track: subtitle.track,
+                    offset: subtitle.offset,
+                    payload: subtitle.payload.to_vec(),
                 },
             )),
         }

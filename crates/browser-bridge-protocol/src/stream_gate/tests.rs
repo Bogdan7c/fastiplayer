@@ -478,3 +478,5 @@ fn page_player_failed_is_a_violation_below_1_3_and_the_older_reasons_are_not() {
 mod hls;
 
 mod page_presence;
+
+mod page_subtitles;

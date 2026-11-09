@@ -51,6 +51,10 @@ function summarizeFrame(header: DataFrameHeader, payloadLength: number): Record<
       payload_len: payloadLength,
     };
   }
+  if (header.kind === "page_subtitle_bytes") {
+    // Протокол 1.5: байты документа субтитров страницы.
+    return { kind: "page_subtitle_bytes", track: header.track, offset: header.offset, payload_len: payloadLength };
+  }
   return { kind: "range_bytes", request_id: header.request_id, offset: header.offset, payload_len: payloadLength };
 }
 
@@ -140,7 +144,7 @@ test("у каждой схемы валидные фикстуры покрыв�
   // Сверка с полным списком типов кодека: фикстура на каждый тип и ни одного лишнего.
   assert.deepEqual([...new Set(coveredTypes("page_session"))].sort(), [...pageSessionCodec.knownTags].sort());
   assert.deepEqual([...new Set(coveredTypes("player_session"))].sort(), [...playerSessionCodec.knownTags].sort());
-  assert.equal(new Set(coveredTypes("page_session")).size, 21);
+  assert.equal(new Set(coveredTypes("page_session")).size, 22);
   assert.equal(new Set(coveredTypes("player_session")).size, 16);
 });
 

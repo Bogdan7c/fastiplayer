@@ -885,3 +885,7 @@ mod hls_live_window;
 /// Возврат ушедшей страницы в тот же сеанс и окно (протокол 1.4, «сирота», 11b1).
 #[path = "browser_session_process/tab_return.rs"]
 mod tab_return;
+
+/// Субтитры страницы (протокол 1.5, 13b1): документ до кадров окна, реклама их прячет.
+#[path = "browser_session_process/page_subtitles.rs"]
+mod page_subtitles;

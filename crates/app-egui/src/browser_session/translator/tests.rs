@@ -279,6 +279,8 @@ enum Seen {
     Sealed(u64),
     AdState(u64, PageAdState),
     PageLink(u64, PageLinkChange),
+    /// Готовый документ субтитров страницы: (экземпляр, номер дорожки, байты).
+    PageSubtitle(u64, u32, Vec<u8>),
 }
 
 fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
@@ -313,6 +315,11 @@ fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
             IntakeNotice::PageLink { session, change } => {
                 Seen::PageLink(session.instance.0, *change)
             }
+            IntakeNotice::PageSubtitleReady { session, document } => Seen::PageSubtitle(
+                session.instance.0,
+                document.track.get(),
+                document.bytes.to_vec(),
+            ),
         })
         .collect()
 }
@@ -762,4 +769,5 @@ mod hls_source;
 mod log_privacy;
 mod page_link;
 mod page_removal;
+mod page_subtitles;
 mod real_source;

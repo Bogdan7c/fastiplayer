@@ -42,6 +42,7 @@ use crate::app_wake::{AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::browser_session::hls_bridge::capabilities::BrowserDecodeCapabilities;
 use crate::frame_prepare::{render_frame, with_lifecycle_settings_adapter};
 use crate::instance_forwarding::window_activation::raise_window;
+use crate::page_subtitles::{PageSubtitleShelfView, PageTracksUpdate};
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::ShutdownDeadline;
 use crate::redraw_pacing::{
@@ -373,6 +374,14 @@ impl BrowserWindowInstance {
     /// скоростью; кадр нужен, только если плашка изменилась (09d).
     pub(super) fn apply_ad_plate(&mut self, plate: Option<AdPlate>) {
         if self.app_state.note_ad_plate(plate) {
+            self.app_state.note_visible_mutation_for_redraw();
+            self.window.request_redraw();
+        }
+    }
+
+    /// Склад субтитров страницы (13b1): владелец субтитров добавляет его дорожки текущему медиа.
+    pub(super) fn apply_page_subtitles(&mut self, shelf: &PageSubtitleShelfView) {
+        if self.app_state.offer_page_subtitle_shelf(shelf) == PageTracksUpdate::Changed {
             self.app_state.note_visible_mutation_for_redraw();
             self.window.request_redraw();
         }

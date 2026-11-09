@@ -11,6 +11,10 @@ use crate::error::ValueViolation;
 use crate::resource::{ResourceFetchOutcome, ResourceHandle};
 use crate::session::ad_state::PageAdState;
 use crate::session::page_reopen::PageReopenFailure;
+use crate::session::page_subtitles::{
+    PAGE_SUBTITLES_INTRODUCED_IN, PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel,
+    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SubtitleFormatHint,
+};
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
@@ -355,6 +359,25 @@ pub enum PageSessionMessage {
         /// Почему не вышло.
         reason: PageReopenFailure,
     },
+    /// Документ дорожки субтитров страницы (протокол 1.5, решение 270): за этим заголовком
+    /// идут его байты рамками вида 3, подряд с 0, ровно `byte_length` байт. Тот же `track`
+    /// ещё раз — замена документа. Договор — `crate::session::page_subtitles`.
+    SubtitleTrackOffered {
+        /// Номер дорожки на сеанс.
+        track: PageSubtitleTrackId,
+        /// Язык дорожки.
+        language: PageSubtitleLanguage,
+        /// Подпись дорожки.
+        label: PageSubtitleLabel,
+        /// Формат документа по мнению экстеншена.
+        format_hint: SubtitleFormatHint,
+        /// Откуда документ.
+        origin: PageSubtitleOrigin,
+        /// Была ли дорожка включена на странице.
+        page_display: PageSubtitleDisplay,
+        /// Точная длина документа.
+        byte_length: PageSubtitleByteLength,
+    },
 }
 
 impl PageSessionMessage {
@@ -372,6 +395,7 @@ impl PageSessionMessage {
             | Self::PageLeft { .. }
             | Self::PageReturned {}
             | Self::PageReopenFailed { .. }
+            | Self::SubtitleTrackOffered { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
             | Self::FileSourceAdded { generation }
@@ -419,6 +443,7 @@ impl PageSessionMessage {
             Self::PageLeft { .. } | Self::PageReturned {} | Self::PageReopenFailed { .. } => {
                 ProtocolVersion::V1_4
             }
+            Self::SubtitleTrackOffered { .. } => PAGE_SUBTITLES_INTRODUCED_IN,
             Self::Attach { .. }
             | Self::GenerationStarted { .. }
             | Self::FileSourceAdded { .. }
@@ -481,6 +506,7 @@ impl ProtocolMessage for PageSessionMessage {
         "page_left",
         "page_returned",
         "page_reopen_failed",
+        "subtitle_track_offered",
     ];
 
     fn validate(&self) -> Result<(), ValueViolation> {

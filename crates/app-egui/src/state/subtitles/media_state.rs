@@ -15,6 +15,7 @@ use super::intents::SubtitleVisibility;
 use super::job_runner::SidecarJob;
 use super::owner_embedded::{EmbeddedAssTracks, EmbeddedPgsTracks};
 use super::owner_memory::{MemoryDirty, PendingRememberedChoice};
+use super::owner_page::MediaPageTracks;
 use super::owner_stream::StreamTracks;
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::{SubtitleTrackList, TrackLoadState};
@@ -109,6 +110,8 @@ pub(super) struct MediaSubtitles {
     pub(super) streams: StreamTracks,
     /// Файлы, которые пользователь добавил сам, и их ещё не показанные отказы (для toast).
     pub(super) user_files: UserRequestedFiles,
+    /// Документы склада страницы (мост), ставшие дорожками этого media, и выбор страницы.
+    pub(super) page_tracks: MediaPageTracks,
 }
 
 impl MediaSubtitles {
@@ -133,6 +136,7 @@ impl MediaSubtitles {
             web_downloader: None,
             streams: StreamTracks::default(),
             user_files: UserRequestedFiles::default(),
+            page_tracks: MediaPageTracks::default(),
         }
     }
 

@@ -16,6 +16,7 @@ use subtitle_formats::{
 use subtitle_sidecar::{SidecarSubtitleCandidate, SidecarSubtitleFormat};
 
 use self::format_detection::resolve_text_format;
+pub(super) use self::format_detection::sniff_text_format_of_bytes;
 use self::regular_file::open_regular_file;
 use super::limits::LoadLimits;
 use super::sidecar_job::SubtitleLoadFailure;

@@ -168,3 +168,53 @@ fn page_title_and_domain_never_show_their_text_in_debug_output() {
     assert_eq!(printed, "PageTitle(<hidden>) SiteDomain(<hidden>)");
     assert!(!printed.contains("unique"));
 }
+
+#[test]
+fn subtitle_language_tags_accept_real_bcp47_shapes_as_is() {
+    // Регистр не нормализуется: тег уходит получателю ровно таким, каким его дала страница.
+    for tag in ["en", "pt-BR", "zh-Hant-TW", "es-419", "x-klingon", "EN-us"] {
+        assert_eq!(
+            SubtitleLanguageTag::new(tag)
+                .as_ref()
+                .map(SubtitleLanguageTag::as_str),
+            Ok(tag),
+            "{tag:?}"
+        );
+    }
+}
+
+#[test]
+fn subtitle_language_tags_reject_empty_long_foreign_and_misplaced_dashes() {
+    use crate::limits::MAX_SUBTITLE_LANGUAGE_TAG_BYTES;
+    assert_eq!(SubtitleLanguageTag::new(""), Err(ValueViolation::TextEmpty));
+    let at_limit = "a".repeat(MAX_SUBTITLE_LANGUAGE_TAG_BYTES);
+    assert!(SubtitleLanguageTag::new(at_limit.clone()).is_ok());
+    assert_eq!(
+        SubtitleLanguageTag::new(format!("{at_limit}b")),
+        Err(ValueViolation::TextTooLong)
+    );
+    for tag in ["en_US", "en US", "ру", "en.US", "-en", "en-", "en--US", "-"] {
+        assert_eq!(
+            SubtitleLanguageTag::new(tag),
+            Err(ValueViolation::TextForbiddenCharacter),
+            "{tag:?}"
+        );
+    }
+}
+
+#[test]
+fn subtitle_labels_are_display_text_up_to_256_bytes_and_never_empty() {
+    use crate::limits::MAX_SUBTITLE_LABEL_BYTES;
+    assert!(SubtitleLabel::new("Українська (автоперевод) 🎬").is_ok());
+    assert_eq!(SubtitleLabel::new(""), Err(ValueViolation::TextEmpty));
+    let at_limit = "ї".repeat(MAX_SUBTITLE_LABEL_BYTES / 2);
+    assert!(SubtitleLabel::new(at_limit.clone()).is_ok());
+    assert_eq!(
+        SubtitleLabel::new(format!("{at_limit}a")),
+        Err(ValueViolation::TextTooLong)
+    );
+    assert_eq!(
+        SubtitleLabel::new("spoof\u{202E}lmth.exe"),
+        Err(ValueViolation::TextForbiddenCharacter)
+    );
+}

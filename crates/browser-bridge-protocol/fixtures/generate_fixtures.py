@@ -14,7 +14,8 @@
 
 Нужны только медиа из fixtures/media/ (их делает media/generate.sh). Скрипт
 стирает и пересоздаёт control/, session/, data/, streams/, manifest.json,
-resource-addresses.json, message-versions.json и value-versions.json.
+resource-addresses.json, message-versions.json, value-versions.json и
+page-subtitle-gate.json.
 """
 
 from __future__ import annotations
@@ -35,10 +36,17 @@ FIXTURE_TOKEN = "Zml4dHVyZS10b2tlbi1icmlkZ2UtMDEtcHJvdG9jb2w"
 # Коды вида двоичной рамки из crate::data_frame.
 SOURCE_BUFFER_BYTES_KIND = 1
 RANGE_BYTES_KIND = 2
+# Протокол 1.5: байты документа субтитров страницы.
+PAGE_SUBTITLE_BYTES_KIND = 3
 MAX_JSON_SAFE_INTEGER = (1 << 53) - 1
 # Лимиты протокола 1.1 (crate::limits): ресурс HLS за один запрос.
 MAX_RESOURCE_FETCH_BYTES = 128 * 1024 * 1024
 U32_MAX = 0xFFFF_FFFF
+# Лимиты протокола 1.5 (crate::limits): субтитры страницы.
+MAX_PAGE_SUBTITLE_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_PAGE_SUBTITLE_TRACKS = 64
+MAX_SUBTITLE_LABEL_BYTES = 256
+MAX_SUBTITLE_LANGUAGE_TAG_BYTES = 35
 # Адрес-заглушка номерка ресурса HLS (crate::resource_address), независимо от Rust.
 RESOURCE_ADDRESS_PREFIX = "https://resource.fastiplayer-bridge.invalid/"
 
@@ -72,6 +80,12 @@ def source_buffer_frame(
 def range_frame(request_id: int, offset: int, payload: bytes, *, reserved: int = 0) -> bytes:
     """Рамка вида 2: байты файла <video src>."""
     header = struct.pack("<BBHIQQ", RANGE_BYTES_KIND, 0, 0, request_id, offset, reserved)
+    return header + payload
+
+
+def page_subtitle_frame(track: int, offset: int, payload: bytes, *, reserved: int = 0) -> bytes:
+    """Рамка вида 3 (протокол 1.5): байты документа субтитров страницы."""
+    header = struct.pack("<BBHIQQ", PAGE_SUBTITLE_BYTES_KIND, 0, 0, track, offset, reserved)
     return header + payload
 
 
@@ -1221,7 +1235,8 @@ def write_data_frames(manifest: Manifest) -> None:
     good = source_buffer_frame(1, 0, 0, payload)
     invalid_frame("shorter-than-header", good[:23], "frame_too_short")
     invalid_frame("header-without-payload", good[:24], "payload_empty")
-    invalid_frame("unknown-kind-3", source_buffer_frame(1, 0, 0, payload, kind=3), "unknown_frame_kind")
+    # С протокола 1.5 вид 3 занят (субтитры страницы): незнакомый — следующий.
+    invalid_frame("unknown-kind-4", source_buffer_frame(1, 0, 0, payload, kind=4), "unknown_frame_kind")
     invalid_frame("kind-zero", source_buffer_frame(1, 0, 0, payload, kind=0), "unknown_frame_kind")
     invalid_frame("flags-set", source_buffer_frame(1, 0, 0, payload, flags=1), "reserved_bits_set")
     invalid_frame(
@@ -1233,6 +1248,40 @@ def write_data_frames(manifest: Manifest) -> None:
     invalid_frame("generation-zero", source_buffer_frame(0, 0, 0, payload), "number_out_of_range")
     invalid_frame("source-buffer-8", source_buffer_frame(1, 8, 0, payload), "number_out_of_range")
     invalid_frame("offset-beyond-js-safe-integer", range_frame(1, MAX_JSON_SAFE_INTEGER + 1, payload), "number_out_of_range")
+    write_page_subtitle_frames(manifest)
+
+
+def write_page_subtitle_frames(manifest: Manifest) -> None:
+    """Рамки вида 3 (протокол 1.5): разбор формы. Версию сеанса разбор не знает — её и
+    порядок документа проверяет сторож (случаи — page-subtitle-gate.json)."""
+    schema = "data_frame"
+    document = "WEBVTT\n\n00:00.000 --> 00:01.000\nПривіт\n".encode()
+    manifest.add(
+        "data/valid/page-subtitle-first-frame.bin",
+        schema,
+        page_subtitle_frame(1, 0, document),
+        {"result": "ok", "frame": {"kind": "page_subtitle_bytes", "track": 1, "offset": 0, "payload_len": len(document)}},
+    )
+    manifest.add(
+        "data/valid/page-subtitle-max-fields.bin",
+        schema,
+        page_subtitle_frame(U32_MAX, MAX_JSON_SAFE_INTEGER, b"\xff"),
+        {
+            "result": "ok",
+            "frame": {"kind": "page_subtitle_bytes", "track": U32_MAX, "offset": MAX_JSON_SAFE_INTEGER, "payload_len": 1},
+        },
+    )
+    for name, content, kind in [
+        ("page-subtitle-track-zero", page_subtitle_frame(0, 0, document), "number_out_of_range"),
+        (
+            "page-subtitle-offset-beyond-js-safe-integer",
+            page_subtitle_frame(1, MAX_JSON_SAFE_INTEGER + 1, document),
+            "number_out_of_range",
+        ),
+        ("page-subtitle-reserved-set", page_subtitle_frame(1, 0, document, reserved=1), "reserved_bits_set"),
+        ("page-subtitle-without-payload", page_subtitle_frame(1, 0, b""), "payload_empty"),
+    ]:
+        manifest.add(f"data/invalid/{name}.bin", schema, content, {"result": "error", "kind": kind})
 
 
 @dataclass
@@ -1593,6 +1642,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         "page_left": "1.4",
         "page_returned": "1.4",
         "page_reopen_failed": "1.4",
+        "subtitle_track_offered": "1.5",
     },
     "player_session": {
         **{
@@ -1725,6 +1775,228 @@ def write_quality_switch_stream(manifest: Manifest) -> None:
     stream.finish(manifest, {"admitted": admitted, "dropped_frames": 0, "dropped_messages": 0})
 
 
+# Значение-пометка «убрать поле» для `subtitle_offer` (`None` — это JSON `null`).
+OMIT_FIELD = object()
+
+
+def subtitle_offer(**overrides: Any) -> dict[str, Any]:
+    """`subtitle_track_offered` (протокол 1.5) с полями по умолчанию; `OMIT_FIELD` убирает поле."""
+    fields: dict[str, Any] = {
+        "track": 1,
+        "language": {"kind": "known", "tag": "en"},
+        "label": {"kind": "text", "text": "English"},
+        "format_hint": "web_vtt",
+        "origin": "page_download",
+        "page_display": "showing",
+        "byte_length": 1234,
+    }
+    fields.update(overrides)
+    return page_message("subtitle_track_offered", **{name: value for name, value in fields.items() if value is not OMIT_FIELD})
+
+
+def write_page_subtitle_messages(manifest: Manifest) -> None:
+    """Заголовок документа субтитров страницы `subtitle_track_offered` (протокол 1.5).
+
+    Необязательные язык и подпись — метки (`{"kind":"unknown"}`, `{"kind":"none"}`), а не
+    отсутствующие поля; все поля обязательны. Тег языка — форма BCP-47 (буквы, цифры,
+    дефис между частями, 1…35 байт), подпись — текст для человека до 256 байт.
+    """
+    schema = "page_session"
+    valid = "session/valid/page-subtitle-track-offered-"
+    longest_label = "ї" * (MAX_SUBTITLE_LABEL_BYTES // 2)
+    for name, message in [
+        ("full", subtitle_offer()),
+        (
+            "unknown-language-no-label",
+            subtitle_offer(
+                track=2,
+                language={"kind": "unknown"},
+                label={"kind": "none"},
+                format_hint="srv3",
+                origin="text_track_cues",
+                page_display="not_showing",
+                byte_length=1,
+            ),
+        ),
+        (
+            "max-fields",
+            subtitle_offer(
+                track=U32_MAX,
+                language={"kind": "known", "tag": "zh-Hant-TW"},
+                label={"kind": "text", "text": longest_label},
+                format_hint="json3",
+                origin="track_element",
+                byte_length=MAX_PAGE_SUBTITLE_DOCUMENT_BYTES,
+            ),
+        ),
+        ("format-srt", subtitle_offer(format_hint="srt")),
+        ("format-ttml", subtitle_offer(format_hint="ttml", language={"kind": "known", "tag": "pt-BR"})),
+        ("format-unknown", subtitle_offer(format_hint="unknown", label={"kind": "text", "text": "Українська 🎬"})),
+    ]:
+        manifest.valid(f"{valid}{name}.json", schema, message)
+
+    invalid = "session/invalid/page-subtitle-track-offered-"
+    too_long_tag = "a" * (MAX_SUBTITLE_LANGUAGE_TAG_BYTES + 1)
+    too_long_label = longest_label + "a"
+    for name, message, kind in [
+        # Форма сообщения строгая: лишнее поле и лишнее поле внутри метки — ошибки.
+        ("unknown-field", subtitle_offer(url="https://example.com/subs.vtt"), "unknown_field"),
+        ("language-extra-field", subtitle_offer(language={"kind": "known", "tag": "en", "script": "Latn"}), "unknown_field"),
+        ("language-unknown-with-tag", subtitle_offer(language={"kind": "unknown", "tag": "en"}), "unknown_field"),
+        ("label-none-with-text", subtitle_offer(label={"kind": "none", "text": "English"}), "unknown_field"),
+        ("language-missing", subtitle_offer(language=OMIT_FIELD), "missing_field"),
+        ("label-missing", subtitle_offer(label=OMIT_FIELD), "missing_field"),
+        ("byte-length-missing", subtitle_offer(byte_length=OMIT_FIELD), "missing_field"),
+        ("language-tag-missing", subtitle_offer(language={"kind": "known"}), "missing_field"),
+        ("language-kind-unknown", subtitle_offer(language={"kind": "guessed", "tag": "en"}), "unknown_value"),
+        # Тег языка: пустой, длинный, чужие символы, дефис не между частями.
+        ("language-tag-empty", subtitle_offer(language={"kind": "known", "tag": ""}), "text_empty"),
+        ("language-tag-too-long", subtitle_offer(language={"kind": "known", "tag": too_long_tag}), "text_too_long"),
+        ("language-tag-underscore", subtitle_offer(language={"kind": "known", "tag": "en_US"}), "text_forbidden_character"),
+        ("language-tag-space", subtitle_offer(language={"kind": "known", "tag": "en US"}), "text_forbidden_character"),
+        ("language-tag-cyrillic", subtitle_offer(language={"kind": "known", "tag": "ук"}), "text_forbidden_character"),
+        ("language-tag-leading-dash", subtitle_offer(language={"kind": "known", "tag": "-en"}), "text_forbidden_character"),
+        ("language-tag-trailing-dash", subtitle_offer(language={"kind": "known", "tag": "en-"}), "text_forbidden_character"),
+        ("language-tag-double-dash", subtitle_offer(language={"kind": "known", "tag": "en--US"}), "text_forbidden_character"),
+        # Подпись: пустой нет (её отсутствие — метка `none`), длиннее 256 байт и управляющие — нет.
+        ("label-empty", subtitle_offer(label={"kind": "text", "text": ""}), "text_empty"),
+        ("label-too-long", subtitle_offer(label={"kind": "text", "text": too_long_label}), "text_too_long"),
+        ("label-line-break", subtitle_offer(label={"kind": "text", "text": "Eng\nlish"}), "text_forbidden_character"),
+        ("label-bidi-override", subtitle_offer(label={"kind": "text", "text": "spoof‮lmth.exe"}), "text_forbidden_character"),
+        # Числа: длина 1…8 МиБ, номер дорожки 1…u32.
+        ("byte-length-zero", subtitle_offer(byte_length=0), "number_out_of_range"),
+        ("byte-length-above-limit", subtitle_offer(byte_length=MAX_PAGE_SUBTITLE_DOCUMENT_BYTES + 1), "number_out_of_range"),
+        ("byte-length-negative", subtitle_offer(byte_length=-1), "number_out_of_range"),
+        ("byte-length-fractional", subtitle_offer(byte_length=10.5), "wrong_value_type"),
+        ("byte-length-string", subtitle_offer(byte_length="1234"), "wrong_value_type"),
+        ("track-zero", subtitle_offer(track=0), "number_out_of_range"),
+        ("track-beyond-u32", subtitle_offer(track=U32_MAX + 1), "number_out_of_range"),
+        # Метки строгие, без нормализации.
+        ("format-hint-unknown", subtitle_offer(format_hint="vtt"), "unknown_value"),
+        ("format-hint-upper-case", subtitle_offer(format_hint="WebVTT"), "unknown_value"),
+        ("format-hint-with-dashes", subtitle_offer(format_hint="web-vtt"), "unknown_value"),
+        ("origin-unknown", subtitle_offer(origin="network"), "unknown_value"),
+        ("page-display-unknown", subtitle_offer(page_display="hidden"), "unknown_value"),
+        # Чужая форма значения — ошибка формы (`crate::strict_shape`).
+        ("language-null", subtitle_offer(language=None), "wrong_value_type"),
+        ("language-as-string", subtitle_offer(language="en"), "wrong_value_type"),
+        ("language-as-array", subtitle_offer(language=["known", "en"]), "wrong_value_type"),
+        ("language-kind-as-index", subtitle_offer(language={"kind": 1, "tag": "en"}), "wrong_value_type"),
+        ("label-as-string", subtitle_offer(label="English"), "wrong_value_type"),
+        ("format-hint-as-map", subtitle_offer(format_hint={"web_vtt": None}), "wrong_value_type"),
+        ("format-hint-as-index", subtitle_offer(format_hint=0), "wrong_value_type"),
+        ("page-display-as-map", subtitle_offer(page_display={"showing": None}), "wrong_value_type"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
+
+
+def gate_text(message: dict[str, Any]) -> dict[str, str]:
+    """Шаг случая сторожа: текстовая рамка — ровно байты сообщения на проводе."""
+    return {"text": compact_json(message).decode("utf-8")}
+
+
+def gate_binary(frame: bytes) -> dict[str, str]:
+    """Шаг случая сторожа: двоичная рамка шестнадцатеричной строкой."""
+    return {"binary_hex": frame.hex()}
+
+
+def gate_ok(name: str, steps: list[dict[str, str]], documents: list[tuple[int, bytes]], agreed: str = "1.5") -> dict[str, Any]:
+    """Случай, который сторож принимает целиком; `documents` — готовые документы по дорожкам."""
+    return {
+        "name": name,
+        "agreed": agreed,
+        "steps": steps,
+        "expect": {
+            "result": "ok",
+            "documents": [{"track": track, "utf8": content.decode("utf-8")} for track, content in documents],
+        },
+    }
+
+
+def gate_violation(name: str, steps: list[dict[str, str]], violation: str, agreed: str = "1.5") -> dict[str, Any]:
+    """Случай, где ПОСЛЕДНИЙ шаг — нарушение (сеанс закрывается 4003), а все до него приняты."""
+    return {
+        "name": name,
+        "agreed": agreed,
+        "steps": steps,
+        "expect": {"result": "violation", "at_step": len(steps) - 1, "violation": violation},
+    }
+
+
+def write_page_subtitle_gate_cases() -> None:
+    """Правила сторожа для субтитров страницы (протокол 1.5) — общие случаи порядка.
+
+    В отличие от `streams/` здесь есть и отвергаемые последовательности: каждое правило
+    договора — свой случай. Шаги — байты на проводе (JSON-текст или рамка в hex), имена
+    нарушений — `StreamViolation` в snake_case. Сторож есть только у плеера (Rust); TypeScript
+    сверяет, что каждый шаг разбирается его кодеками.
+    """
+    first = "WEBVTT\n\n00:00.000 --> 00:01.000\nПривіт\n".encode()
+    second = "WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n".encode()
+    half = len(first) // 2
+
+    def offer(track: int, document: bytes, **overrides: Any) -> dict[str, str]:
+        return gate_text(subtitle_offer(track=track, byte_length=len(document), **overrides))
+
+    def piece(track: int, offset: int, payload: bytes) -> dict[str, str]:
+        return gate_binary(page_subtitle_frame(track, offset, payload))
+
+    whole_first = [offer(1, first), piece(1, 0, first[:half]), piece(1, half, first[half:])]
+    page_left = gate_text(page_message("page_left", reason="closed"))
+    cases = [
+        gate_ok("document-in-two-frames", whole_first, [(1, first)]),
+        gate_ok(
+            # Документ не трогает поколений: MSE идёт своим чередом между кусками.
+            "document-between-media-source-bytes",
+            [
+                gate_text(page_message("generation_started", generation=1)),
+                gate_text(page_message("source_buffer_added", generation=1, source_buffer=0, mime_type=VIDEO_MIME)),
+                offer(1, first),
+                gate_binary(source_buffer_frame(1, 0, 0, b"\x00\x00\x00\x08free")),
+                piece(1, 0, first[:half]),
+                gate_text(page_message("generation_started", generation=2)),
+                piece(1, half, first[half:]),
+            ],
+            [(1, first)],
+        ),
+        gate_ok(
+            "two-tracks-interleaved",
+            [offer(1, first), offer(2, second), piece(2, 0, second), piece(1, 0, first)],
+            [(1, first), (2, second)],
+        ),
+        gate_ok(
+            "re-offer-replaces-partial",
+            [offer(1, first), piece(1, 0, first[:half]), offer(1, second), piece(1, 0, second)],
+            [(1, second)],
+        ),
+        gate_ok("re-offer-replaces-complete", [*whole_first, offer(1, second), piece(1, 0, second)], [(1, second)]),
+        gate_ok(
+            "max-tracks-and-replacing-one",
+            [*[offer(track, b"x") for track in range(1, MAX_PAGE_SUBTITLE_TRACKS + 1)], offer(1, first), piece(1, 0, first)],
+            [(1, first)],
+        ),
+        gate_violation("frame-for-unknown-track", [offer(1, first), piece(2, 0, first)], "page_subtitle_track_not_offered"),
+        gate_violation("frame-before-any-offer", [piece(1, 0, first)], "page_subtitle_track_not_offered"),
+        gate_violation("frame-for-complete-document", [*whole_first, piece(1, len(first), b"x")], "page_subtitle_document_complete"),
+        gate_violation("offset-gap", [offer(1, first), piece(1, 0, first[:half]), piece(1, half + 1, first[half + 1 :])], "page_subtitle_offset_gap"),
+        gate_violation("offset-repeat", [offer(1, first), piece(1, 0, first[:half]), piece(1, 0, first[:half])], "page_subtitle_offset_gap"),
+        gate_violation("offset-after-re-offer-continues-old", [offer(1, first), piece(1, 0, first[:half]), offer(1, first), piece(1, half, first[half:])], "page_subtitle_offset_gap"),
+        gate_violation("overflow-past-byte-length", [offer(1, first), piece(1, 0, first + b"x")], "page_subtitle_beyond_byte_length"),
+        gate_violation(
+            "sixty-fifth-track",
+            [offer(track, b"x") for track in range(1, MAX_PAGE_SUBTITLE_TRACKS + 2)],
+            "too_many_page_subtitle_tracks",
+        ),
+        gate_violation("offer-under-1-4", [offer(1, first)], "message_not_in_agreed_version", agreed="1.4"),
+        gate_violation("frame-under-1-4", [piece(1, 0, first)], "data_frame_not_in_agreed_version", agreed="1.4"),
+        gate_violation("offer-while-page-away", [page_left, offer(1, first)], "page_is_away"),
+        gate_violation("frame-while-page-away", [offer(1, first), page_left, piece(1, 0, first)], "page_is_away"),
+    ]
+    (FIXTURES_ROOT / "page-subtitle-gate.json").write_bytes(
+        json.dumps({"cases": cases}, ensure_ascii=False, indent=2).encode() + b"\n"
+    )
+
+
 def main() -> None:
     for directory in GENERATED_DIRECTORIES:
         shutil.rmtree(FIXTURES_ROOT / directory, ignore_errors=True)
@@ -1735,6 +2007,8 @@ def main() -> None:
     write_player_session(manifest)
     write_data_frames(manifest)
     write_shape_strictness(manifest)
+    write_page_subtitle_messages(manifest)
+    write_page_subtitle_gate_cases()
     write_streams(manifest)
     write_resource_addresses()
     write_message_versions()

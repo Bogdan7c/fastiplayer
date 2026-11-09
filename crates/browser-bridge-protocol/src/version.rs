@@ -48,6 +48,12 @@
 //!   (зритель нажал play). `tab_gone` не менялся и по-прежнему означает конец сеанса,
 //!   когда экстеншен не может вернуть страницу. Коды закрытия не менялись. Договор —
 //!   `crate::session::page_reopen`, правила порядка — `crate::stream_gate`.
+//! - **1.5** (сессия 13b1, решения 270–274) — субтитры страницы: страница → плеер
+//!   `subtitle_track_offered{track, language, label, format_hint, origin, page_display,
+//!   byte_length}` и байты документа новой двоичной рамкой вида 3 (`crate::data_frame`).
+//!   Тот же `track` ещё раз — замена документа. При общей версии ниже 1.5 ни сообщения, ни
+//!   рамки вида 3 нет: сторож плеера отвергает их как нарушение (4003), а экстеншен
+//!   субтитры не шлёт. Договор — `crate::session::page_subtitles`.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -84,6 +90,10 @@ impl ProtocolVersion {
     /// `page_reopen_failed`, `reopen_page`.
     pub const V1_4: Self = Self { major: 1, minor: 4 };
 
+    /// Субтитры страницы (сессия 13b1, решения 270–274): `subtitle_track_offered` и рамка
+    /// вида 3.
+    pub const V1_5: Self = Self { major: 1, minor: 5 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -96,7 +106,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_4;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_5;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -178,27 +188,30 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_4() {
-        // Сессия 11b1: возврат вкладки. Число закреплено — его же зеркалит экстеншен
+    fn this_crate_speaks_protocol_1_5() {
+        // Сессия 13b1: субтитры страницы. Число закреплено — его же зеркалит экстеншен
         // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 4));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 5));
+        assert!(ProtocolVersion::V1_5.includes(ProtocolVersion::V1_4));
+        assert!(!ProtocolVersion::V1_4.includes(ProtocolVersion::V1_5));
     }
 
     #[test]
-    fn a_1_4_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_5_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_4,
             ProtocolVersion::V1_3,
             ProtocolVersion::V1_2,
             ProtocolVersion::V1_1,
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_4, older),
+                negotiate_protocol_version(ProtocolVersion::V1_5, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_4),
+                negotiate_protocol_version(older, ProtocolVersion::V1_5),
                 Ok(older)
             );
         }

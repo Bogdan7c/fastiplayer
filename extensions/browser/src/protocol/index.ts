@@ -63,8 +63,14 @@ export function encodePlayerSession(message: PlayerSessionMessage): EncodeResult
   return encodeMessage(PLAYER_SESSION, message);
 }
 
-export { decodeDataFrame, encodeDataFrame } from "./data-frame.ts";
-export type { DataFrame, DataFrameHeader, RangeBytesHeader, SourceBufferBytesHeader } from "./data-frame.ts";
+export { dataFrameIntroducedIn, decodeDataFrame, encodeDataFrame } from "./data-frame.ts";
+export type {
+  DataFrame,
+  DataFrameHeader,
+  PageSubtitleBytesHeader,
+  RangeBytesHeader,
+  SourceBufferBytesHeader,
+} from "./data-frame.ts";
 
 export { DATA_FRAME_ERROR_KINDS, MESSAGE_ERROR_KINDS } from "./errors.ts";
 export type {
@@ -111,6 +117,17 @@ export { TAB_GONE_REASONS } from "./session/page.ts";
 export type { PageReopenFailure } from "./session/page-reopen.ts";
 export { PAGE_REOPEN_FAILURES } from "./session/page-reopen.ts";
 export type {
+  PageSubtitleByteLength,
+  PageSubtitleDisplay,
+  PageSubtitleLabel,
+  PageSubtitleLanguage,
+  PageSubtitleOffer,
+  PageSubtitleOrigin,
+  PageSubtitleTrackId,
+  SubtitleFormatHint,
+} from "./session/page-subtitles.ts";
+export { PAGE_SUBTITLE_DISPLAYS, PAGE_SUBTITLE_ORIGINS, SUBTITLE_FORMAT_HINTS } from "./session/page-subtitles.ts";
+export type {
   BufferIntake,
   ClockState,
   PlayerSessionMessage,
@@ -143,6 +160,7 @@ export {
   PROTOCOL_VERSION_1_2,
   PROTOCOL_VERSION_1_3,
   PROTOCOL_VERSION_1_4,
+  PROTOCOL_VERSION_1_5,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";
@@ -152,6 +170,8 @@ export { capabilitiesToTokens, cheapCodecToken, featureToken, parseCapabilityTok
 export type { OptionalFeature, ParsedCapabilities, PeerCapabilities, VideoCodecFamily } from "./capability.ts";
 
 export { sanitizePageTitle, splitAppendPayload } from "./sender.ts";
+export { splitPageSubtitleDocument } from "./page-subtitle-sender.ts";
+export type { PageSubtitleDocumentPiece, PageSubtitleDocumentSending, PageSubtitleOfferFields } from "./page-subtitle-sender.ts";
 export { utf8ByteLength } from "./text.ts";
 
 export * from "./limits.ts";

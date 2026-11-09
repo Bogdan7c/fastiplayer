@@ -61,6 +61,10 @@ impl<T: Clone + Default> Watched<T> {
 pub struct ReceivedBytes {
     pub source_buffers: BTreeMap<(u32, u16), Vec<u8>>,
     pub ranges: BTreeMap<u32, Vec<u8>>,
+    /// Байты документов субтитров страницы (протокол 1.5) по номеру дорожки.
+    pub page_subtitles: BTreeMap<u32, Vec<u8>>,
+    /// (дорожка, смещение) каждого куска субтитров в порядке прихода.
+    pub page_subtitle_offsets: Vec<(u32, u64)>,
     pub frames: usize,
     pub ended: Vec<SessionRef>,
     /// Кусков, пришедших уже ПОСЛЕ `session_ended` своего сеанса (должно быть 0).
@@ -90,6 +94,16 @@ impl SessionByteSink for RecordingByteSink {
                     .entry(range.request_id.0)
                     .or_default()
                     .extend_from_slice(range.payload),
+                ChunkSource::PageSubtitle(subtitle) => {
+                    received
+                        .page_subtitle_offsets
+                        .push((subtitle.track.get(), subtitle.offset));
+                    received
+                        .page_subtitles
+                        .entry(subtitle.track.get())
+                        .or_default()
+                        .extend_from_slice(subtitle.payload);
+                }
             }
         });
     }

@@ -68,6 +68,7 @@ impl SessionByteSink for OrderedQueueSink {
                 payload: buffer.payload.to_vec(),
             }),
             ChunkSource::Range(_) => panic!("в этом тесте нет запросов диапазонов"),
+            ChunkSource::PageSubtitle(_) => panic!("в этом тесте нет субтитров страницы"),
         }
     }
 

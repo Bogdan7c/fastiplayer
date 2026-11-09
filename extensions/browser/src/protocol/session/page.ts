@@ -32,6 +32,16 @@ import {
 } from "../time.ts";
 import { type PageReopenFailure, PAGE_REOPEN_FAILURES } from "./page-reopen.ts";
 import { type PageAdState, pageAdStateCodec, validatePageAdState } from "./ad-state.ts";
+import {
+  type PageSubtitleOffer,
+  pageSubtitleByteLengthCodec,
+  pageSubtitleDisplayCodec,
+  pageSubtitleLabelCodec,
+  pageSubtitleLanguageCodec,
+  pageSubtitleOriginCodec,
+  pageSubtitleTrackIdCodec,
+  subtitleFormatHintCodec,
+} from "./page-subtitles.ts";
 import { type VariantMenu, variantMenuCodec, validateVariantMenu } from "./variants.ts";
 
 /** Конец удаляемого промежутка буфера. */
@@ -129,7 +139,12 @@ export type PageSessionMessage =
   /** Протокол 1.4: страница вернулась, тот же сеанс продолжается, дальше - новое поколение. */
   | { readonly type: "page_returned" }
   /** Протокол 1.4: вернуть не вышло; после этого экстеншен закрывает соединение кодом 4002. */
-  | { readonly type: "page_reopen_failed"; readonly reason: PageReopenFailure };
+  | { readonly type: "page_reopen_failed"; readonly reason: PageReopenFailure }
+  /**
+   * Протокол 1.5: документ дорожки субтитров страницы; за ним - его байты рамками вида 3,
+   * подряд с 0, ровно `byte_length` байт. Тот же `track` ещё раз - замена (`page-subtitles.ts`).
+   */
+  | ({ readonly type: "subtitle_track_offered" } & PageSubtitleOffer);
 
 const removalEndCodec: Codec<RemovalEnd> = taggedUnion<RemovalEnd, "kind">("kind", {
   at: { time_us: mediaTimeCodec },
@@ -199,6 +214,15 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   page_left: { reason: stringEnum<TabGoneReason>(TAB_GONE_REASONS) },
   page_returned: {},
   page_reopen_failed: { reason: stringEnum<PageReopenFailure>(PAGE_REOPEN_FAILURES) },
+  subtitle_track_offered: {
+    track: pageSubtitleTrackIdCodec,
+    language: pageSubtitleLanguageCodec,
+    label: pageSubtitleLabelCodec,
+    format_hint: subtitleFormatHintCodec,
+    origin: pageSubtitleOriginCodec,
+    page_display: pageSubtitleDisplayCodec,
+    byte_length: pageSubtitleByteLengthCodec,
+  },
 });
 
 /** Проверки между полями: удаляемый промежуток непуст, меню корректно. */

@@ -52,6 +52,7 @@ mod counters;
 mod file_generation;
 mod hls_generation;
 mod page_link;
+mod page_subtitles;
 
 pub(crate) use self::counters::TranslatorCounters;
 
@@ -99,6 +100,8 @@ struct InstanceState {
     phase: InstancePhase,
     /// Номера запросов файла этого сеанса (общие для всех его поколений-файлов).
     files: file_generation::SessionFiles,
+    /// Документы субтитров страницы, которые ещё качаются (недокачанное гибнет с экземпляром).
+    page_subtitles: super::page_subtitles::assembly::PageSubtitleAssembly,
 }
 
 impl InstanceState {
@@ -108,6 +111,7 @@ impl InstanceState {
             session,
             phase,
             files: file_generation::SessionFiles::new(RangeRequestIds::new()),
+            page_subtitles: Default::default(),
         }
     }
 }
@@ -178,6 +182,11 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             SessionInput::RangeBytes(session, chunk) => {
                 if self.admit_instance(&session) {
                     self.apply_data_frame(&session, &chunk, out);
+                }
+            }
+            SessionInput::PageSubtitleBytes(session, chunk) => {
+                if self.admit_instance(&session) {
+                    self.apply_page_subtitle_bytes(&session, chunk, out);
                 }
             }
         }
@@ -411,9 +420,12 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             PageSessionMessage::PageReopenFailed { reason } => {
                 Self::report_page_link_change(&session, PageLinkChange::ReopenFailed(reason), out);
             }
+            offered @ PageSessionMessage::SubtitleTrackOffered { .. } => {
+                self.offer_page_subtitle(offered);
+            }
             PageSessionMessage::VariantMenuChanged { .. } | PageSessionMessage::Attach { .. } => {
-                // Меню вариантов — следующие сессии; `attach` до приёмников не
-                // доходит (его съедает сервер).
+                // Меню вариантов — следующие сессии; `attach` до приёмников не доходит
+                // (его съедает сервер).
                 debug!("Page message is not consumed by the stream translator yet");
                 self.counters.ignored_messages += 1;
             }

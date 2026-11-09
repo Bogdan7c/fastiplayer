@@ -329,6 +329,8 @@ fn choice_for_memory(media: &MediaSubtitles) -> Option<RememberedSubtitleChoice>
                 None
             }
         },
+        // Дорожки страницы живут один сеанс моста; у браузерного потока памяти выбора нет.
+        TrackDescription::Page(_) => None,
         TrackDescription::Sidecar(candidate) => {
             match RememberedFilePath::new(candidate.path.clone()) {
                 Ok(path) => Some(RememberedSubtitleChoice::File(path)),

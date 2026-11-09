@@ -41,7 +41,9 @@ impl SubtitleLoadFailure {
             ) => SubtitleFileProblem::TooLarge,
             // Остальные ошибки разбора (лишних реплик, чужой формат, битый XML) и «ни одной
             // реплики» — файл прочитан, но показать из него нечего.
-            Self::ParseFailed(_) | Self::NoCuesFound => SubtitleFileProblem::CannotParse,
+            Self::ParseFailed(_) | Self::NoCuesFound | Self::UnrecognizedFormat => {
+                SubtitleFileProblem::CannotParse
+            }
             Self::SearchFailed(_)
             | Self::FormatNotSupportedYet { .. }
             | Self::EmbeddedCodecNotSupportedYet

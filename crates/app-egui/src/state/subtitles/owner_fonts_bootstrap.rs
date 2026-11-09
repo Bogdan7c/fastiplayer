@@ -58,7 +58,8 @@ impl SubtitleOwner {
             }
             SidecarJobOutcome::Discovered(_)
             | SidecarJobOutcome::FileLoaded { .. }
-            | SidecarJobOutcome::WebTrackLoaded { .. } => {
+            | SidecarJobOutcome::WebTrackLoaded { .. }
+            | SidecarJobOutcome::PageTrackParsed { .. } => {
                 tracing::error!("A fonts task returned a foreign result; ignoring it");
                 false
             }
