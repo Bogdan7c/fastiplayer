@@ -52,14 +52,14 @@ import {
   type ProtocolVersion,
   type TabGoneReason,
 } from "../../protocol/index.ts";
-import type { OpenSessionRequest } from "../host-link/open-session-requests.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { HANDOFF_BEGIN_REPLY_TIMEOUT_MS, HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import type { FileAddressRule } from "./file-address-guard.ts";
 import type { FramePort } from "./frame-port.ts";
 import { playerAbilitiesOf } from "./hls-player-support.ts";
-import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
+import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { createSessionSiteAdapters } from "./session-site-adapters.ts";
+import { DEMAND_REASON, NATIVE_HLS_NOT_YET, startsGeneration, TOP_FRAME_ID, UNKNOWN_HINTS, type PageDelivery, type SessionPlace } from "./handoff-session-basics.ts";
 import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 import type { SessionPhase } from "./session-phase.ts";
 
@@ -88,33 +88,6 @@ import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPage
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
 import { createPagePresence } from "./session-page-presence.ts";
 import { createSessionPageReveal } from "./page-tab-reveal.ts";
-
-/** Элемент очереди открывает новое поколение (`generation_started`). */
-function startsGeneration(item: OutgoingItem): boolean {
-  return item.kind === "message" && item.message.type === "generation_started";
-}
-
-/** Где сейчас стоит сеанс. Меняется при переезде. */
-interface SessionPlace {
-  readonly frameId: number;
-  readonly beginRequestId: number;
-  readonly fileAddressRule: FileAddressRule;
-}
-
-/** Главный документ вкладки: его порт умирает только вместе со страницей, а не с рекламой. */
-const TOP_FRAME_ID = 0;
-
-/** Ушла ли команда в порт страницы. */
-type PageDelivery = "delivered" | "port_dead";
-
-/** Подсказки для окна до первых байтов: в 09a длительность и позицию узнаём только из потока. */
-const UNKNOWN_HINTS: OpenSessionRequest["hints"] = { duration: { kind: "unknown" }, position: { kind: "unknown" } };
-
-/** Отказ старта: HLS этого вида договорённый плеер ещё не играет. */
-const NATIVE_HLS_NOT_YET: HandOffTabOutcome = { kind: "not_supported_yet", form: "native_hls" };
-
-/** Причина нужды связи (для отладки HostLink). */
-const DEMAND_REASON = "handoff";
 
 export function startHandoffSession(
   target: HandoffTarget,
