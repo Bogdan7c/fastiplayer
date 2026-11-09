@@ -7,7 +7,8 @@ use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
     attack_page_ids, auto_handoff_page_ids, capture_page_ids, end_page_ids, entries_page_ids,
-    page_return_page_ids, page_subtitles_page_ids, player_command_page_ids, tab_return_page_ids,
+    page_return_page_ids, page_subtitles_page_ids, player_command_page_ids, quality_page_ids,
+    tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -24,6 +25,7 @@ pub enum Command {
     LocalAddress,
     HlsLive,
     PageSubtitles,
+    Quality,
     Entries,
     PageReturn,
     TabReturn,
@@ -75,6 +77,7 @@ impl Command {
                 | Self::PlayerCommands
                 | Self::Attacks
                 | Self::PageSubtitles
+                | Self::Quality
                 | Self::Entries
                 | Self::PageReturn
                 | Self::TabReturn
@@ -94,6 +97,7 @@ impl Command {
             Self::PlayerCommands => filter.matches_any_of(player_command_page_ids()),
             Self::Attacks => filter.matches_any_of(attack_page_ids()),
             Self::PageSubtitles => filter.matches_any_of(page_subtitles_page_ids()),
+            Self::Quality => filter.matches_any_of(quality_page_ids()),
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
@@ -171,8 +175,14 @@ Commands:
   page-subtitles    subtitles the page fetches itself (<track>, fetch from another origin, XHR
                     srt + json3, addTextTrack that grows) reach the player: tracks, the selected
                     one, and the subtitle layer on frames
+  quality           the page's ABR switches quality inside one SourceBuffer (360p -> 720p) and the
+                    player WINDOW shows the new quality (journal 'Browser quality shown'), frames
+                    keep growing
+  quality           the page's ABR switches quality inside one SourceBuffer (360p -> 720p) and the
+                    player WINDOW shows the new quality (journal 'Browser quality shown'), frames
+                    keep growing
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, page-subtitles, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, page-subtitles, quality, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -390,6 +400,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "local-address" => Ok(Command::LocalAddress),
         "hls-live" => Ok(Command::HlsLive),
         "page-subtitles" => Ok(Command::PageSubtitles),
+        "quality" => Ok(Command::Quality),
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
         "tab-return" => Ok(Command::TabReturn),

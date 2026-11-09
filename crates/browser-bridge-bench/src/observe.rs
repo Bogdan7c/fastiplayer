@@ -5,6 +5,7 @@ mod error;
 mod host_evidence;
 mod page_subtitle_log;
 mod player_log;
+mod quality_log;
 mod summary_digest;
 
 pub use error::ObserveError;
@@ -16,5 +17,8 @@ pub use page_subtitle_log::{
 };
 pub use player_log::{
     EndNotice, FrameEvidence, FrameGrowth, PlayerLog, parse_end_notice, parse_loads, parse_summary,
+};
+pub use quality_log::{
+    BROWSER_QUALITY_SHOWN_MARKER, BrowserQualityLine, QualityBitrate, parse_browser_quality_shown,
 };
 pub use summary_digest::SummaryDigest;

@@ -37,6 +37,14 @@
 //! `--auto-play ask-first` — включает со словом «Ask first» для нового сайта (на видео — предложение «Ask»).
 //! Настройка пишется в `storage.local` экстеншена сразу после запуска браузера, до первой страницы.
 //!
+//! Качество (13c): `--seek-after <с> --seek-by <с>` — через столько секунд после передачи окно плеера
+//! перематывается (MPRIS) на столько секунд; перемотка за буфер заставляет ABR страницы качать
+//! качество под нынешний размер её плеера, и кнопка качества показывает смену.
+//!
+//! `--youtube-quality <с>:<уровень>` (можно повторять) — через столько секунд после передачи плеер
+//! YouTube на вкладке просят держать уровень (`small` = 240p, `hd720`…) его же API, как ручной выбор
+//! в меню сайта: служебная страница экстеншена вызывает его в главном мире страницы.
+//!
 //! Сайты, где видео стартует только по клику (Ashdi, Tortuga, 13b2): `--click-at <x>,<y>` — клик настоящей
 //! мышью стенда по точке невидимого экрана после паузы `--wait`, до передачи. `--screenshots <каталог>` —
 //! снимки невидимого экрана (до клика, после клика и каждые 15 с после передачи) копируются в каталог:
@@ -81,6 +89,9 @@ const INTERESTING_LINES: &[&str] = &[
     "about the page reopen",
     // Субтитры страницы (13b2): документ дошёл до склада плеера, дорожка разобрана или отвергнута.
     "Page subtitle",
+    // Качество (13c): подпись кнопки качества сменилась, зритель попросил вкладку страницы.
+    "Browser quality shown",
+    "Show page requested",
 ];
 /// Сколько окно стоит на паузе до закрытия вкладки и сколько сирота ждёт до play (`--tab-return-after`).
 const TAB_RETURN_PAUSE: Duration = Duration::from_secs(1);
@@ -159,6 +170,46 @@ struct Arguments {
     click_at: Option<Point>,
     /// Куда копировать снимки невидимого экрана (`None` — не снимать).
     screenshots: Option<PathBuf>,
+    /// Перемотка окна плеера по MPRIS после передачи (`None` — не перематывать).
+    seek: Option<SeekPlan>,
+    /// Смены качества плеером YouTube после передачи (`--youtube-quality`), по порядку.
+    youtube_qualities: Vec<YoutubeQualityStep>,
+}
+
+/// Смена качества на странице YouTube (13c): API плеера сайта, как ручной выбор в его меню.
+struct YoutubeQualityStep {
+    /// Через сколько после передачи.
+    after: Duration,
+    /// Уровень YouTube: `tiny` (144p), `small` (240p), `medium` (360p), `large` (480p), `hd720`…
+    level: String,
+}
+
+/// Функция служебной страницы: находит вкладку YouTube и в ГЛАВНОМ мире страницы просит её плеер
+/// держать уровень `__LEVEL__` (`setPlaybackQualityRange`). Возвращает строку для журнала помощника.
+const YOUTUBE_QUALITY_SCRIPT: &str = r#"async (api) => {
+  const tabs = await api.tabs.query({ url: "*://*.youtube.com/*" });
+  if (tabs.length === 0) return "no YouTube tab";
+  const [injection] = await api.scripting.executeScript({
+    target: { tabId: tabs[0].id },
+    world: "MAIN",
+    args: ["__LEVEL__"],
+    func: (level) => {
+      const player = document.getElementById("movie_player");
+      if (!player || typeof player.setPlaybackQualityRange !== "function") return "no player API";
+      player.setPlaybackQualityRange(level, level);
+      return "asked " + level + ", the page says " + player.getPlaybackQuality();
+    },
+  });
+  return String(injection && injection.result);
+}"#;
+
+/// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
+#[derive(Clone, Copy)]
+struct SeekPlan {
+    /// Через сколько после передачи (`--seek-after`).
+    after: Duration,
+    /// На сколько секунд вперёд, со знаком (`--seek-by`).
+    by_seconds: i64,
 }
 
 /// Точка экрана из `x,y`.
@@ -214,6 +265,9 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut auto_play = None;
     let mut click_at = None;
     let mut screenshots = None;
+    let mut seek_after = None;
+    let mut seek_by = None;
+    let mut youtube_qualities = Vec::new();
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -258,12 +312,32 @@ fn parse_arguments() -> Result<Arguments, String> {
             }
             ("--click-at", _) => click_at = Some(parse_point(&value)?),
             ("--screenshots", _) => screenshots = Some(PathBuf::from(value)),
+            ("--seek-after", _) => {
+                let after: u64 = value
+                    .parse()
+                    .map_err(|error| format!("--seek-after: {error}"))?;
+                seek_after = Some(Duration::from_secs(after));
+            }
+            ("--youtube-quality", _) => youtube_qualities.push(parse_youtube_quality(&value)?),
+            ("--seek-by", _) => {
+                seek_by = Some(
+                    value
+                        .parse::<i64>()
+                        .map_err(|error| format!("--seek-by: {error}"))?,
+                );
+            }
             _ => return Err(format!("unknown argument {name} {value}")),
         }
     }
     if !stand_pages.is_empty() {
         target = Some(Target::StandPages(stand_pages));
     }
+    // Перемотке нужны оба числа: одно без другого — ошибка вызова, а не тихий пропуск.
+    let seek = match (seek_after, seek_by) {
+        (Some(after), Some(by_seconds)) => Some(SeekPlan { after, by_seconds }),
+        (None, None) => None,
+        _ => return Err("--seek-after and --seek-by go together".to_owned()),
+    };
     Ok(Arguments {
         browser,
         display,
@@ -279,7 +353,48 @@ fn parse_arguments() -> Result<Arguments, String> {
         auto_play,
         click_at,
         screenshots,
+        seek,
+        youtube_qualities,
     })
+}
+
+/// Шаг `--youtube-quality <с>:<уровень>`. Уровень — только буквы и цифры: он попадает в текст скрипта.
+fn parse_youtube_quality(value: &str) -> Result<YoutubeQualityStep, String> {
+    let (after, level) = value
+        .split_once(':')
+        .ok_or_else(|| format!("--youtube-quality expects <seconds>:<level>, got {value}"))?;
+    let after: u64 = after
+        .parse()
+        .map_err(|error| format!("--youtube-quality {value}: {error}"))?;
+    if level.is_empty() || !level.chars().all(|symbol| symbol.is_ascii_alphanumeric()) {
+        return Err(format!("--youtube-quality {value}: the level must be like small or hd720"));
+    }
+    Ok(YoutubeQualityStep {
+        after: Duration::from_secs(after),
+        level: level.to_owned(),
+    })
+}
+
+/// Просит плеер YouTube на вкладке сменить качество (служебная страница экстеншена открывается
+/// фоновой один раз). Итог и сбои печатаются: это помощник человека.
+fn ask_youtube_quality(
+    browser: &mut dyn BrowserUnderTest,
+    tab: &TabHandle,
+    service_page_open: &mut bool,
+    level: &str,
+) {
+    if !*service_page_open {
+        if let Err(error) = browser.open_service_page(tab) {
+            println!("youtube quality {level}: the service page did not open: {error}");
+            return;
+        }
+        *service_page_open = true;
+    }
+    let script = YOUTUBE_QUALITY_SCRIPT.replace("__LEVEL__", level);
+    match browser.run_in_service_page(&script) {
+        Ok(reply) => println!("youtube quality {level}: {reply}"),
+        Err(error) => println!("youtube quality {level}: failed: {error}"),
+    }
 }
 
 /// Снимки невидимого экрана для человека: файл снимается в каталог прогона и копируется в `--screenshots`.
@@ -528,6 +643,10 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         .tab_return_after
         .map(|after| Instant::now() + after);
     let mut tab_closed = false;
+    let mut seek_at = arguments.seek.map(|plan| (Instant::now() + plan.after, plan.by_seconds));
+    let handed_off_at = Instant::now();
+    let mut quality_steps = arguments.youtube_qualities.iter().peekable();
+    let mut service_page_open = false;
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
     while started && Instant::now() < deadline {
         if let Some(shots) = &screenshots
@@ -539,6 +658,18 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         if !tab_closed && tab_return_at.is_some_and(|at| Instant::now() >= at) {
             tab_closed = true;
             close_tab_and_ask_back(browser.as_mut(), &tab, &control);
+        }
+        if let Some(step) = quality_steps.next_if(|step| Instant::now() >= handed_off_at + step.after) {
+            ask_youtube_quality(browser.as_mut(), &tab, &mut service_page_open, &step.level);
+        }
+        if let Some((at, by_seconds)) = seek_at
+            && Instant::now() >= at
+        {
+            seek_at = None;
+            match control.seek_by(by_seconds * 1_000_000) {
+                Ok(()) => println!("seek by {by_seconds} s sent to the player window"),
+                Err(error) => println!("seek by {by_seconds} s failed: {error}"),
+            }
         }
         for line in read_new_lines(environment.player_log(), &mut offset) {
             // `FASTIPLAYER_LIVE_ALL_LINES=1`: весь журнал плеера, для разбора.

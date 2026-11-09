@@ -31,6 +31,7 @@ mod page_return;
 mod page_subtitles;
 mod pages;
 mod player_commands;
+mod quality;
 mod replay;
 mod run_tweaks;
 mod tab_return;
@@ -175,6 +176,17 @@ pub fn run_page_subtitles(
 /// Идентификаторы страниц `page-subtitles` (для проверки `--page` в командной строке).
 pub fn page_subtitles_page_ids() -> Vec<&'static str> {
     page_subtitles::page_ids()
+}
+
+/// Смена качества на странице (13c): окно плеера показывает новое качество, кадры растут
+/// (страница `mse-abr`, 360p -> 720p).
+pub fn run_quality(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    quality::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `quality` (для проверки `--page` в командной строке).
+pub fn quality_page_ids() -> Vec<&'static str> {
+    quality::page_ids()
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».
