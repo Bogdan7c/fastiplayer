@@ -58,6 +58,14 @@
 //!   (зритель хочет увидеть страницу, например сменить качество там). Экстеншен делает
 //!   вкладку сеанса активной и просит окно выйти вперёд; ответа нет. При общей версии ниже
 //!   1.6 плеер `show_page` не шлёт.
+//! - **1.7** (сессия 14a, решения 279–283) — варианты страницы в окне плеера: страница →
+//!   плеер `page_navigation{next_episode}` (`available | unavailable`; есть ли следующая
+//!   серия) и `subtitle_preference{choice}` (запомненный экстеншеном выбор субтитров);
+//!   плеер → страница `subtitle_choice{choice}` (выбор зрителя). `choice` — `{"kind":
+//!   "page_track","track":N}` (N от 1) или `{"kind":"off"}`. Сообщения 1.0 `variant_menu_changed`,
+//!   `select_variant`, `next_episode` не менялись. При общей версии ниже 1.7 плеер этих
+//!   сообщений не шлёт, а сторож отвергает входящие как нарушение; без `page_navigation`
+//!   кнопки Next нет. Договор — `crate::session::page_navigation` и `page_subtitles`.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -101,6 +109,10 @@ impl ProtocolVersion {
     /// «Показать страницу» (сессия 13c, решение 278): `show_page`.
     pub const V1_6: Self = Self { major: 1, minor: 6 };
 
+    /// Варианты страницы в окне плеера (сессия 14a): `page_navigation`, `subtitle_preference`,
+    /// `subtitle_choice`.
+    pub const V1_7: Self = Self { major: 1, minor: 7 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -113,7 +125,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_6;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_7;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -195,18 +207,19 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_6() {
-        // Сессия 13c: «показать страницу». Число закреплено — его же зеркалит экстеншен
+    fn this_crate_speaks_protocol_1_7() {
+        // Сессия 14a: варианты страницы. Число закреплено — его же зеркалит экстеншен
         // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 6));
-        assert!(ProtocolVersion::V1_6.includes(ProtocolVersion::V1_5));
-        assert!(!ProtocolVersion::V1_5.includes(ProtocolVersion::V1_6));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 7));
+        assert!(ProtocolVersion::V1_7.includes(ProtocolVersion::V1_6));
+        assert!(!ProtocolVersion::V1_6.includes(ProtocolVersion::V1_7));
     }
 
     #[test]
-    fn a_1_6_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_7_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_6,
             ProtocolVersion::V1_5,
             ProtocolVersion::V1_4,
             ProtocolVersion::V1_3,
@@ -215,11 +228,11 @@ mod tests {
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_6, older),
+                negotiate_protocol_version(ProtocolVersion::V1_7, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_6),
+                negotiate_protocol_version(older, ProtocolVersion::V1_7),
                 Ok(older)
             );
         }

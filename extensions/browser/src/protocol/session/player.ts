@@ -26,6 +26,7 @@ import {
   rangeFetchLengthCodec,
 } from "../time.ts";
 import { type LiveSeekable, checkLiveWindowWithinEdge, liveSeekableCodec } from "./live-window.ts";
+import { type SubtitleChoice, subtitleChoiceCodec } from "./page-subtitles.ts";
 import { type VariantKind, variantKindCodec } from "./variants.ts";
 
 /** Состояние часов плеера. */
@@ -108,6 +109,11 @@ export type PlayerSessionMessage =
    * вкладку сеанса активной, просит окно выйти вперёд и подсвечивает его. Ответа нет.
    */
   | { readonly type: "show_page" }
+  /**
+   * Протокол 1.7 (сессия 14a): зритель сам выбрал субтитры (меню CC, клавиши C/V). Не шлётся по автовыбору,
+   * подсказке страницы, своему файлу или встроенной дорожке. Плеер шлёт это только при общей версии не ниже 1.7.
+   */
+  | { readonly type: "subtitle_choice"; readonly choice: SubtitleChoice }
   | { readonly type: "stream_rejected"; readonly generation: StreamGeneration; readonly reason: StreamRejection };
 
 const clockStateCodec: Codec<ClockState> = stringEnum<ClockState>(["playing", "paused", "waiting", "ended"]);
@@ -148,6 +154,7 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
   },
   reopen_page: { position_us: mediaTimeCodec },
   show_page: {},
+  subtitle_choice: { choice: subtitleChoiceCodec },
   stream_rejected: {
     generation: streamGenerationCodec,
     reason: stringEnum<StreamRejection>([

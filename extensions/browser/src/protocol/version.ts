@@ -21,6 +21,10 @@
 // `session/page-subtitles.ts`). При общей версии ниже 1.5 экстеншен субтитры не шлёт.
 // 1.6 (сессия 13c, решение 278) - «показать страницу»: плеер -> страница `show_page` (вкладка сеанса
 // становится активной, окно просят выйти вперёд и подсвечивают). Шлёт его плеер, и только при общей версии 1.6.
+// 1.7 (сессия 14a, решения 279-283) - варианты страницы в окне плеера: страница -> плеер `page_navigation`
+// (есть ли следующая серия) и `subtitle_preference` (запомненный выбор субтитров); плеер -> страница
+// `subtitle_choice` (выбор зрителя). Сообщения 1.0 `variant_menu_changed`, `select_variant`, `next_episode`
+// не менялись. Договор - `session/page-navigation.ts` и `session/page-subtitles.ts`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -52,8 +56,11 @@ export const PROTOCOL_VERSION_1_5: ProtocolVersion = Object.freeze({ major: 1, m
 /** «Показать страницу»: `show_page` (сессия 13c, решение 278). */
 export const PROTOCOL_VERSION_1_6: ProtocolVersion = Object.freeze({ major: 1, minor: 6 });
 
+/** Варианты страницы в окне плеера: `page_navigation`, `subtitle_preference`, `subtitle_choice` (сессия 14a). */
+export const PROTOCOL_VERSION_1_7: ProtocolVersion = Object.freeze({ major: 1, minor: 7 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_6;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_7;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

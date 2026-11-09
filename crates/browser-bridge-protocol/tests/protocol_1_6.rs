@@ -57,7 +57,7 @@ fn protocol_1_6_adds_exactly_one_player_message_and_no_page_message() {
         PlayerSessionMessage::ShowPage {}.introduced_in(),
         ProtocolVersion::V1_6
     );
-    assert_eq!(ProtocolVersion::V1_6, CURRENT_PROTOCOL_VERSION);
+    assert!(CURRENT_PROTOCOL_VERSION.includes(ProtocolVersion::V1_6));
 }
 
 #[test]

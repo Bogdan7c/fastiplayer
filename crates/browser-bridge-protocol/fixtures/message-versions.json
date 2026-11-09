@@ -21,7 +21,9 @@
     "page_left": "1.4",
     "page_returned": "1.4",
     "page_reopen_failed": "1.4",
-    "subtitle_track_offered": "1.5"
+    "subtitle_track_offered": "1.5",
+    "page_navigation": "1.7",
+    "subtitle_preference": "1.7"
   },
   "player_session": {
     "attached": "1.0",
@@ -40,6 +42,7 @@
     "fetch_resource": "1.1",
     "live_window": "1.2",
     "reopen_page": "1.4",
-    "show_page": "1.6"
+    "show_page": "1.6",
+    "subtitle_choice": "1.7"
   }
 }

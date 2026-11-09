@@ -1656,6 +1656,8 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         "page_returned": "1.4",
         "page_reopen_failed": "1.4",
         "subtitle_track_offered": "1.5",
+        "page_navigation": "1.7",
+        "subtitle_preference": "1.7",
     },
     "player_session": {
         **{
@@ -1680,6 +1682,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         "live_window": "1.2",
         "reopen_page": "1.4",
         "show_page": "1.6",
+        "subtitle_choice": "1.7",
     },
 }
 
@@ -1904,6 +1907,59 @@ def write_page_subtitle_messages(manifest: Manifest) -> None:
         manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
 
 
+def write_variant_protocol_messages(manifest: Manifest) -> None:
+    """Сообщения протокола 1.7 (сессия 14a): `page_navigation`, `subtitle_preference`, `subtitle_choice`.
+
+    Выбор субтитров `choice` — метка с видом: `{"kind":"page_track","track":N}` (N от 1) или
+    `{"kind":"off"}`. Форма строгая: лишнее поле, чужой вид и номер 0 — ошибки.
+    """
+    page_valid = "session/valid/page-"
+    page_invalid = "session/invalid/page-"
+    player_valid = "session/valid/player-"
+    player_invalid = "session/invalid/player-"
+    page_track = {"kind": "page_track", "track": 3}
+    off = {"kind": "off"}
+    for name, message in [
+        ("navigation-available", page_message("page_navigation", next_episode="available")),
+        ("navigation-unavailable", page_message("page_navigation", next_episode="unavailable")),
+        ("subtitle-preference-page-track", page_message("subtitle_preference", choice=page_track)),
+        ("subtitle-preference-max-track", page_message("subtitle_preference", choice={"kind": "page_track", "track": U32_MAX})),
+        ("subtitle-preference-off", page_message("subtitle_preference", choice=off)),
+    ]:
+        manifest.valid(f"{page_valid}{name}.json", "page_session", message)
+    for name, message in [
+        ("subtitle-choice-page-track", page_message("subtitle_choice", choice=page_track)),
+        ("subtitle-choice-off", page_message("subtitle_choice", choice=off)),
+    ]:
+        manifest.valid(f"{player_valid}{name}.json", "player_session", message)
+
+    for name, message, kind in [
+        ("navigation-unknown-field", page_message("page_navigation", next_episode="available", url="https://example.com/2"), "unknown_field"),
+        ("navigation-missing-field", page_message("page_navigation"), "missing_field"),
+        ("navigation-unknown-value", page_message("page_navigation", next_episode="maybe"), "unknown_value"),
+        ("navigation-as-bool", page_message("page_navigation", next_episode=True), "wrong_value_type"),
+        ("subtitle-preference-unknown-field", page_message("subtitle_preference", choice=off, remember=True), "unknown_field"),
+        ("subtitle-preference-missing-choice", page_message("subtitle_preference"), "missing_field"),
+        ("subtitle-preference-choice-extra-field", page_message("subtitle_preference", choice={"kind": "off", "track": 1}), "unknown_field"),
+        ("subtitle-preference-page-track-extra-field", page_message("subtitle_preference", choice={"kind": "page_track", "track": 1, "label": "x"}), "unknown_field"),
+        ("subtitle-preference-page-track-missing-track", page_message("subtitle_preference", choice={"kind": "page_track"}), "missing_field"),
+        ("subtitle-preference-track-zero", page_message("subtitle_preference", choice={"kind": "page_track", "track": 0}), "number_out_of_range"),
+        ("subtitle-preference-track-beyond-u32", page_message("subtitle_preference", choice={"kind": "page_track", "track": U32_MAX + 1}), "number_out_of_range"),
+        ("subtitle-preference-track-string", page_message("subtitle_preference", choice={"kind": "page_track", "track": "3"}), "wrong_value_type"),
+        ("subtitle-preference-kind-unknown", page_message("subtitle_preference", choice={"kind": "own_file"}), "unknown_value"),
+        ("subtitle-preference-choice-as-string", page_message("subtitle_preference", choice="off"), "wrong_value_type"),
+    ]:
+        manifest.invalid(f"{page_invalid}{name}.json", "page_session", compact_json(message), kind)
+    for name, message, kind in [
+        ("subtitle-choice-unknown-field", page_message("subtitle_choice", choice=off, auto=True), "unknown_field"),
+        ("subtitle-choice-missing-choice", page_message("subtitle_choice"), "missing_field"),
+        ("subtitle-choice-track-zero", page_message("subtitle_choice", choice={"kind": "page_track", "track": 0}), "number_out_of_range"),
+        ("subtitle-choice-kind-unknown", page_message("subtitle_choice", choice={"kind": "embedded", "track": 1}), "unknown_value"),
+        ("subtitle-choice-choice-extra-field", page_message("subtitle_choice", choice={"kind": "off", "track": 1}), "unknown_field"),
+    ]:
+        manifest.invalid(f"{player_invalid}{name}.json", "player_session", compact_json(message), kind)
+
+
 def gate_text(message: dict[str, Any]) -> dict[str, str]:
     """Шаг случая сторожа: текстовая рамка — ровно байты сообщения на проводе."""
     return {"text": compact_json(message).decode("utf-8")}
@@ -2022,6 +2078,7 @@ def main() -> None:
     write_data_frames(manifest)
     write_shape_strictness(manifest)
     write_page_subtitle_messages(manifest)
+    write_variant_protocol_messages(manifest)
     write_page_subtitle_gate_cases()
     write_streams(manifest)
     write_resource_addresses()

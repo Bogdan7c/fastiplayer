@@ -642,6 +642,8 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::SkipAd {} => "skip_ad",
         PlayerSessionMessage::ReopenPage { .. } => "reopen_page",
         PlayerSessionMessage::ShowPage {} => "show_page",
+        // 14a P2: `subtitle_choice` пока никто не шлёт; вид нужен для журнала.
+        PlayerSessionMessage::SubtitleChoice { .. } => "subtitle_choice",
     }
 }
 

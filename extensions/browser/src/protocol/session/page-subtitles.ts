@@ -95,3 +95,17 @@ export const subtitleFormatHintCodec: Codec<SubtitleFormatHint> = stringEnum<Sub
 export const pageSubtitleOriginCodec: Codec<PageSubtitleOrigin> = stringEnum<PageSubtitleOrigin>(PAGE_SUBTITLE_ORIGINS);
 
 export const pageSubtitleDisplayCodec: Codec<PageSubtitleDisplay> = stringEnum<PageSubtitleDisplay>(PAGE_SUBTITLE_DISPLAYS);
+
+/**
+ * Выбор субтитров зрителем (протокол 1.7, сессия 14a). Общая форма `subtitle_preference` (страница -> плеер:
+ * экстеншен напоминает запомненный выбор) и `subtitle_choice` (плеер -> страница: выбор зрителя). Свой файл
+ * и встроенная дорожка сюда не попадают: экстеншену их запоминать нечего. Зеркало `SubtitleChoice` (page_subtitles.rs).
+ */
+export type SubtitleChoice =
+  | { readonly kind: "page_track"; readonly track: PageSubtitleTrackId }
+  | { readonly kind: "off" };
+
+export const subtitleChoiceCodec: Codec<SubtitleChoice> = taggedUnion<SubtitleChoice, "kind">("kind", {
+  page_track: { track: pageSubtitleTrackIdCodec },
+  off: {},
+});

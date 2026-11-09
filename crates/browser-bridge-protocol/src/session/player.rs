@@ -11,6 +11,7 @@ use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::resource::{ResourceByteRange, ResourceFetchLength, ResourceHandle};
 use crate::session::live_window::LiveSeekable;
+use crate::session::page_subtitles::{SUBTITLE_CHOICE_INTRODUCED_IN, SubtitleChoice};
 use crate::session::variants::VariantKind;
 use crate::stream::{RangeRequestId, SeekId, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
@@ -201,6 +202,13 @@ pub enum PlayerSessionMessage {
     /// подсвечивает окно. Ответа нет; видео остаётся у плеера, сеанс не меняется. Плеер шлёт
     /// это только собеседнику с общей версией не ниже 1.6.
     ShowPage {},
+    /// Зритель сам выбрал субтитры (протокол 1.7, сессия 14a): меню CC, клавиши C/V. Не шлётся
+    /// по автовыбору, подсказке страницы, своему файлу или встроенной дорожке — экстеншену
+    /// запоминать нечего. Плеер шлёт это только собеседнику с общей версией не ниже 1.7.
+    SubtitleChoice {
+        /// Что выбрал зритель.
+        choice: SubtitleChoice,
+    },
     /// Плеер не будет играть это поколение — экстеншен возвращает видео странице.
     StreamRejected {
         /// Поколение.
@@ -228,6 +236,7 @@ impl ProtocolMessage for PlayerSessionMessage {
         "live_window",
         "reopen_page",
         "show_page",
+        "subtitle_choice",
         "stream_rejected",
     ];
 
@@ -258,6 +267,7 @@ impl PlayerSessionMessage {
     #[must_use]
     pub const fn introduced_in(&self) -> ProtocolVersion {
         match self {
+            Self::SubtitleChoice { .. } => SUBTITLE_CHOICE_INTRODUCED_IN,
             Self::ShowPage {} => ProtocolVersion::V1_6,
             Self::ReopenPage { .. } => ProtocolVersion::V1_4,
             Self::LiveWindow { .. } => ProtocolVersion::V1_2,

@@ -45,6 +45,7 @@
 pub mod ad_state;
 pub mod live_window;
 pub mod page;
+pub mod page_navigation;
 pub mod page_reopen;
 pub mod page_subtitles;
 pub mod player;
@@ -59,10 +60,12 @@ pub use page::{
     PagePlaybackRequest, PageSessionMessage, RangeFetchFailure, RangeFetchOutcome, RemovalEnd,
     ResourceSize, SeekCause, StreamScope, TabGoneReason,
 };
+pub use page_navigation::{NextEpisodeAvailability, PAGE_NAVIGATION_INTRODUCED_IN};
 pub use page_reopen::PageReopenFailure;
 pub use page_subtitles::{
     PAGE_SUBTITLES_INTRODUCED_IN, PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel,
-    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SubtitleFormatHint,
+    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SUBTITLE_CHOICE_INTRODUCED_IN,
+    SubtitleChoice, SubtitleFormatHint,
 };
 pub use player::{
     BufferIntake, ClockSequence, ClockState, PlayerSessionMessage, ResumeState, StreamRejection,

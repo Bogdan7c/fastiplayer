@@ -30,6 +30,7 @@ import {
   mediaTimeOffsetCodec,
   playbackRateCodec,
 } from "../time.ts";
+import { type NextEpisodeAvailability, nextEpisodeAvailabilityCodec } from "./page-navigation.ts";
 import { type PageReopenFailure, PAGE_REOPEN_FAILURES } from "./page-reopen.ts";
 import { type PageAdState, pageAdStateCodec, validatePageAdState } from "./ad-state.ts";
 import {
@@ -41,6 +42,8 @@ import {
   pageSubtitleOriginCodec,
   pageSubtitleTrackIdCodec,
   subtitleFormatHintCodec,
+  type SubtitleChoice,
+  subtitleChoiceCodec,
 } from "./page-subtitles.ts";
 import { type VariantMenu, variantMenuCodec, validateVariantMenu } from "./variants.ts";
 
@@ -144,7 +147,11 @@ export type PageSessionMessage =
    * Протокол 1.5: документ дорожки субтитров страницы; за ним - его байты рамками вида 3,
    * подряд с 0, ровно `byte_length` байт. Тот же `track` ещё раз - замена (`page-subtitles.ts`).
    */
-  | ({ readonly type: "subtitle_track_offered" } & PageSubtitleOffer);
+  | ({ readonly type: "subtitle_track_offered" } & PageSubtitleOffer)
+  /** Протокол 1.7 (сессия 14a): есть ли на странице следующая серия. Вне поколений, последнее слово главнее. */
+  | { readonly type: "page_navigation"; readonly next_episode: NextEpisodeAvailability }
+  /** Протокол 1.7 (сессия 14a): запомненный экстеншеном выбор субтитров для этой серии. Вне поколений. */
+  | { readonly type: "subtitle_preference"; readonly choice: SubtitleChoice };
 
 const removalEndCodec: Codec<RemovalEnd> = taggedUnion<RemovalEnd, "kind">("kind", {
   at: { time_us: mediaTimeCodec },
@@ -223,6 +230,8 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
     page_display: pageSubtitleDisplayCodec,
     byte_length: pageSubtitleByteLengthCodec,
   },
+  page_navigation: { next_episode: nextEpisodeAvailabilityCodec },
+  subtitle_preference: { choice: subtitleChoiceCodec },
 });
 
 /** Проверки между полями: удаляемый промежуток непуст, меню корректно. */

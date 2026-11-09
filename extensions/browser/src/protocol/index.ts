@@ -124,8 +124,12 @@ export type {
   PageSubtitleOffer,
   PageSubtitleOrigin,
   PageSubtitleTrackId,
+  SubtitleChoice,
   SubtitleFormatHint,
 } from "./session/page-subtitles.ts";
+export { subtitleChoiceCodec } from "./session/page-subtitles.ts";
+export type { NextEpisodeAvailability } from "./session/page-navigation.ts";
+export { NEXT_EPISODE_AVAILABILITIES } from "./session/page-navigation.ts";
 export { PAGE_SUBTITLE_DISPLAYS, PAGE_SUBTITLE_ORIGINS, SUBTITLE_FORMAT_HINTS } from "./session/page-subtitles.ts";
 export type {
   BufferIntake,
@@ -162,6 +166,7 @@ export {
   PROTOCOL_VERSION_1_4,
   PROTOCOL_VERSION_1_5,
   PROTOCOL_VERSION_1_6,
+  PROTOCOL_VERSION_1_7,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";

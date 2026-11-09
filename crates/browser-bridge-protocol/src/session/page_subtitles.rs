@@ -31,7 +31,7 @@ use crate::version::ProtocolVersion;
 
 // Строгая форма JSON (`crate::strict_shape`): объекты и перечисления с меткой —
 // только объектом, метки — только строкой; чужая форма — `wrong_value_type`.
-strict_object!(PageSubtitleLanguage, PageSubtitleLabel);
+strict_object!(PageSubtitleLanguage, PageSubtitleLabel, SubtitleChoice);
 strict_label!(SubtitleFormatHint, PageSubtitleOrigin, PageSubtitleDisplay);
 
 /// Версия протокола, в которой появились субтитры страницы: и сообщение
@@ -194,4 +194,30 @@ pub enum PageSubtitleDisplay {
     Showing,
     /// Дорожка была скачана или видна, но не показывалась.
     NotShowing,
+}
+
+/// Версия протокола, в которой появился выбор субтитров зрителем: `subtitle_preference`
+/// (страница → плеер) и `subtitle_choice` (плеер → страница).
+pub const SUBTITLE_CHOICE_INTRODUCED_IN: ProtocolVersion = ProtocolVersion::V1_7;
+
+/// Выбор субтитров зрителем (протокол 1.7, сессия 14a): общая форма для `subtitle_preference`
+/// (экстеншен напоминает плееру запомненный выбор) и `subtitle_choice` (плеер сообщает
+/// экстеншену выбор зрителя).
+///
+/// Свой файл и встроенная дорожка сюда не попадают: экстеншену их запоминать нечего.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(
+    remote = "Self",
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum SubtitleChoice {
+    /// Дорожка страницы с этим номером (как в `subtitle_track_offered`).
+    PageTrack {
+        /// Номер дорожки страницы; ноль отвергается типом.
+        track: PageSubtitleTrackId,
+    },
+    /// Субтитры выключены.
+    Off {},
 }

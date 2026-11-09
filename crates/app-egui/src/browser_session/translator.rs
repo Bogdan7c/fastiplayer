@@ -423,9 +423,12 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             offered @ PageSessionMessage::SubtitleTrackOffered { .. } => {
                 self.offer_page_subtitle(offered);
             }
-            PageSessionMessage::VariantMenuChanged { .. } | PageSessionMessage::Attach { .. } => {
-                // Меню вариантов — следующие сессии; `attach` до приёмников не доходит
-                // (его съедает сервер).
+            PageSessionMessage::PageNavigation { .. }
+            | PageSessionMessage::SubtitlePreference { .. }
+            | PageSessionMessage::VariantMenuChanged { .. }
+            | PageSessionMessage::Attach { .. } => {
+                // 14a P2: `page_navigation`, `subtitle_preference` и меню вариантов пока не
+                // потребляются; `attach` до приёмников не доходит (его съедает сервер).
                 debug!("Page message is not consumed by the stream translator yet");
                 self.counters.ignored_messages += 1;
             }

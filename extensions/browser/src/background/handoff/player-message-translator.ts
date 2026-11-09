@@ -84,6 +84,9 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
     case "next_episode":
       // Меню вариантов — 14, следующая серия — 15: пока их не бывает.
       return { kind: "ignore" };
+    case "subtitle_choice":
+      // 14a P2: выбор субтитров зрителем (протокол 1.7) экстеншен запомнит позже; пока пропускается.
+      return { kind: "ignore" };
     case "reopen_page":
       // Возврат страницы (протокол 1.4, 11b2) сеанс принимает сам и только в фазе сироты (`page_away`), до
       // этого перевода: при живой странице просьба ничего не значит.

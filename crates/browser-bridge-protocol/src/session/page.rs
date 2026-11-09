@@ -10,10 +10,12 @@ use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::resource::{ResourceFetchOutcome, ResourceHandle};
 use crate::session::ad_state::PageAdState;
+use crate::session::page_navigation::{NextEpisodeAvailability, PAGE_NAVIGATION_INTRODUCED_IN};
 use crate::session::page_reopen::PageReopenFailure;
 use crate::session::page_subtitles::{
     PAGE_SUBTITLES_INTRODUCED_IN, PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel,
-    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SubtitleFormatHint,
+    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SUBTITLE_CHOICE_INTRODUCED_IN,
+    SubtitleChoice, SubtitleFormatHint,
 };
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
@@ -378,6 +380,18 @@ pub enum PageSessionMessage {
         /// Точная длина документа.
         byte_length: PageSubtitleByteLength,
     },
+    /// Есть ли на странице следующая серия (протокол 1.7, сессия 14a). Вне поколений,
+    /// последнее слово главнее; до первого сообщения — `unavailable`.
+    PageNavigation {
+        /// Есть ли следующая серия.
+        next_episode: NextEpisodeAvailability,
+    },
+    /// Запомненный экстеншеном выбор субтитров для этой серии (протокол 1.7, сессия 14a).
+    /// Вне поколений, последнее слово главнее; действует, пока зритель сам не выберет иначе.
+    SubtitlePreference {
+        /// Что выбрано.
+        choice: SubtitleChoice,
+    },
 }
 
 impl PageSessionMessage {
@@ -396,6 +410,8 @@ impl PageSessionMessage {
             | Self::PageReturned {}
             | Self::PageReopenFailed { .. }
             | Self::SubtitleTrackOffered { .. }
+            | Self::PageNavigation { .. }
+            | Self::SubtitlePreference { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
             | Self::FileSourceAdded { generation }
@@ -444,6 +460,8 @@ impl PageSessionMessage {
                 ProtocolVersion::V1_4
             }
             Self::SubtitleTrackOffered { .. } => PAGE_SUBTITLES_INTRODUCED_IN,
+            Self::PageNavigation { .. } => PAGE_NAVIGATION_INTRODUCED_IN,
+            Self::SubtitlePreference { .. } => SUBTITLE_CHOICE_INTRODUCED_IN,
             Self::Attach { .. }
             | Self::GenerationStarted { .. }
             | Self::FileSourceAdded { .. }
@@ -507,6 +525,8 @@ impl ProtocolMessage for PageSessionMessage {
         "page_returned",
         "page_reopen_failed",
         "subtitle_track_offered",
+        "page_navigation",
+        "subtitle_preference",
     ];
 
     fn validate(&self) -> Result<(), ValueViolation> {

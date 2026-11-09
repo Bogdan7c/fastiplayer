@@ -170,3 +170,7 @@ Rust-константы (`extension_identity.rs`) сверяет с этим ф�
 ## Показать страницу (протокол 1.6, сессия 13c, решение 278)
 
 Версия протокола — **1.6**. Новое — одно сообщение плеер → страница `show_page {}` (`message-versions.json`): зритель хочет увидеть страницу (например, сменить там качество). Экстеншен делает вкладку сеанса активной, просит её окно выйти вперёд и подсвечивает окно; ответа нет, сеанс и поколения не меняются. При общей версии ниже 1.6 плеер `show_page` не шлёт. Фикстуры — `session/valid/player-show-page.json`, `session/invalid/player-show-page-unknown-field.json`; договор версий и согласование — `tests/protocol_1_6.rs`.
+
+## Варианты страницы (протокол 1.7, сессия 14a, решения 279–283)
+
+Версия протокола — **1.7**. Новое (`message-versions.json`): страница → плеер `page_navigation {next_episode: "available" | "unavailable"}` и `subtitle_preference {choice}`; плеер → страница `subtitle_choice {choice}`. `choice` — `{"kind":"page_track","track":N}` (N от 1, как в `subtitle_track_offered`) или `{"kind":"off"}`; форма строгая (лишнее поле, чужой вид, номер 0 — отказ). Сообщения 1.0 `variant_menu_changed`, `select_variant`, `next_episode` не менялись. При общей версии ниже 1.7 плеер новых сообщений не шлёт, а сторож отвергает входящие. Фикстуры — `session/valid/page-navigation-*`, `page-subtitle-preference-*`, `player-subtitle-choice-*` и `session/invalid/` с теми же префиксами; договор — `tests/protocol_1_7.rs`.

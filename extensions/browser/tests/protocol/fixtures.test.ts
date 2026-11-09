@@ -144,8 +144,8 @@ test("у каждой схемы валидные фикстуры покрыв�
   // Сверка с полным списком типов кодека: фикстура на каждый тип и ни одного лишнего.
   assert.deepEqual([...new Set(coveredTypes("page_session"))].sort(), [...pageSessionCodec.knownTags].sort());
   assert.deepEqual([...new Set(coveredTypes("player_session"))].sort(), [...playerSessionCodec.knownTags].sort());
-  assert.equal(new Set(coveredTypes("page_session")).size, 22);
-  assert.equal(new Set(coveredTypes("player_session")).size, 17);
+  assert.equal(new Set(coveredTypes("page_session")).size, 24);
+  assert.equal(new Set(coveredTypes("player_session")).size, 18);
 });
 
 // ---------------------------------------------------------------- предел размера (каждая сторона собирает сама)

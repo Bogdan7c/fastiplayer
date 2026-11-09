@@ -31,11 +31,12 @@ use browser_bridge_protocol::limits::{
     MAX_RANGE_FETCH_BYTES, MAX_RESOURCE_FETCH_BYTES, MIN_PLAYBACK_RATE_PERMILLE,
 };
 use browser_bridge_protocol::session::{
-    BufferIntake, ClockSequence, ClockState, PagePlaybackRequest, PageReopenFailure,
-    PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel, PageSubtitleLanguage,
-    PageSubtitleOrigin, PageSubtitleTrackId, RangeFetchFailure, RangeFetchOutcome, RemovalEnd,
-    ResourceSize, ResumeState, SeekCause, StreamRejection, SubtitleFormatHint, TabGoneReason,
-    VariantKind, VariantMenu, VariantOption, VariantSelection,
+    BufferIntake, ClockSequence, ClockState, NextEpisodeAvailability, PagePlaybackRequest,
+    PageReopenFailure, PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel,
+    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, RangeFetchFailure,
+    RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause, StreamRejection,
+    SubtitleChoice, SubtitleFormatHint, TabGoneReason, VariantKind, VariantMenu, VariantOption,
+    VariantSelection,
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
@@ -301,7 +302,7 @@ fn random_tab_gone_reason(generator: &mut Generator) -> TabGoneReason {
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
-    match generator.below(20) {
+    match generator.below(22) {
         0 => PageSessionMessage::Attach {
             session_key: session_key(generator),
             token: session_token(generator),
@@ -414,6 +415,16 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
         17 => PageSessionMessage::PageReturned {},
         // Протокол 1.5: заголовок документа субтитров страницы.
         18 => subtitle_track_offered(generator),
+        // Протокол 1.7: навигация страницы и запомненный выбор субтитров.
+        19 => PageSessionMessage::PageNavigation {
+            next_episode: *generator.pick(&[
+                NextEpisodeAvailability::Available,
+                NextEpisodeAvailability::Unavailable,
+            ]),
+        },
+        20 => PageSessionMessage::SubtitlePreference {
+            choice: subtitle_choice(generator),
+        },
         _ => PageSessionMessage::PageReopenFailed {
             reason: *generator.pick(&[
                 PageReopenFailure::NoBrowserWindow,
@@ -465,8 +476,20 @@ fn subtitle_track_offered(generator: &mut Generator) -> PageSessionMessage {
     }
 }
 
+/// Выбор субтитров: дорожка страницы (номер от 1) или «выключены».
+fn subtitle_choice(generator: &mut Generator) -> SubtitleChoice {
+    if generator.coin() {
+        SubtitleChoice::PageTrack {
+            track: PageSubtitleTrackId::new(generator.between(1, u64::from(u32::MAX)) as u32)
+                .unwrap(),
+        }
+    } else {
+        SubtitleChoice::Off {}
+    }
+}
+
 fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
-    match generator.below(16) {
+    match generator.below(17) {
         0 => PlayerSessionMessage::Attached {},
         1 => PlayerSessionMessage::Clock {
             seq: ClockSequence(generator.next_u64() as u32),
@@ -515,6 +538,10 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
         },
         // Протокол 1.6: зритель хочет увидеть страницу.
         14 => PlayerSessionMessage::ShowPage {},
+        // Протокол 1.7: выбор субтитров зрителем.
+        15 => PlayerSessionMessage::SubtitleChoice {
+            choice: subtitle_choice(generator),
+        },
         _ => PlayerSessionMessage::StreamRejected {
             generation: generation(generator),
             reason: *generator.pick(&[

@@ -28,11 +28,11 @@ const newerIn16 = (side: string): string[] =>
     .filter(([, version]) => version === "1.6")
     .map(([type]) => type);
 
-test("в 1.6 ровно одно новое сообщение - show_page от плеера; экстеншен реализует именно 1.6", () => {
+test("в 1.6 ровно одно новое сообщение - show_page от плеера; экстеншен реализует 1.6 и новее", () => {
   assert.deepEqual(newerIn16("player_session"), ["show_page"]);
   assert.deepEqual(newerIn16("page_session"), []);
   assert.deepEqual(playerSessionIntroducedIn("show_page"), PROTOCOL_VERSION_1_6);
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_6);
+  assert.equal(versionIncludes(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_6), true);
 });
 
 test("show_page пишется ровно задокументированным JSON, читается обратно и не берёт лишних полей", () => {
