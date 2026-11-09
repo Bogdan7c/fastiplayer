@@ -17,6 +17,7 @@ mod open_file_button;
 #[cfg(test)]
 pub(crate) mod playback_button_test_harness;
 mod playback_rate;
+mod quality_control;
 mod queue_mode_controls;
 mod subtitle_control;
 mod transport;
@@ -24,6 +25,7 @@ mod transport;
 mod view_profile_tests;
 pub use audio_track_control::AudioTrackControlAction;
 pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
+pub use quality_control::QualityControlAction;
 pub use subtitle_control::SubtitleControlAction;
 pub(crate) use transport::TransportControlAction;
 
@@ -72,6 +74,9 @@ pub enum ControlAction {
     /// Действие выбора аудиодорожки (меню кнопки «♪», клавиша B).
     AudioTracks(AudioTrackControlAction),
 
+    /// Действие кнопки качества окна браузерного режима (13c).
+    Quality(QualityControlAction),
+
     /// Действие timeline.
     Timeline(TimelineAction),
 }
@@ -90,6 +95,8 @@ pub(crate) struct BottomControlsInput<'a, S: PlayerSkin> {
     pub(crate) subtitle_menu: &'a crate::state::SubtitleMenuView,
     /// Снимок аудиодорожек для кнопки «♪» и меню.
     pub(crate) audio_menu: &'a crate::state::AudioTrackMenuView,
+    /// Снимок меню качества для кнопки «1080p» (только окно браузерного режима).
+    pub(crate) quality_menu: &'a crate::state::QualityMenuView,
     /// Вид окна: есть ли кнопка Open и навигация по очереди (Previous/Next/Shuffle/Repeat).
     pub(crate) view_profile: WindowViewProfile,
 }
@@ -111,8 +118,16 @@ pub fn render_bottom_controls<S: PlayerSkin>(
         playlist_transport,
         subtitle_menu,
         audio_menu,
+        quality_menu,
         view_profile,
     } = input;
+    // Кнопка качества есть не в каждом виде окна: профиль главнее присланного снимка.
+    let no_quality_button = crate::state::QualityMenuView::hidden();
+    let quality_menu = if view_profile.offers_page_quality_view() {
+        quality_menu
+    } else {
+        &no_quality_button
+    };
     let mut actions = Vec::new();
     let panel_id = bottom_panel_id(skin.id());
 
@@ -150,6 +165,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
                 playlist_transport,
                 subtitle_menu,
                 audio_menu,
+                quality_menu,
                 view_profile,
                 &mut actions,
             );
@@ -172,6 +188,7 @@ fn render_button_row(
     playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
     subtitle_menu: &crate::state::SubtitleMenuView,
     audio_menu: &crate::state::AudioTrackMenuView,
+    quality_menu: &crate::state::QualityMenuView,
     view_profile: WindowViewProfile,
     actions: &mut Vec<ControlAction>,
 ) {
@@ -209,7 +226,14 @@ fn render_button_row(
         audio_menu,
         reduced_motion,
     );
-    let queue_mode_layout = audio_frame.queue_mode_layout();
+    // Кнопка качества стоит левее «♪» и тоже раздвигает Shuffle/Repeat.
+    let quality_frame = quality_control::QualityControlFrame::prepare(
+        ui,
+        audio_frame.neighbor_for_quality(),
+        quality_menu,
+        reduced_motion,
+    );
+    let queue_mode_layout = quality_frame.queue_mode_layout();
     let playback_rate_reveal_progress =
         playback_rate::reveal_progress(ui, player_snapshot.playback_rate, reduced_motion);
     let playback_rate_layout = playback_rate::control_layout(
@@ -293,6 +317,7 @@ fn render_button_row(
 
     subtitle_frame.render(ui, subtitle_menu, reduced_motion, actions);
     audio_frame.render(ui, audio_menu, reduced_motion, actions);
+    quality_frame.render(ui, quality_menu, reduced_motion, actions);
 }
 
 /// Считает rect open-file кнопки от всей content-строки.

@@ -44,7 +44,7 @@ use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
 use super::session_media::{
     DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PageReopenNotice,
-    PausedDrain, SessionMedia, ViewerCloseStep, ViewerSeekNotice,
+    PageViewNotice, PausedDrain, SessionMedia, ViewerCloseStep, ViewerSeekNotice,
 };
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
@@ -52,6 +52,7 @@ use super::translator::ProtocolTranslator;
 use super::translator::file_port::PushedFileFactory;
 use super::translator::stream_port::PushedStreamFactory;
 use crate::ad_plate::AdPlate;
+use crate::page_quality::PageQualityFacts;
 use crate::page_subtitles::PageSubtitleShelfView;
 use crate::settings_runtime::BrowserBufferWindowOwner;
 use crate::viewer_transport::ViewerTransportIntent;
@@ -89,6 +90,11 @@ pub(super) struct CoreStep {
     /// Склад субтитров страницы текущего сеанса (13b1): окно отдаёт его каждому
     /// установленному медиа; безоконный процесс его не читает.
     pub(super) page_subtitles: PageSubtitleShelfView,
+    /// Факты для меню кнопки качества (13c): битрейт и можно ли просить страницу; безоконный
+    /// процесс их не читает.
+    pub(super) page_quality: PageQualityFacts,
+    /// Просьба зрителя показать страницу принята (13c): окно показывает тост.
+    pub(super) page_view_notice: PageViewNotice,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -271,6 +277,8 @@ impl BrowserSessionCore {
             page_reopen_notice: self.media.take_page_reopen_notice(),
             ad_plate: self.media.ad_plate(now),
             page_subtitles: self.media.page_subtitle_shelf(),
+            page_quality: self.media.page_quality_facts(),
+            page_view_notice: self.media.take_page_view_notice(),
         }
     }
 

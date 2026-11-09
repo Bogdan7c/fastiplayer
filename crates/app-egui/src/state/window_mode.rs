@@ -22,10 +22,12 @@ use std::time::Duration;
 use player_core::{PlaybackState, PlayerCommand, PlayerWorkerSendError};
 
 use self::ad_gate::{AdTransportGate, GateVerdict};
+use self::quality_menu::QualityLabelJournal;
 use super::AppState;
 use crate::ad_plate::{AdActionProgress, AdPlate, AdPlateAction};
 use crate::downloaded_range::DownloadedRange;
 use crate::page_label::PageLabel;
+use crate::page_quality::PageQualityFacts;
 use crate::ui::player_controls::TransportControlAction;
 use crate::viewer_transport::{
     TransportRoute, ViewerTransportIntent, ViewerTransportOutbox, viewer_intent_for_command,
@@ -33,6 +35,10 @@ use crate::viewer_transport::{
 use crate::window_view_profile::WindowViewProfile;
 
 mod ad_gate;
+mod page_quality;
+mod quality_menu;
+
+pub(crate) use self::quality_menu::QualityMenuView;
 
 /// Название приложения в шапке окна, когда страницы-источника нет.
 const APP_CHROME_TITLE: &str = "Fastiplayer";
@@ -48,6 +54,10 @@ pub(crate) struct WindowMode {
     page: Option<PageLabel>,
     /// Плашка рекламы и запрет перемотки со скоростью, пока она на экране (09d).
     ad_gate: AdTransportGate,
+    /// Факты сеанса о качестве для кнопки качества (13c, [`page_quality`]).
+    page_quality: PageQualityFacts,
+    /// Помнит последнюю записанную в журнал подпись качества.
+    quality_journal: QualityLabelJournal,
 }
 
 impl WindowMode {
@@ -65,6 +75,8 @@ impl WindowMode {
             downloaded_range: DownloadedRange::Unknown,
             page: None,
             ad_gate: AdTransportGate::default(),
+            page_quality: PageQualityFacts::default(),
+            quality_journal: QualityLabelJournal::default(),
         }
     }
 

@@ -24,11 +24,17 @@ use egui::{Id, Ui};
 use media_core::TrackId;
 
 use super::ControlAction;
-use super::queue_mode_controls::QueueModeControlLayout;
+use super::quality_control::QualityNeighbor;
 use super::subtitle_control::SubtitleNeighbor;
 use crate::state::AudioTrackMenuView;
 use crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction;
 use layout::{AudioTrackControlLayout, AudioTrackControlMode, choose_mode};
+/// Раскладка «♪» для тестов соседней кнопки качества: она сверяется с реальной раскладкой «♪».
+#[cfg(test)]
+pub(super) use layout::{
+    AudioTrackControlMode as TestAudioTrackControlMode, choose_mode as choose_audio_mode,
+    layout as audio_layout, quality_neighbor as audio_quality_neighbor,
+};
 use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
 
 /// Полный переход «появилась/исчезла» занимает 250 мс (как CC и кнопка скорости).
@@ -54,6 +60,8 @@ pub(super) struct AudioTrackControlFrame {
     layout: AudioTrackControlLayout,
     reveal_progress: f32,
     neighbor: SubtitleNeighbor,
+    /// «♪» должна быть видна при полном появлении (есть выбор и хватает места).
+    target_visible: bool,
 }
 
 impl AudioTrackControlFrame {
@@ -71,12 +79,18 @@ impl AudioTrackControlFrame {
             layout: layout::layout(&neighbor, mode, reveal_progress),
             reveal_progress,
             neighbor,
+            target_visible,
         }
     }
 
-    /// Раскладка Shuffle/Repeat этого кадра (с учётом места под CC и «♪»).
-    pub(super) fn queue_mode_layout(&self) -> QueueModeControlLayout {
-        self.layout.queue_mode
+    /// Данные CC и «♪» для кнопки качества: она стоит левее и занимает место вместе с ними.
+    pub(super) fn neighbor_for_quality(&self) -> QualityNeighbor {
+        layout::quality_neighbor(
+            &self.neighbor,
+            self.layout.mode,
+            self.reveal_progress,
+            self.target_visible,
+        )
     }
 
     /// Рисует «♪» и стрелку (если они видны) и добавляет действия пользователя.

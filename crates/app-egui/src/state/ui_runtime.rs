@@ -123,6 +123,7 @@ impl AppState {
         let mut notification_output = crate::ui::notifications::NotificationUiOutput::default();
         let subtitle_menu = self.subtitle_menu_view();
         let audio_menu = self.audio_track_menu_view(player_snapshot);
+        let quality_menu = self.quality_menu_view(player_snapshot);
         let render_diagnostics = frame_context.render_diagnostics();
         let selected_skin = skin::skin_from_config(self.committed_config_snapshot.ui_skin())
             .unwrap_or_else(|| {
@@ -269,6 +270,7 @@ impl AppState {
                     playlist_transport: playlist_models.transport,
                     subtitle_menu: &subtitle_menu,
                     audio_menu: &audio_menu,
+                    quality_menu: &quality_menu,
                 },
             );
             control_actions = bottom_controls.inner;
@@ -504,6 +506,9 @@ impl AppState {
                 }
                 ControlAction::AudioTracks(audio_action) => {
                     self.apply_audio_track_control_action(audio_action, player_snapshot);
+                }
+                ControlAction::Quality(quality_action) => {
+                    self.apply_quality_control_action(quality_action);
                 }
             }
         }

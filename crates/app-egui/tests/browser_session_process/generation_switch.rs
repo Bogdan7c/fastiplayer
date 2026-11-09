@@ -49,7 +49,7 @@ fn playing_clock_positions(messages: &[PlayerSessionMessage]) -> Vec<u64> {
 
 /// Проигрывает запись: сообщения и рамки — на провод, паузы — ждать часов плеера.
 /// Возвращает всё, что страница получила по дороге.
-fn play_recording(
+pub(super) fn play_recording(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     steps: Vec<StreamStep>,
 ) -> Vec<PlayerSessionMessage> {

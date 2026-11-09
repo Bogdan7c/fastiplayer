@@ -229,6 +229,7 @@ impl SessionMedia {
             ViewerTransportIntent::SkipAd => {
                 self.viewer_ad_action(AdPlateAction::Skip, now, page_listens);
             }
+            ViewerTransportIntent::ShowPage => self.viewer_asks_to_show_page(page_listens),
         }
     }
 

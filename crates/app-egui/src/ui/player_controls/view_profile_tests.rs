@@ -8,15 +8,26 @@ use std::collections::BTreeSet;
 
 use egui::Pos2;
 
+use crate::page_quality::PageViewOffer;
 use crate::playlist_runtime::{NavigationControlAvailability, PlaylistTransportUiModel};
+use crate::state::QualityMenuView;
 use crate::ui::player_controls::{BottomControlsInput, ControlAction, render_bottom_controls};
 use crate::ui::skin::MinimalSkin;
 use crate::ui::test_frame::{app_behavior_context, input_at, run_ui_frame};
 use crate::ui::timeline::TimelineUiState;
 use crate::window_view_profile::WindowViewProfile;
 
-/// Метки кнопок нижней панели после нескольких кадров (первый кадр только измеряет).
+/// Метки кнопок нижней панели без кнопки качества (у неё нет что показать).
 fn bottom_panel_button_labels(view_profile: WindowViewProfile) -> BTreeSet<String> {
+    bottom_panel_button_labels_with_quality(view_profile, &QualityMenuView::hidden())
+}
+
+/// Метки кнопок нижней панели после нескольких кадров (первый кадр только измеряет);
+/// `quality_menu` — то, что владелец состояния прислал для кнопки качества.
+fn bottom_panel_button_labels_with_quality(
+    view_profile: WindowViewProfile,
+    quality_menu: &QualityMenuView,
+) -> BTreeSet<String> {
     let context = app_behavior_context();
     context.enable_accesskit();
     let snapshot = player_core::PlayerSnapshot::empty();
@@ -54,6 +65,7 @@ fn bottom_panel_button_labels(view_profile: WindowViewProfile) -> BTreeSet<Strin
                     playlist_transport: &transport,
                     subtitle_menu: &subtitle_menu,
                     audio_menu: &audio_menu,
+                    quality_menu,
                     view_profile,
                 },
             );
@@ -106,4 +118,39 @@ fn the_browser_window_has_no_queue_navigation_and_no_open_button() {
         "the panel has common buttons: {standard:?}"
     );
     assert_eq!(browser, common);
+}
+
+/// Кнопка качества (подпись «Video quality 720p» для кадра 1280×720): есть у окна браузерного
+/// режима, когда есть что показать, и нет ни в обычном окне (даже если ей прислали снимок —
+/// профиль главнее), ни в браузерном окне без кадра.
+#[test]
+fn the_quality_button_exists_only_in_the_browser_window_with_something_to_show() {
+    const QUALITY_BUTTON: &str = "Video quality 720p";
+    let shown = QualityMenuView::sample_for_tests((1280, 720), PageViewOffer::Available);
+
+    let browser =
+        bottom_panel_button_labels_with_quality(WindowViewProfile::BrowserSession, &shown);
+    assert!(browser.contains(QUALITY_BUTTON), "{browser:?}");
+
+    let standard = bottom_panel_button_labels_with_quality(WindowViewProfile::Standard, &shown);
+    assert!(
+        !standard
+            .iter()
+            .any(|label| label.starts_with("Video quality")),
+        "the standard window draws a quality button: {standard:?}"
+    );
+
+    let no_frame = bottom_panel_button_labels(WindowViewProfile::BrowserSession);
+    assert!(
+        !no_frame
+            .iter()
+            .any(|label| label.starts_with("Video quality")),
+        "no frame, no button: {no_frame:?}"
+    );
+    // Остальные кнопки панели от кнопки качества не меняются.
+    let without_quality: BTreeSet<String> = browser
+        .into_iter()
+        .filter(|label| label != QUALITY_BUTTON)
+        .collect();
+    assert_eq!(without_quality, no_frame);
 }

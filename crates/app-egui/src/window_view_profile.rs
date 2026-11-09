@@ -75,6 +75,16 @@ impl WindowViewProfile {
         }
     }
 
+    /// Есть ли кнопка качества («1080p»): разрешение, битрейт, кодек и просьба показать
+    /// страницу. Качество выбирает плеер страницы, поэтому кнопка — только у окна
+    /// браузерного режима; в обычном окне менять нечего и просить некого (решение 267).
+    pub(crate) const fn offers_page_quality_view(self) -> bool {
+        match self {
+            Self::Standard => false,
+            Self::BrowserSession => true,
+        }
+    }
+
     /// Секции сайдбара, которые предлагают кнопки заголовка (в их порядке).
     ///
     /// Host сайдбара один на все виды (`mem:app-egui/reusable-ui-regions`): профиль
@@ -119,6 +129,7 @@ mod tests {
         assert_eq!(profile, WindowViewProfile::Standard);
         assert!(profile.offers_media_opening());
         assert!(profile.offers_queue_navigation());
+        assert!(!profile.offers_page_quality_view());
         assert_eq!(profile.live_scrub_scope(), LiveScrubScope::Anywhere);
         assert_eq!(profile.sidebar_sections(), STANDARD_SIDEBAR_SECTIONS);
         assert_eq!(profile.idle_center_hint(), "Open a file or URL to start");
@@ -129,6 +140,7 @@ mod tests {
         let profile = WindowViewProfile::BrowserSession;
         assert!(!profile.offers_media_opening());
         assert!(!profile.offers_queue_navigation());
+        assert!(profile.offers_page_quality_view());
         assert_eq!(
             profile.live_scrub_scope(),
             LiveScrubScope::DownloadedRangeOnly

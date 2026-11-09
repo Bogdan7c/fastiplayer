@@ -27,6 +27,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
+mod page_quality;
+
 use super::super::opened_page::{OpenedPage, PageArrival};
 use super::super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
 use super::super::session_media::GenerationWait;

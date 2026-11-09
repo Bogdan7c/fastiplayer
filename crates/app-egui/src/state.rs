@@ -123,7 +123,7 @@ mod center_overlay;
 mod player_event_tap;
 mod telemetry_panel;
 mod window_mode;
-pub(crate) use window_mode::PageLedTransportAction;
+pub(crate) use window_mode::{PageLedTransportAction, QualityMenuView};
 mod timeline_inline_status;
 pub(crate) use player_event_tap::TappedPlayerEvents;
 mod timeline_dispatch;

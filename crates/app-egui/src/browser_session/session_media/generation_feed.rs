@@ -23,7 +23,7 @@ use media_source_open::prepared_web_media::{
 use media_source_open::progressive_player_demux::into_player_demuxer;
 use player_core::{PreparedInitialPositionError, PreparedMedia, PreparedMediaTimelineModeError};
 use pushed_media_source::{
-    BufferStatus, FileOpenProgress, FileSeekability, OpenProgress, OpenedPushedFile,
+    BufferStatus, FileOpenProgress, FileSeekability, MediaBitrate, OpenProgress, OpenedPushedFile,
     OpenedPushedStream, PageSeekRequest, PushedFileOpener, PushedFileRequests, PushedStreamMonitor,
     PushedStreamOpener, RangeRequest, ResourceFetchRequests, ResourceRequest,
 };
@@ -384,6 +384,16 @@ impl LoadedFeed {
                 downloaded_range, ..
             } => downloaded_range.clone(),
             Self::File { .. } | Self::Hls { .. } => DownloadedRange::Unknown,
+        }
+    }
+
+    /// «Вес» видео около показанного места (решение 277) — для меню качества окна.
+    /// Только у сегментов: у файла и HLS полки нет, а «известно» без правды хуже
+    /// «неизвестно».
+    pub(super) fn video_bitrate(&self) -> Option<MediaBitrate> {
+        match self {
+            Self::Segments { monitor, .. } => monitor.video_bitrate_near_position(),
+            Self::File { .. } | Self::Hls { .. } => None,
         }
     }
 

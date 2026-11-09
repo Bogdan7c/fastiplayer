@@ -61,6 +61,7 @@ use super::instance::{
     BrowserWindowInstance, BrowserWindowStartError, InstanceAudio, InstanceSignal,
     InstanceWakePorts, apply_redraw_action,
 };
+use super::page_view_notice::show_page_view_notice;
 use super::remote::PlaybackDesk;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::process_shutdown::ShutdownDeadline;
@@ -247,6 +248,10 @@ impl BrowserWindowApp {
             show_page_reopen_notice(instance, step.page_reopen_notice);
             // Реклама на странице (09d): плашка поверх видео, перемотка и скорость заперты.
             instance.apply_ad_plate(step.ad_plate);
+            // Кнопка качества (13c): факты сеанса и строка журнала при смене подписи.
+            instance.apply_page_quality(step.page_quality);
+            // Просьба «Change quality on the page» принята: тост «переключитесь на браузер».
+            show_page_view_notice(instance, step.page_view_notice);
         }
         if let Some(instance) = self.instance.as_mut() {
             {

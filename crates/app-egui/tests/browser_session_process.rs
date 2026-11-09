@@ -889,3 +889,7 @@ mod tab_return;
 /// Субтитры страницы (протокол 1.5, 13b1): документ до кадров окна, реклама их прячет.
 #[path = "browser_session_process/page_subtitles.rs"]
 mod page_subtitles;
+
+// Сессия 13c: кнопка качества окна — подпись «64p» → «96p» по картинке, которую видит зритель.
+#[path = "browser_session_process/quality_button.rs"]
+mod quality_button;

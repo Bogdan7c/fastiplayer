@@ -18,6 +18,7 @@
 
 use egui::{Rect, pos2, vec2};
 
+use super::super::quality_control::QualityNeighbor;
 use super::super::queue_mode_controls::{QueueModeControlLayout, TrailingReservedWidth};
 use super::super::subtitle_control::{APPEAR_SLIDE_DISTANCE, SubtitleNeighbor};
 
@@ -96,6 +97,30 @@ fn fits(neighbor: &SubtitleNeighbor, mode: AudioTrackControlMode) -> bool {
     // Next в самом тесном положении должен остаться на положенном расстоянии от Repeat.
     neighbor.geometry.base_next_button_rect.right() + neighbor.geometry.neighbor_gap()
         <= queue_mode.repeat_rect.left()
+}
+
+/// Что кнопке качества, стоящей левее «♪», нужно знать о местах справа: сколько заняли CC и
+/// «♪» сейчас и сколько займут при полном появлении. Если «♪» не появится (одна дорожка,
+/// `audio_target_visible == false`), в полном резерве её нет, и кнопка качества встаёт
+/// сразу левее CC (а без CC — левее Fullscreen).
+pub(in crate::ui::player_controls) fn quality_neighbor(
+    neighbor: &SubtitleNeighbor,
+    mode: AudioTrackControlMode,
+    reveal_progress: f32,
+    audio_target_visible: bool,
+) -> QualityNeighbor {
+    let reserve_now = subtitle_reserve(neighbor, neighbor.reveal_progress).plus(audio_reserve(
+        neighbor,
+        mode,
+        reveal_progress,
+    ));
+    let audio_fully_shown = if audio_target_visible {
+        audio_reserve(neighbor, mode, 1.0)
+    } else {
+        TrailingReservedWidth::NONE
+    };
+    let reserve_fully_shown = subtitle_reserve_when_fully_shown(neighbor).plus(audio_fully_shown);
+    QualityNeighbor::new(neighbor.geometry, reserve_now, reserve_fully_shown)
 }
 
 /// Выбирает режим по ширине строки: самый богатый из тех, что помещаются рядом с CC.

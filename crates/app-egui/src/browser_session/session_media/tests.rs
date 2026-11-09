@@ -782,6 +782,7 @@ mod live_click_real_player;
 mod live_hls;
 mod live_scrub_real_player;
 mod opening_clock;
+mod page_quality;
 mod page_reopen;
 mod page_subtitles;
 mod seek_handover;

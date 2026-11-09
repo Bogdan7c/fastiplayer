@@ -102,6 +102,8 @@ mod tests {
                         playlist_transport: &transport,
                         subtitle_menu: &subtitle_menu,
                         audio_menu: &audio_menu,
+                        // Кнопка качества — в той же строке: высота панели от неё не зависит.
+                        quality_menu: &crate::state::QualityMenuView::hidden(),
                         view_profile: crate::window_view_profile::WindowViewProfile::Standard,
                     },
                 );

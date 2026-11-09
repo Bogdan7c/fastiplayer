@@ -95,6 +95,7 @@ mod generation_start;
 mod install_reconcile;
 mod live_hls;
 mod page_clock;
+mod page_quality;
 mod page_reopen;
 mod page_subtitles;
 mod resource_requests;
@@ -109,6 +110,7 @@ mod wake_schedule;
 pub(crate) use self::drain::{DrainEnd, DrainPolicy, DrainProgress, PausedDrain};
 pub(crate) use self::farewell::ViewerCloseStep;
 pub(crate) use self::generation_placement::{GenerationPlacementPolicy, GenerationWait};
+pub(crate) use self::page_quality::PageViewNotice;
 pub(crate) use self::page_reopen::{PageReopenNotice, PageReopenRefusal};
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
 pub(crate) use self::viewer_seek_notice::ViewerSeekNotice;
@@ -246,6 +248,8 @@ pub(crate) struct SessionMedia {
     page_reopen: PageReopen,
     /// Склад субтитров страницы: живёт весь сеанс, поколения его не трогают (13b1).
     page_subtitles: super::page_subtitles::shelf::PageSubtitleShelf,
+    /// Просьба зрителя показать страницу принята, окно ещё не сказало (13c, [`page_quality`]).
+    page_view_notice: PageViewNotice,
 }
 
 impl SessionMedia {
@@ -278,6 +282,7 @@ impl SessionMedia {
             ad: AdPresence::default(),
             page_reopen: PageReopen::default(),
             page_subtitles: Default::default(),
+            page_view_notice: PageViewNotice::Nothing,
         }
     }
 

@@ -68,10 +68,12 @@ use super::playback::PlaybackObservation;
 
 mod live_window;
 mod page_reopen;
+mod page_view;
 mod resource_requests;
 
 pub(crate) use self::live_window::LiveWindowTold;
 pub(crate) use self::page_reopen::ReopenRequestOutcome;
+pub(crate) use self::page_view::{PageViewPermission, ShowPageRequestOutcome};
 pub(crate) use self::resource_requests::{ResourceQueueOutcome, ResourceRequestPermission};
 
 /// Шаг часов: 4 тика в секунду (протокол, решение 85; `results/00c.md`, п. 4).
@@ -639,6 +641,7 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::StreamRejected { .. } => "stream_rejected",
         PlayerSessionMessage::SkipAd {} => "skip_ad",
         PlayerSessionMessage::ReopenPage { .. } => "reopen_page",
+        PlayerSessionMessage::ShowPage {} => "show_page",
     }
 }
 

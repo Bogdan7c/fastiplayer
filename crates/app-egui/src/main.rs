@@ -31,6 +31,7 @@ mod log_writer;
 mod media_open;
 mod mesa_wsi_workaround;
 mod page_label;
+mod page_quality;
 mod page_subtitles;
 mod player_error_message;
 mod playlist_action_runtime;

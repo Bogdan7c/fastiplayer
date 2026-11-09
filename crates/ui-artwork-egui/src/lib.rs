@@ -13,6 +13,7 @@ mod playback_button;
 mod playback_rate_button;
 mod playlist_row;
 mod playlist_toolbar;
+mod quality_label_button;
 mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
@@ -122,6 +123,17 @@ impl<'a> ArtworkPainter<'a> {
         style: SubtitlesButtonStyle,
     ) {
         audio_tracks_button::paint(self.painter, rect, state, style);
+    }
+
+    /// Рисует кнопку качества с текстовой подписью («1080p») в рамке, парной к CC и «♪».
+    pub fn quality_label_button(
+        self,
+        rect: egui::Rect,
+        label: &str,
+        state: SubtitlesButtonPaintState,
+        style: SubtitlesButtonStyle,
+    ) {
+        quality_label_button::paint(self.painter, rect, label, state, style);
     }
 
     /// Рисует пунктирную рамку правки субтитров с четырьмя угловыми маркерами.

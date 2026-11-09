@@ -43,6 +43,7 @@ mod driver;
 mod end_notice;
 mod geometry;
 mod instance;
+mod page_view_notice;
 mod player_port;
 mod remote;
 mod render_path;
