@@ -367,7 +367,9 @@ fn parse_youtube_quality(value: &str) -> Result<YoutubeQualityStep, String> {
         .parse()
         .map_err(|error| format!("--youtube-quality {value}: {error}"))?;
     if level.is_empty() || !level.chars().all(|symbol| symbol.is_ascii_alphanumeric()) {
-        return Err(format!("--youtube-quality {value}: the level must be like small or hd720"));
+        return Err(format!(
+            "--youtube-quality {value}: the level must be like small or hd720"
+        ));
     }
     Ok(YoutubeQualityStep {
         after: Duration::from_secs(after),
@@ -643,7 +645,9 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         .tab_return_after
         .map(|after| Instant::now() + after);
     let mut tab_closed = false;
-    let mut seek_at = arguments.seek.map(|plan| (Instant::now() + plan.after, plan.by_seconds));
+    let mut seek_at = arguments
+        .seek
+        .map(|plan| (Instant::now() + plan.after, plan.by_seconds));
     let handed_off_at = Instant::now();
     let mut quality_steps = arguments.youtube_qualities.iter().peekable();
     let mut service_page_open = false;
@@ -659,7 +663,9 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             tab_closed = true;
             close_tab_and_ask_back(browser.as_mut(), &tab, &control);
         }
-        if let Some(step) = quality_steps.next_if(|step| Instant::now() >= handed_off_at + step.after) {
+        if let Some(step) =
+            quality_steps.next_if(|step| Instant::now() >= handed_off_at + step.after)
+        {
             ask_youtube_quality(browser.as_mut(), &tab, &mut service_page_open, &step.level);
         }
         if let Some((at, by_seconds)) = seek_at
