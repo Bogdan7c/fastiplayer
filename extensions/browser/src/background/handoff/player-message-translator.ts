@@ -24,6 +24,8 @@ export type PlayerAction =
   | { readonly kind: "fetch_range"; readonly request: RangeRequest }
   /** Плеер просит нажать кнопку пропуска рекламы (сессия 09d); решает сеанс: целевой фрейм знает только он. */
   | { readonly kind: "skip_ad" }
+  /** Зритель хочет увидеть страницу (протокол 1.6): вкладку сеанса — на передний план. Решает сеанс: вкладка у него. */
+  | { readonly kind: "show_page" }
   /** Плеер просит ресурс нативного HLS по номерку (10a2): его качает загрузчик поколения HLS. */
   | { readonly kind: "fetch_resource"; readonly request: ResourceFetchRequest }
   /** Не относится к передаче (варианты — 14, следующая серия — 15) или к старому поколению — пропустить. */
@@ -70,6 +72,8 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
       return { kind: "fetch_range", request: { request_id: message.request_id, offset: message.offset, length: message.length } };
     case "skip_ad":
       return { kind: "skip_ad" };
+    case "show_page":
+      return { kind: "show_page" };
     case "fetch_resource":
       // Ресурс HLS по номерку (10a2): качает загрузчик поколения HLS; без него сеанс ответит `refused`.
       return {

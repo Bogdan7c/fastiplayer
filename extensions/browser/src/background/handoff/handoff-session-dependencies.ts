@@ -11,6 +11,7 @@ import type { FileAddressRule } from "./file-address-guard.ts";
 import type { FileReferrerRules } from "./file-referrer-rule.ts";
 import type { FrameConnector } from "./frame-port.ts";
 import type { LocalAddressBlock } from "./local-address-block-rules.ts";
+import type { PageTabRevealApi } from "./page-tab-reveal.ts";
 import type { PageReopenBrowser } from "./page-return/page-reopen-browser.ts";
 import type { ReturnablePage } from "./page-return/page-return-memory.ts";
 import type { RangeFetch } from "./range-fetcher.ts";
@@ -47,6 +48,8 @@ export interface HandoffSessionDependencies {
   readonly noteForDeveloper: (message: string) => void;
   /** Браузерная сторона возврата ушедшей страницы (сессия 11b2): окна, вкладки, взвод сторожа возврата. */
   readonly pageReopen: PageReopenBrowser;
+  /** Браузерная сторона «показать страницу» (протокол 1.6, решение 278): вкладка, окно, подсветка. */
+  readonly pageTabReveal: PageTabRevealApi;
 }
 
 /** Что фон знает о вкладке: подпись окна и адрес документа. */

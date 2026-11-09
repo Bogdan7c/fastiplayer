@@ -103,6 +103,11 @@ export type PlayerSessionMessage =
    * `page_reopen_failed`.
    */
   | { readonly type: "reopen_page"; readonly position_us: MediaTimeMicros }
+  /**
+   * Протокол 1.6 (решение 278): зритель хочет увидеть страницу (например, сменить там качество). Экстеншен делает
+   * вкладку сеанса активной, просит окно выйти вперёд и подсвечивает его. Ответа нет.
+   */
+  | { readonly type: "show_page" }
   | { readonly type: "stream_rejected"; readonly generation: StreamGeneration; readonly reason: StreamRejection };
 
 const clockStateCodec: Codec<ClockState> = stringEnum<ClockState>(["playing", "paused", "waiting", "ended"]);
@@ -142,6 +147,7 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
     seekable: liveSeekableCodec,
   },
   reopen_page: { position_us: mediaTimeCodec },
+  show_page: {},
   stream_rejected: {
     generation: streamGenerationCodec,
     reason: stringEnum<StreamRejection>([

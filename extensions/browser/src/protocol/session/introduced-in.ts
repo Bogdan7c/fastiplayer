@@ -12,6 +12,7 @@ import {
   PROTOCOL_VERSION_1_3,
   PROTOCOL_VERSION_1_4,
   PROTOCOL_VERSION_1_5,
+  PROTOCOL_VERSION_1_6,
   type ProtocolVersion,
 } from "../version.ts";
 import type { PageSessionMessage, TabGoneReason } from "./page.ts";
@@ -59,6 +60,7 @@ const PLAYER_SESSION_INTRODUCED_IN: Readonly<Record<PlayerSessionMessage["type"]
   fetch_resource: PROTOCOL_VERSION_1_1,
   live_window: PROTOCOL_VERSION_1_2,
   reopen_page: PROTOCOL_VERSION_1_4,
+  show_page: PROTOCOL_VERSION_1_6,
   stream_rejected: PROTOCOL_VERSION_1_0,
 };
 

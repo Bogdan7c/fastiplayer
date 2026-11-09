@@ -11,6 +11,7 @@ import { createLocalAddressBlock, localAddressBlockRules } from "../../src/backg
 import { createSessionRules, FIRST_REQUEST_RULE_ID, type SessionRule, type SessionRulesApi } from "../../src/background/handoff/session-rules.ts";
 import type { RangeFetch } from "../../src/background/handoff/range-fetcher.ts";
 import type { PageReopenBrowser } from "../../src/background/handoff/page-return/page-reopen-browser.ts";
+import type { PageTabRevealApi } from "../../src/background/handoff/page-tab-reveal.ts";
 import { createMemoryTabModelStore, type TabModelStore } from "../../src/background/tab-model/session-store.ts";
 import { createTabModel } from "../../src/background/tab-model/tab-model.ts";
 import { createTabHandoffs } from "../../src/background/handoff/tab-handoffs.ts";
@@ -76,7 +77,16 @@ export interface WorldOptions {
   readonly tabWindowId?: number;
   /** Браузерная сторона возврата страницы (11b2); по умолчанию — «нет окна». */
   readonly pageReopen?: PageReopenBrowser;
+  /** Браузерная сторона «показать страницу» (13c); по умолчанию — вкладка на месте, всё получается. */
+  readonly pageTabReveal?: PageTabRevealApi;
 }
+
+/** «Показать страницу» по умолчанию: вкладка в окне 1, окно слушается (сценарии до 13c его не зовут). */
+const NO_PAGE_TAB_REVEAL: PageTabRevealApi = {
+  activateTab: async () => ({ windowId: 1 }),
+  focusWindow: async () => {},
+  drawAttention: async () => {},
+};
 
 /** Возврат по умолчанию: окна нет, ничего не открывается (сценарии до 11b2 его не зовут). */
 const NO_PAGE_REOPEN: PageReopenBrowser = {
@@ -147,6 +157,7 @@ export function setup(
     describeTab: () =>
       Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl, windowId: options.tabWindowId, incognito: false } : undefined),
     pageReopen: options.pageReopen ?? NO_PAGE_REOPEN,
+    pageTabReveal: options.pageTabReveal ?? NO_PAGE_TAB_REVEAL,
     tabExists: () => {
       tabExistsQuestions += 1;
       return Promise.resolve(tabAlive);

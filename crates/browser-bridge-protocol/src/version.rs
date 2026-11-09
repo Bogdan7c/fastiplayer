@@ -54,6 +54,10 @@
 //!   Тот же `track` ещё раз — замена документа. При общей версии ниже 1.5 ни сообщения, ни
 //!   рамки вида 3 нет: сторож плеера отвергает их как нарушение (4003), а экстеншен
 //!   субтитры не шлёт. Договор — `crate::session::page_subtitles`.
+//! - **1.6** (сессия 13c, решение 278) — «показать страницу»: плеер → страница `show_page`
+//!   (зритель хочет увидеть страницу, например сменить качество там). Экстеншен делает
+//!   вкладку сеанса активной и просит окно выйти вперёд; ответа нет. При общей версии ниже
+//!   1.6 плеер `show_page` не шлёт.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -94,6 +98,9 @@ impl ProtocolVersion {
     /// вида 3.
     pub const V1_5: Self = Self { major: 1, minor: 5 };
 
+    /// «Показать страницу» (сессия 13c, решение 278): `show_page`.
+    pub const V1_6: Self = Self { major: 1, minor: 6 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -106,7 +113,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_5;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_6;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -188,18 +195,19 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_5() {
-        // Сессия 13b1: субтитры страницы. Число закреплено — его же зеркалит экстеншен
+    fn this_crate_speaks_protocol_1_6() {
+        // Сессия 13c: «показать страницу». Число закреплено — его же зеркалит экстеншен
         // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 5));
-        assert!(ProtocolVersion::V1_5.includes(ProtocolVersion::V1_4));
-        assert!(!ProtocolVersion::V1_4.includes(ProtocolVersion::V1_5));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 6));
+        assert!(ProtocolVersion::V1_6.includes(ProtocolVersion::V1_5));
+        assert!(!ProtocolVersion::V1_5.includes(ProtocolVersion::V1_6));
     }
 
     #[test]
-    fn a_1_5_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_6_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_5,
             ProtocolVersion::V1_4,
             ProtocolVersion::V1_3,
             ProtocolVersion::V1_2,
@@ -207,11 +215,11 @@ mod tests {
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_5, older),
+                negotiate_protocol_version(ProtocolVersion::V1_6, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_5),
+                negotiate_protocol_version(older, ProtocolVersion::V1_6),
                 Ok(older)
             );
         }

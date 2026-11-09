@@ -72,7 +72,6 @@ test("в 1.5 ровно одно новое сообщение - subtitle_track_
   assert.deepEqual(newer("page_session"), ["subtitle_track_offered"]);
   assert.deepEqual(newer("player_session"), []);
   assert.deepEqual(pageSessionIntroducedIn("subtitle_track_offered"), PROTOCOL_VERSION_1_5);
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_5);
 });
 
 test("рамка вида 3 - из 1.5, прежние виды - из 1.0; при общей 1.4 субтитры не шлются", () => {

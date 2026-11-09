@@ -33,7 +33,7 @@
 //! 1.4 (решения 240–241) — возврат вкладки: `page_left`, `page_returned`,
 //! `page_reopen_failed`, `reopen_page` (`crate::session::page_reopen`); 1.5 (решения
 //! 270–274) — субтитры страницы: `subtitle_track_offered` и рамка вида 3
-//! (`crate::session::page_subtitles`).
+//! (`crate::session::page_subtitles`); 1.6 (решение 278) — `show_page` (плеер → страница).
 //! История версий — `crate::version`.
 
 pub mod capability;

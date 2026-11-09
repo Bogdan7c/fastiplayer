@@ -87,6 +87,7 @@ import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLA
 import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
 import { createPagePresence } from "./session-page-presence.ts";
+import { createSessionPageReveal } from "./page-tab-reveal.ts";
 
 /** Элемент очереди открывает новое поколение (`generation_started`). */
 function startsGeneration(item: OutgoingItem): boolean {
@@ -142,6 +143,7 @@ export function startHandoffSession(
   const releaseDemand = dependencies.door.acquireDemand(DEMAND_REASON);
   // Вкладка страницы сеанса (после возврата страницы, 11b2, — другая) и вопросы браузеру о её уходе.
   const presence = createPagePresence({ tabId: target.tabId, tabUrl: target.tabUrl }, dependencies);
+  const pageReveal = createSessionPageReveal({ api: dependencies.pageTabReveal, currentTabId: () => presence.tabId(), note: dependencies.noteForDeveloper });
   const pageReturn = createSessionPageReturn({
     browser: dependencies.pageReopen,
     scheduler: dependencies.scheduler,
@@ -599,6 +601,7 @@ export function startHandoffSession(
     if (message.type === "clock") pageReturn.notePlayerSecond(message.position_us);
     if (phase === "page_away") {
       if (message.type === "reopen_page") pageReturn.reopenRequested();
+      if (message.type === "show_page") dependencies.noteForDeveloper("show_page ignored: the page is away");
       return;
     }
     // До старта тени и после её снятия командовать некем.
@@ -625,6 +628,7 @@ export function startHandoffSession(
       case "skip_ad":
         adMirror.skipAd();
         return;
+      case "show_page": return void pageReveal.show(); // сбои разобраны внутри, наружу не бросает
       case "fetch_resource":
         // Ресурсы HLS просят только в поколении HLS; в другом поколении фид сам ответит `refused`.
         if (socket !== undefined) feeds.requestResource(action.request, socket);

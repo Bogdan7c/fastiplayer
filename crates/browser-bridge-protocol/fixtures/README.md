@@ -166,3 +166,7 @@ Rust-константы (`extension_identity.rs`) сверяет с этим ф�
 **Случаи сторожа** — `page-subtitle-gate.json`: `{"cases":[{"name", "agreed":"1.5", "steps":[{"text":"<JSON на проводе>"} | {"binary_hex":"<рамка>"}], "expect": {"result":"ok","documents":[{"track":N,"utf8":"…"}]} | {"result":"violation","at_step":N,"violation":"<имя>"}}]}`. Имена нарушений — варианты `StreamViolation` в snake_case. У `ok` в `documents` — ровно готовые документы (недокачанные не перечисляются). Сторож есть только у плеера (Rust, `tests/protocol_1_5.rs`); TypeScript проверяет, что каждый шаг разбирается его кодеками.
 
 Фикстуры — `session/valid/page-subtitle-track-offered-*`, `session/invalid/page-subtitle-track-offered-*`, `data/valid/page-subtitle-*`, `data/invalid/page-subtitle-*`.
+
+## Показать страницу (протокол 1.6, сессия 13c, решение 278)
+
+Версия протокола — **1.6**. Новое — одно сообщение плеер → страница `show_page {}` (`message-versions.json`): зритель хочет увидеть страницу (например, сменить там качество). Экстеншен делает вкладку сеанса активной, просит её окно выйти вперёд и подсвечивает окно; ответа нет, сеанс и поколения не меняются. При общей версии ниже 1.6 плеер `show_page` не шлёт. Фикстуры — `session/valid/player-show-page.json`, `session/invalid/player-show-page-unknown-field.json`; договор версий и согласование — `tests/protocol_1_6.rs`.

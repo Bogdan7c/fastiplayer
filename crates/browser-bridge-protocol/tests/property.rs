@@ -466,7 +466,7 @@ fn subtitle_track_offered(generator: &mut Generator) -> PageSessionMessage {
 }
 
 fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
-    match generator.below(15) {
+    match generator.below(16) {
         0 => PlayerSessionMessage::Attached {},
         1 => PlayerSessionMessage::Clock {
             seq: ClockSequence(generator.next_u64() as u32),
@@ -513,6 +513,8 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
         13 => PlayerSessionMessage::ReopenPage {
             position_us: media_time(generator),
         },
+        // Протокол 1.6: зритель хочет увидеть страницу.
+        14 => PlayerSessionMessage::ShowPage {},
         _ => PlayerSessionMessage::StreamRejected {
             generation: generation(generator),
             reason: *generator.pick(&[

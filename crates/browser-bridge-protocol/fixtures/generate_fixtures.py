@@ -828,6 +828,8 @@ def write_player_session(manifest: Manifest) -> None:
         ("reopen-page", {"type": "reopen_page", "position_us": 123}),
         ("reopen-page-zero", {"type": "reopen_page", "position_us": 0}),
         ("reopen-page-max", {"type": "reopen_page", "position_us": MAX_JSON_SAFE_INTEGER}),
+        # Протокол 1.6 (решение 278): зритель хочет увидеть страницу.
+        ("show-page", {"type": "show_page"}),
         ("live-window-range", live_window()),
         ("live-window-none", live_window(seekable={"kind": "none"})),
         # Края договора включительно: окно в одну точку ровно на краю эфира.
@@ -877,6 +879,7 @@ def write_player_session(manifest: Manifest) -> None:
     write_invalid_fetch_resource(manifest)
     write_invalid_live_window(manifest)
     write_invalid_reopen_page(manifest)
+    write_invalid_show_page(manifest)
 
 
 def write_invalid_reopen_page(manifest: Manifest) -> None:
@@ -897,6 +900,16 @@ def write_invalid_reopen_page(manifest: Manifest) -> None:
         ("unknown-field", {"type": "reopen_page", "position_us": 1, "page": "x"}, "unknown_field"),
     ]:
         manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
+
+
+def write_invalid_show_page(manifest: Manifest) -> None:
+    """Неверный `show_page` (протокол 1.6): у сообщения нет полей, лишнее — отказ."""
+    manifest.invalid(
+        "session/invalid/player-show-page-unknown-field.json",
+        "player_session",
+        compact_json({"type": "show_page", "tab": 1}),
+        "unknown_field",
+    )
 
 
 def window_range(start_us: int, end_us: int) -> dict[str, Any]:
@@ -1666,6 +1679,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         "fetch_resource": "1.1",
         "live_window": "1.2",
         "reopen_page": "1.4",
+        "show_page": "1.6",
     },
 }
 

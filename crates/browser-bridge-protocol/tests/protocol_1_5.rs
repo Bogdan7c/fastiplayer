@@ -29,10 +29,10 @@ use browser_bridge_protocol::session::{
     PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, StreamScope, SubtitleFormatHint,
 };
 use browser_bridge_protocol::{
-    ByteOffset, CURRENT_PROTOCOL_VERSION, DataFrameHeader, GateDecision, PageSessionMessage,
-    PageSubtitleBytesHeader, ProtocolVersion, RangeBytesHeader, RangeRequestId, StreamGate,
-    StreamViolation, SubtitleLabel, SubtitleLanguageTag, decode_data_frame, decode_message,
-    encode_data_frame, encode_message, negotiate_protocol_version,
+    ByteOffset, DataFrameHeader, GateDecision, PageSessionMessage, PageSubtitleBytesHeader,
+    ProtocolVersion, RangeBytesHeader, RangeRequestId, StreamGate, StreamViolation, SubtitleLabel,
+    SubtitleLanguageTag, decode_data_frame, decode_message, encode_data_frame, encode_message,
+    negotiate_protocol_version,
 };
 use serde::Deserialize;
 
@@ -264,7 +264,7 @@ fn protocol_1_5_adds_exactly_one_documented_message_type() {
         version_of(&table.page_session["subtitle_track_offered"]),
         PAGE_SUBTITLES_INTRODUCED_IN
     );
-    assert_eq!(PAGE_SUBTITLES_INTRODUCED_IN, CURRENT_PROTOCOL_VERSION);
+    assert_eq!(PAGE_SUBTITLES_INTRODUCED_IN, ProtocolVersion::V1_5);
 }
 
 #[test]

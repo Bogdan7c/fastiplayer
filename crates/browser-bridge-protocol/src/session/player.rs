@@ -196,6 +196,11 @@ pub enum PlayerSessionMessage {
         /// С какой секунды продолжить.
         position_us: MediaTime,
     },
+    /// Зритель хочет увидеть страницу (протокол 1.6, решение 278), например сменить там
+    /// качество. Экстеншен делает вкладку сеанса активной, просит её окно выйти вперёд и
+    /// подсвечивает окно. Ответа нет; видео остаётся у плеера, сеанс не меняется. Плеер шлёт
+    /// это только собеседнику с общей версией не ниже 1.6.
+    ShowPage {},
     /// Плеер не будет играть это поколение — экстеншен возвращает видео странице.
     StreamRejected {
         /// Поколение.
@@ -222,6 +227,7 @@ impl ProtocolMessage for PlayerSessionMessage {
         "fetch_resource",
         "live_window",
         "reopen_page",
+        "show_page",
         "stream_rejected",
     ];
 
@@ -252,6 +258,7 @@ impl PlayerSessionMessage {
     #[must_use]
     pub const fn introduced_in(&self) -> ProtocolVersion {
         match self {
+            Self::ShowPage {} => ProtocolVersion::V1_6,
             Self::ReopenPage { .. } => ProtocolVersion::V1_4,
             Self::LiveWindow { .. } => ProtocolVersion::V1_2,
             Self::FetchResource { .. } => ProtocolVersion::V1_1,

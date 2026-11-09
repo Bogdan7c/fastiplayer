@@ -1079,6 +1079,13 @@
       }
     },
     {
+      "file": "session/valid/player-show-page.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/player-live-window-range.json",
       "schema": "player_session",
       "expect": {
@@ -1473,6 +1480,14 @@
     },
     {
       "file": "session/invalid/player-reopen-page-unknown-field.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-show-page-unknown-field.json",
       "schema": "player_session",
       "expect": {
         "result": "error",

@@ -39,6 +39,7 @@
     "stream_rejected": "1.0",
     "fetch_resource": "1.1",
     "live_window": "1.2",
-    "reopen_page": "1.4"
+    "reopen_page": "1.4",
+    "show_page": "1.6"
   }
 }

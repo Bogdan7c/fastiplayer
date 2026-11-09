@@ -61,8 +61,8 @@ describe("hello", () => {
     world.link.acquireDemand("popup");
     const port = lastPort(world);
     assert.deepEqual(port.sentControl(), [
-      // Экстеншен говорит на своей версии (1.3, сессия 11a); общую версию называет плеер.
-      { type: "hello", protocol: { major: 1, minor: 5 }, software_version: TEST_EXTENSION_VERSION, capabilities: [] },
+      // Экстеншен говорит на своей версии (1.6, сессия 13c); общую версию называет плеер.
+      { type: "hello", protocol: { major: 1, minor: 6 }, software_version: TEST_EXTENSION_VERSION, capabilities: [] },
     ]);
     port.reply(helloAccepted("0.9.0"));
     assert.deepEqual(world.statuses, [
