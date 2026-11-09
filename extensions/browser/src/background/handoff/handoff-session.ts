@@ -577,7 +577,7 @@ export function startHandoffSession(
     // Секунда плеера нужна возврату страницы во всех фазах (11b2): в сироте часы — единственная новость.
     if (message.type === "clock") pageReturn.notePlayerSecond(message.position_us);
     // Память выбора решает по часам, у начала ли серия (14b2); в сироте её слушатели и так молчат.
-    if (message.type === "clock") siteAdapters.playerClock(message.position_us);
+    if (message.type === "clock") siteAdapters.playerClock(message.position_us, message.state);
     if (phase === "page_away") {
       if (message.type === "reopen_page") pageReturn.reopenRequested();
       if (message.type === "show_page") dependencies.noteForDeveloper("show_page ignored: the page is away");

@@ -54,6 +54,10 @@ const QUALITY_MENU_LINE: &str = "Page variant menu kind=quality";
 const NAVIGATION_LINE: &str = "Page navigation changed";
 const NEXT_EPISODE_AVAILABLE: &str = "next_episode=true";
 const POSITION_CARRIED_LINE: &str = "Position carried to the new generation after a variant switch";
+/// Перенос позиции применён: новое поколение показано на секунде выбора (и прошло 2 с). Строка «carried»
+/// пишется РАНЬШЕ, чем перемотка нового поколения сядет: прочитанная сразу после неё позиция бывает ещё 0,0 с
+/// (гонка стенда, найдена в 14b2 — плеер при этом возвращался верно).
+const POSITION_CARRY_APPLIED_LINE: &str = "Position carry after a variant switch ended end=Applied";
 const NEXT_EPISODE_REQUESTED_LINE: &str = "Next episode requested";
 /// Общий корень строк меню: в прогоне «сломанный адаптер» их не должно быть ни одной.
 const ANY_VARIANT_MENU_LINE: &str = "Page variant menu";
@@ -275,6 +279,15 @@ fn walk_variants(
     wait_for_page_line(run, DUB_GENERATION).map_err(|error| fail("dub-on-page", error))?;
     wait_for_lines_anywhere(&mut run.player_log, POSITION_CARRIED_LINE, 2, LINE_TIMEOUT)
         .map_err(|error| fail("dub-position-carried", error))?;
+    // Позицию читаем, когда перенос применён (второй раз: первый — после смены качества), а не когда
+    // он только объявлен: иначе застаём новое поколение ещё не посаженным.
+    wait_for_lines_anywhere(
+        &mut run.player_log,
+        POSITION_CARRY_APPLIED_LINE,
+        2,
+        LINE_TIMEOUT,
+    )
+    .map_err(|error| fail("dub-position-applied", error))?;
     let position = control
         .position_micros()
         .map_err(|error| fail("dub-position-read", error.to_string()))?;

@@ -165,7 +165,7 @@ describe("что записывается", () => {
 describe("что и когда применяется", () => {
   it("у начала серии: сначала озвучка, после успокоения страницы — качество; повторные донесения ничего не жмут", async () => {
     const world = harness({ remembered: { audio: "Dub B", quality: "720p" } });
-    world.memory.playerClock(1_000_000);
+    world.memory.playerClock(1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     assert.deepEqual(world.selects, [`audio:${idOf("audio", "Dub B")}`]);
@@ -186,7 +186,7 @@ describe("что и когда применяется", () => {
 
   it("передали посреди серии: озвучку не трогаем (сайт начал бы с нуля), качество ставим (решение 287)", async () => {
     const world = harness({ remembered: { audio: "Dub B", quality: "720p" } });
-    world.memory.playerClock(20 * 60 * 1_000_000);
+    world.memory.playerClock(20 * 60 * 1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     assert.deepEqual(world.selects, [`quality:${idOf("quality", "720p")}`]);
@@ -198,13 +198,13 @@ describe("что и когда применяется", () => {
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     assert.deepEqual(world.selects, []);
-    world.memory.playerClock(500_000);
+    world.memory.playerClock(500_000, "playing");
     assert.deepEqual(world.selects, [`audio:${idOf("audio", "Dub B")}`]);
   });
 
   it("следующая серия, открытая страницей, — с начала: озвучка ставится, даже если часы ещё старой серии", async () => {
     const world = harness({ remembered: { audio: "Dub B" } });
-    world.memory.playerClock(20 * 60 * 1_000_000);
+    world.memory.playerClock(20 * 60 * 1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p", "1"));
     await settle();
     assert.deepEqual(world.selects, []);
@@ -217,21 +217,37 @@ describe("что и когда применяется", () => {
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     world.memory.pageDescribed(page("Dub C", "360p"));
-    world.memory.playerClock(1_000_000);
+    world.memory.playerClock(1_000_000, "playing");
     await settle();
     assert.deepEqual(world.selects, []);
     assert.equal(world.stored()?.audio, "Dub C");
   });
 
+  it("передали в рекламе посреди серии: «0 / waiting» после рекламы — не начало серии, озвучка не трогается", async () => {
+    const world = harness({ remembered: { audio: "Dub B", quality: "720p" } });
+    world.ad.onScreen = true;
+    world.memory.playerClock(15_000_000, "playing");
+    world.memory.pageDescribed(page("Dub A", "360p"));
+    await settle();
+    assert.deepEqual(world.selects, [], "в рекламе — ничего");
+    world.ad.onScreen = false;
+    // Фильм вернулся новым поколением: пока кадра нет, плеер шлёт «0 / жду» (09a2).
+    world.memory.playerClock(0, "waiting");
+    assert.deepEqual(world.selects, [], "секунда рекламы сброшена, «жду» — не позиция");
+    world.memory.playerClock(20 * 60 * 1_000_000, "playing");
+    assert.deepEqual(world.selects, [`quality:${idOf("quality", "720p")}`]);
+    assert.ok(world.notes.some((note) => /remembered audio not applied: the episode is already under way/u.test(note)));
+  });
+
   it("в рекламе ничего не применяется; реклама кончилась — применяется", async () => {
     const world = harness({ remembered: { audio: "Dub B" } });
     world.ad.onScreen = true;
-    world.memory.playerClock(1_000_000);
+    world.memory.playerClock(1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     assert.deepEqual(world.selects, []);
     world.ad.onScreen = false;
-    world.memory.playerClock(1_250_000);
+    world.memory.playerClock(1_250_000, "playing");
     assert.deepEqual(world.selects, [`audio:${idOf("audio", "Dub B")}`]);
   });
 
@@ -256,7 +272,7 @@ describe("что и когда применяется", () => {
 describe("инкогнито (решение 285)", () => {
   it("приватное окно: запомненное применяется, новый выбор не пишется, время касания не меняется", async () => {
     const world = harness({ remembered: { audio: "Dub B" }, writing: "private_window" });
-    world.memory.playerClock(1_000_000);
+    world.memory.playerClock(1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     assert.deepEqual(world.selects, [`audio:${idOf("audio", "Dub B")}`]);
@@ -269,7 +285,7 @@ describe("инкогнито (решение 285)", () => {
 
   it("выбор сеанса в инкогнито действует до конца сеанса: следующая серия не возвращает старое", async () => {
     const world = harness({ remembered: { audio: "Dub B" }, writing: "private_window" });
-    world.memory.playerClock(30 * 60 * 1_000_000);
+    world.memory.playerClock(30 * 60 * 1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p", "1"));
     world.memory.selectionStarted("audio", "viewer");
     world.memory.selectionFinished("audio", "viewer", "done", "Dub C");
@@ -293,7 +309,7 @@ describe("жизненный цикл", () => {
   it("после stop память молчит, после resume (страница вернулась) снова работает", async () => {
     const world = harness({ remembered: { audio: "Dub B" } });
     world.memory.stop();
-    world.memory.playerClock(1_000_000);
+    world.memory.playerClock(1_000_000, "playing");
     world.memory.pageDescribed(page("Dub A", "360p"));
     await settle();
     assert.deepEqual(world.selects, []);

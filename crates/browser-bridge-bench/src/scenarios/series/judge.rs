@@ -18,9 +18,10 @@ use crate::site::{PageReport, SiteError};
 /// Допуск «та же секунда» после смены озвучки (решение 280: ± 1 с).
 pub(super) const SAME_SECOND_TOLERANCE: Duration = Duration::from_secs(1);
 
-/// Сколько плеер успевает проиграть между постановкой на секунду и чтением позиции стендом: опрос
-/// журнала раз в 100 мс, MPRIS — ещё доля секунды. Верхняя граница окна позиции.
-pub(super) const POSITION_READ_SLACK: Duration = Duration::from_secs(3);
+/// Сколько плеер успевает проиграть между постановкой на секунду и чтением позиции стендом: стенд ждёт
+/// строку «перенос применён», а плеер пишет её через 2 с после показа (решение 280, `position_carry`), плюс
+/// опрос журнала раз в 100 мс и MPRIS — ещё доля секунды. Верхняя граница окна позиции.
+pub(super) const POSITION_READ_SLACK: Duration = Duration::from_secs(4);
 
 /// Свидетельства прогона «варианты».
 pub(super) struct VariantsEvidence {
@@ -185,7 +186,7 @@ mod tests {
         let verdict = judge_variants(PAGE, &evidence);
         assert_eq!(verdict.outcome, Outcome::Fail);
         assert!(
-            verdict.detail.contains("expected 5.0..10.0 s"),
+            verdict.detail.contains("expected 5.0..11.0 s"),
             "{}",
             verdict.detail
         );

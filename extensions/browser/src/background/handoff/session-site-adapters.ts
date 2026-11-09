@@ -12,6 +12,7 @@ import {
   versionIncludes,
   type PageAdState,
   type PageSessionMessage,
+  type ClockState,
   type ProtocolVersion,
   type SubtitleChoice,
   type VariantKind,
@@ -73,7 +74,7 @@ export interface SessionSiteAdapters {
   /** Команда плеера странице. */
   command(command: SiteAdapterCommand): void;
   /** Часы плеера (`clock`): память выбора решает, у начала ли серия. */
-  playerClock(positionUs: number): void;
+  playerClock(positionUs: number, state: ClockState): void;
   /** Дорожку субтитров страницы предложили плееру: память узнает её язык и подпись. */
   subtitleTrackOffered(track: OfferedPageTrack): void;
   /** Сторона страницы сеанса остановлена: аренды не продлеваются, донесения не принимаются. */
@@ -138,7 +139,7 @@ export function createSessionSiteAdapters(dependencies: SessionSiteAdaptersDepen
           return choiceMemory.viewerSubtitleChoice(command.choice);
       }
     },
-    playerClock: (positionUs) => choiceMemory.playerClock(positionUs),
+    playerClock: (positionUs, state) => choiceMemory.playerClock(positionUs, state),
     subtitleTrackOffered: (track) => choiceMemory.subtitleTrackOffered(track),
     stop() {
       adMirror.stop();

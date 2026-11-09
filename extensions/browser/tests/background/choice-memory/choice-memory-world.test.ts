@@ -40,7 +40,8 @@ const report = (description: PageVariantDescription) => ({ kind: VARIANT_WATCH_R
 const storedSeries = (world: World): RememberedChoices | undefined =>
   (world.choiceStorage.values.get(REMEMBERED_CHOICES_KEY) as { series: Record<string, RememberedChoices> } | undefined)?.series[FINGERPRINT];
 
-const clockAt = (seconds: number) => ({ type: "clock", seq: 1, position_us: seconds * 1_000_000, state: "playing", rate: 1000 }) as const;
+const clockAt = (seconds: number, state: "playing" | "waiting" = "playing") =>
+  ({ type: "clock", seq: 1, position_us: seconds * 1_000_000, state, rate: 1000 }) as const;
 
 async function started(options: WorldOptions = {}, remembered?: Omit<RememberedChoices, "used_at">): Promise<World> {
   const world = setup(undefined, undefined, undefined, options);
@@ -127,6 +128,20 @@ describe("применение через весь фон", () => {
     world.handoffs.variantWatchReport(TAB, 0, report(episode("1", "dub-a")));
     await eventually(() => world.variantMirror.commands.length > 0, "команда памяти странице");
     assert.deepEqual(world.variantMirror.commands, [{ tabId: TAB, frameId: 0, command: { kind: "select", variant_kind: "audio", variant_id: "dub-b" } }]);
+  });
+
+  it("часы «0 / waiting» до показа кадра — не начало серии; кадр на 20-й минуте — только качество (решение 287)", async () => {
+    const world = await started({}, { audio: "Dub B", quality: "720p" });
+    world.sockets.last().receive(clockAt(0, "waiting"));
+    world.handoffs.variantWatchReport(TAB, 0, report(episode("1", "dub-a")));
+    await settle();
+    assert.equal(world.variantMirror.commands.length, 0, "позиция неизвестна — ждать");
+    world.sockets.last().receive(clockAt(20 * 60, "playing"));
+    await eventually(() => world.variantMirror.commands.length > 0, "команда памяти странице");
+    assert.deepEqual(
+      world.variantMirror.commands.map((entry) => entry.command),
+      [{ kind: "select", variant_kind: "quality", variant_id: "video-720" }],
+    );
   });
 
   it("запомненные субтитры: на новой серии плееру уходит subtitle_preference с дорожкой ЭТОЙ серии", async () => {

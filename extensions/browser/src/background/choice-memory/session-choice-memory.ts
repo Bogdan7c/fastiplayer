@@ -18,7 +18,7 @@
 //
 // Ключи сериала и серии и подписи в журнал разработчика не пишутся.
 
-import type { SubtitleChoice } from "../../protocol/index.ts";
+import type { ClockState, SubtitleChoice } from "../../protocol/index.ts";
 import type { RememberedChoicePatch, RememberedChoices, SeriesFingerprint } from "../../shared/choice-memory-contract.ts";
 import type { PageVariantKind, VariantActionOutcome } from "../../shared/variant-watch-contract.ts";
 import type { DescribedVariantPage, RememberedSelectOutcome, VariantMirrorObserver, VariantSelectionOrigin } from "../handoff/variant-mirror.ts";
@@ -67,8 +67,8 @@ export interface SessionChoiceMemoryDependencies {
 }
 
 export interface SessionChoiceMemory extends VariantMirrorObserver {
-  /** Часы плеера (`clock`): позиция в микросекундах. */
-  playerClock(positionUs: number): void;
+  /** Часы плеера (`clock`): позиция в микросекундах и состояние. */
+  playerClock(positionUs: number, state: ClockState): void;
   /** Дорожку субтитров страницы предложили плееру. */
   subtitleTrackOffered(track: OfferedPageTrack): void;
   /** Зритель выбрал субтитры в плеере (`subtitle_choice`). */
@@ -279,9 +279,13 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       episode?.settled.add(kind);
       rememberChoice({ [kind]: label }, `${kind} chosen in the player`);
     },
-    playerClock(positionUs) {
+    playerClock(positionUs, state) {
+      // Секунда фильма — только из часов, где кадр уже показан. Пока плеер ставит новое поколение, он шлёт
+      // «0 / waiting» (09a2): после рекламы посреди серии это выглядело бы как начало серии, и память нажала бы
+      // озвучку, а сайт начал бы серию заново (решение 287). Время рекламы — тоже не время фильма: сбрасываем.
+      if (dependencies.adOnScreen()) playerSecond = undefined;
+      else if (state !== "waiting") playerSecond = Math.max(0, positionUs / 1_000_000);
       // Секунду помним и когда память молчит (страница ушла «сиротой», 11b2): вернувшейся странице она нужна сразу.
-      playerSecond = Math.max(0, positionUs / 1_000_000);
       if (!stopped) applyRemembered();
     },
     subtitleTrackOffered(track) {
