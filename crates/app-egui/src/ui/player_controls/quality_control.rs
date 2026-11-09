@@ -30,6 +30,7 @@ use egui::{Id, Ui};
 
 use super::ControlAction;
 use super::queue_mode_controls::QueueModeControlLayout;
+use crate::page_variants::PageVariantChoice;
 use crate::state::QualityMenuView;
 pub(super) use layout::QualityNeighbor;
 use layout::{QualityControlLayout, QualityControlMode, choose_mode};
@@ -44,6 +45,8 @@ const REVEAL_TRANSITION_ID_SUFFIX: &str = "quality_control_reveal";
 pub enum QualityControlAction {
     /// «Change quality on the page»: показать зрителю вкладку страницы.
     ShowPage,
+    /// Выбрать качество из списка плеера страницы (14a): выбор уходит странице.
+    SelectPageQuality(PageVariantChoice),
 }
 
 /// Подготовленная на кадр раскладка и прогресс появления кнопки качества.

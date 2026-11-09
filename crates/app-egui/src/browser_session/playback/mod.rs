@@ -42,6 +42,7 @@ pub(crate) mod load_ledger;
 mod media_identity;
 pub(crate) mod metered_audio;
 mod simulated_audio;
+pub(crate) mod track_layout;
 pub(crate) mod video_output;
 
 use std::sync::Arc;
@@ -61,6 +62,7 @@ use self::live_window::LiveWindowObservation;
 use self::load_ledger::{CancelledInstall, LoadLedger};
 pub(crate) use self::media_identity::{MediaLoadTicket, MediaLoadTicketIssuer};
 use self::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
+use self::track_layout::ShownTrackLayout;
 use self::video_output::{
     BrowserVideoOutput, VideoBackendStart, VideoBackendStartError, VideoBackendStartRequest,
 };
@@ -361,6 +363,8 @@ pub(crate) struct BrowserPlayback {
     /// Что плеер умеет декодировать и показывать: те же возможности, что ушли его
     /// рабочему потоку (по ним HLS-поколение выбирает вариант).
     decode_capabilities: BrowserDecodeCapabilities,
+    /// Описание дорожек показанного медиа по последнему снимку (смена внутри поколения, 14a).
+    shown_tracks: ShownTrackLayout,
 }
 
 /// Загрузка, ждущая итога установки.
@@ -422,6 +426,7 @@ impl BrowserPlayback {
             pending_install: None,
             load_tickets: MediaLoadTicketIssuer::default(),
             decode_capabilities,
+            shown_tracks: ShownTrackLayout::Unknown,
         })
     }
 
@@ -517,7 +522,13 @@ impl BrowserPlayback {
             log_playback_summary(SummaryKind::Periodic, &summary);
         }
 
+        self.shown_tracks = self.ledger.shown_track_layout(&snapshot);
         self.ledger.observation(&snapshot)
+    }
+
+    /// Описание дорожек показанного медиа по снимку последнего [`Self::pump`].
+    pub(crate) const fn shown_track_layout(&self) -> ShownTrackLayout {
+        self.shown_tracks
     }
 
     /// Любая команда плееру напрямую — тестам живого скраба окна: в окне команды

@@ -11,6 +11,8 @@
 //!   component switch и уведомления о старте/отказе.
 //! - `web_audio_languages` — языки звука (дубляж) yt-dlp-видео: подписи и запуск смены языка
 //!   через тот же same-item switch.
+//! - `page_dubs` — озвучки плеера страницы (окно браузерного режима, 14a): заменяют
+//!   встроенные дорожки, выбор уходит странице через окно (`AppState::select_page_variant`).
 //! - `menu_view` — чистое построение снимка меню и выбор «следующей» дорожки.
 //! - `control_actions` — применение намерений UI. Все выборы, которые сделал пользователь
 //!   (клик по меню и клавиша `B`), проходят через `AppState::select_audio_track_by_user`.
@@ -24,6 +26,9 @@
 mod control_actions;
 mod labels;
 mod menu_view;
+mod page_dubs;
+#[cfg(test)]
+mod page_dubs_tests;
 #[cfg(test)]
 mod tests;
 mod web_audio_language_memory;

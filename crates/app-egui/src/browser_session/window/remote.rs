@@ -34,6 +34,7 @@ use super::super::hls_bridge::capabilities::{
     BrowserDecodeCapabilities, DecodeCapabilitiesAnswer, DecodeCapabilitiesSource,
 };
 use super::super::playback::load_ledger::LoadLedger;
+use super::super::playback::track_layout::ShownTrackLayout;
 use super::super::playback::{
     BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, MediaLoadTicketIssuer,
     PlaybackObservation,
@@ -104,6 +105,8 @@ struct DeskState {
     downloaded_range: DownloadedRange,
     /// Что умеет плеер окна (его называет окно, когда поднимется; до того — неизвестно).
     decode_capabilities: DecodeCapabilitiesAnswer,
+    /// Описание дорожек показанного медиа (смена внутри поколения, 14a).
+    shown_tracks: ShownTrackLayout,
     window_closed: bool,
 }
 
@@ -122,6 +125,7 @@ impl PlaybackDesk {
                 observation: LoadLedger::default().observation(&PlayerSnapshot::default()),
                 downloaded_range: DownloadedRange::Unknown,
                 decode_capabilities: DecodeCapabilitiesAnswer::NotYetKnown,
+                shown_tracks: ShownTrackLayout::Unknown,
                 window_closed: false,
             })),
         }
@@ -200,6 +204,16 @@ impl PlaybackDesk {
         self.state.borrow().observation.clone()
     }
 
+    /// Окно публикует описание дорожек показанного медиа (каждый проход, вместе с наблюдением).
+    pub(super) fn publish_shown_tracks(&self, layout: ShownTrackLayout) {
+        self.state.borrow_mut().shown_tracks = layout;
+    }
+
+    /// Последнее опубликованное описание дорожек.
+    fn shown_tracks(&self) -> ShownTrackLayout {
+        self.state.borrow().shown_tracks
+    }
+
     /// Окна больше нет: ждущие команды выброшены, новые отвергаются.
     pub(super) fn close_window(&self) {
         let mut state = self.state.borrow_mut();
@@ -268,6 +282,10 @@ impl MediaPlayback for WindowRemote {
 
     fn pump(&mut self, _now: Instant) -> PlaybackObservation {
         self.desk.latest_observation()
+    }
+
+    fn shown_track_layout(&self) -> ShownTrackLayout {
+        self.desk.shown_tracks()
     }
 
     /// Итог журнала и остановку плеера делает окно после остановки ядра процесса

@@ -23,8 +23,8 @@ use super::session_ends::{send_all, wait_until_playing_past};
 use super::*;
 
 pub(super) const MPRIS_BROWSER_NAME: &str = "org.mpris.MediaPlayer2.fastiplayer.browser";
-const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
-const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+pub(super) const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+pub(super) const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 
 /// Записанная смена качества: её сообщения объявления поколений 1 и 2 (полосы: 0 —
 /// звук, 1 — видео; длительность 6 с).
@@ -143,7 +143,7 @@ fn first_generation_head() -> Vec<Message> {
 }
 
 /// Поколение 2 (другое качество): объявление и init-сегменты — медиа ещё нет нигде.
-fn second_generation_announced(page: &mut PageSourceBuffers) -> Vec<Message> {
+pub(super) fn second_generation_announced(page: &mut PageSourceBuffers) -> Vec<Message> {
     let audio = split_fmp4("audio-6s.mp4");
     let video = split_fmp4("video-96-6s.mp4");
     let mut messages: Vec<Message> = ["013.json", "014.json", "015.json", "016.json"]
@@ -199,7 +199,10 @@ fn second_generation_bytes(
 }
 
 /// Байты поколения 2 с `target_us` до конца ролика (и конец потока).
-fn second_generation_bytes_from(page: &mut PageSourceBuffers, target_us: u64) -> Vec<Message> {
+pub(super) fn second_generation_bytes_from(
+    page: &mut PageSourceBuffers,
+    target_us: u64,
+) -> Vec<Message> {
     second_generation_bytes(
         page,
         SecondGenerationDownload {
@@ -217,7 +220,7 @@ pub(super) fn page_seek(target_us: u64) -> Message {
 }
 
 /// Вызов `busctl` на частной шине; `Ok(stdout)` или текст ошибки.
-fn busctl(bus: &PrivateBusWithBrowserSession, args: &[&str]) -> Result<String, String> {
+pub(super) fn busctl(bus: &PrivateBusWithBrowserSession, args: &[&str]) -> Result<String, String> {
     let output = Command::new("busctl")
         .arg(format!("--address={}", bus.address))
         .arg("--no-pager")
@@ -232,7 +235,7 @@ fn busctl(bus: &PrivateBusWithBrowserSession, args: &[&str]) -> Result<String, S
 }
 
 /// Ждёт, пока MPRIS окна станет управляемым (кнопки появляются вместе со страницей).
-fn wait_until_controllable(bus: &PrivateBusWithBrowserSession) {
+pub(super) fn wait_until_controllable(bus: &PrivateBusWithBrowserSession) {
     let deadline = Instant::now() + WAIT;
     while !busctl(
         bus,
@@ -274,7 +277,7 @@ fn viewer_seek_by(bus: &PrivateBusWithBrowserSession, offset_us: i64) {
 }
 
 /// Позиция окна по MPRIS (`x <мкс>`).
-fn window_position_us(bus: &PrivateBusWithBrowserSession) -> u64 {
+pub(super) fn window_position_us(bus: &PrivateBusWithBrowserSession) -> u64 {
     let text = busctl(
         bus,
         &[

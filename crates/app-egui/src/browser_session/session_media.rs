@@ -98,6 +98,8 @@ mod page_clock;
 mod page_quality;
 mod page_reopen;
 mod page_subtitles;
+mod page_variants;
+mod position_carry;
 mod resource_requests;
 mod scrub_range;
 mod seams;
@@ -112,6 +114,7 @@ pub(crate) use self::farewell::ViewerCloseStep;
 pub(crate) use self::generation_placement::{GenerationPlacementPolicy, GenerationWait};
 pub(crate) use self::page_quality::PageViewNotice;
 pub(crate) use self::page_reopen::{PageReopenNotice, PageReopenRefusal};
+pub(crate) use self::position_carry::PositionCarryPolicy;
 pub(crate) use self::seams::{MediaPlayback, SessionCloser};
 pub(crate) use self::viewer_seek_notice::ViewerSeekNotice;
 use self::viewer_transport::{PlayWill, ViewerWill};
@@ -250,6 +253,8 @@ pub(crate) struct SessionMedia {
     page_subtitles: super::page_subtitles::shelf::PageSubtitleShelf,
     /// Просьба зрителя показать страницу принята, окно ещё не сказало (13c, [`page_quality`]).
     page_view_notice: PageViewNotice,
+    /// Варианты страницы: склад меню, возврат на секунду, тост (14a, [`page_variants`]).
+    variants: self::page_variants::SessionPageVariants,
 }
 
 impl SessionMedia {
@@ -283,6 +288,7 @@ impl SessionMedia {
             page_reopen: PageReopen::default(),
             page_subtitles: Default::default(),
             page_view_notice: PageViewNotice::Nothing,
+            variants: self::page_variants::SessionPageVariants::new(),
         }
     }
 
@@ -308,6 +314,7 @@ impl SessionMedia {
         self.ad.clear();
         self.page_reopen = PageReopen::default();
         self.page_subtitles.start_new_session();
+        self.variants.start_new_session();
         self.outbound.reset_for_new_session();
         if self.loaded.take().is_some() {
             self.command("pause for a new session", |playback| playback.pause());
@@ -336,6 +343,7 @@ impl SessionMedia {
         self.viewer_will.expire(now);
         self.expire_page_reopen(now);
         self.poll_pending(now);
+        self.settle_position_carry(now);
         let observation = self.playback.pump(now);
         self.report_to_page(&observation, now);
         self.offer_downloaded_range(&observation);
@@ -393,9 +401,11 @@ impl SessionMedia {
             IntakeNotice::PageSubtitleReady { document, .. } => {
                 self.shelve_page_subtitle(*document)
             }
+            IntakeNotice::PageVariants { update, .. } => self.apply_page_variant_update(update),
             IntakeNotice::PlayerSeekAcknowledged {
                 seek_id, target, ..
             } => {
+                self.note_position_carry_answer(Duration::from_micros(target.as_micros()));
                 debug!(
                     seek_id = seek_id.0,
                     target_us = target.as_micros(),
@@ -456,6 +466,8 @@ impl SessionMedia {
             placement,
             retry_at: None,
         });
+        // Решение 280: после смены варианта зрителем — на его секунду (не рекламу).
+        self.carry_position_to_new_generation(Instant::now());
     }
 
     /// Намерение страницы → плеер.

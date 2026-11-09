@@ -43,6 +43,7 @@ mod media_reset_order;
 mod memory_chain;
 mod memory_restore;
 mod page_gpu;
+mod page_preference;
 mod page_support;
 mod page_tracks;
 mod placement;

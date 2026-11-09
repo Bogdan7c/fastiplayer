@@ -71,6 +71,7 @@ mod normal_player_pause;
 mod opened_page;
 mod outbound;
 mod page_subtitles;
+mod page_variants;
 mod playback;
 mod player_hello;
 mod process_core;

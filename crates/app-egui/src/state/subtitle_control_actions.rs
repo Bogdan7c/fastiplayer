@@ -23,8 +23,9 @@ use crate::ui::player_controls::SubtitleControlAction;
 const FILE_DIALOG_UNAVAILABLE_MESSAGE: &str = "Could not open the file dialog.";
 
 impl AppState {
-    /// Применяет одно действие субтитров из UI после egui pass.
-    pub(super) fn apply_subtitle_control_action(
+    /// Применяет одно действие субтитров из UI после egui pass (и тестовой переменной
+    /// браузерного окна, `subtitle_test_trigger`).
+    pub(crate) fn apply_subtitle_control_action(
         &mut self,
         action: SubtitleControlAction,
         window: &Window,
@@ -35,6 +36,9 @@ impl AppState {
         }
         let feedback = self.subtitles.apply_control_action(action);
         self.capture_user_subtitle_choices();
+        // Выбор зрителя — странице для памяти экстеншена (14a), только дорожка страницы или
+        // «выключено»; автовыбор сюда не попадает.
+        self.forward_viewer_subtitle_choice_to_page();
         deliver_feedback(&mut self.notifications, feedback, Instant::now());
         self.mark_pending_worker_redraw();
     }

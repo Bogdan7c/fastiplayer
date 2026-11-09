@@ -44,6 +44,8 @@ impl SubtitleOwner {
         if visibility == SubtitleVisibility::Shown {
             self.select_automatically_if_nothing_selected();
         }
+        // Итог для памяти экстеншена (14a): уже после автовыбора включённой дорожки.
+        self.note_viewer_page_choice_report();
         self.presenter.forget_shown_overlay();
         self.ensure_display_track_loading();
     }
@@ -100,6 +102,7 @@ impl SubtitleOwner {
         }
         // Выбор зрителя главнее `showing` страницы и в следующих медиа сеанса моста.
         self.note_viewer_track_choice(track_id);
+        self.note_viewer_page_choice_report();
         self.presenter.forget_shown_overlay();
         self.ensure_display_track_loading();
         SelectTrackOutcome::Selected

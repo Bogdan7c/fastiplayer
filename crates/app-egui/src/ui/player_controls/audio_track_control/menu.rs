@@ -12,10 +12,14 @@
 //! У web-источника с несколькими версиями звука строки — это версии («English (E-AC-3 5.1)»);
 //! клик по ним публикует [`AudioTrackControlAction::SwitchWebAudioVersion`]. У yt-dlp-видео с
 //! дубляжами строки — языки («Russian», «English (original)»), клик публикует
-//! [`AudioTrackControlAction::SwitchWebAudioLanguage`].
+//! [`AudioTrackControlAction::SwitchWebAudioLanguage`]. В окне браузерного режима с меню
+//! озвучек страницы строки — озвучки страницы (общая строка `page_variant_row`: длинная
+//! подпись обрезается, во время рекламы пункты неактивны); клик публикует
+//! [`AudioTrackControlAction::SwitchPageDub`].
 
 use egui::{RadioButton, Ui};
 
+use super::super::page_variant_row::{PageVariantRowState, page_variant_row};
 use super::{AudioTrackControlAction, ControlAction};
 use crate::state::{AudioTrackMenuTarget, AudioTrackMenuView};
 use crate::ui::egui_behavior::vertical_scroll_area;
@@ -36,7 +40,22 @@ pub(super) fn show(ui: &mut Ui, view: &AudioTrackMenuView, actions: &mut Vec<Con
         .max_height(TRACK_LIST_MAX_HEIGHT)
         .show(ui, |ui| {
             for track in view.tracks() {
-                let item = ui.add(RadioButton::new(track.is_selected, track.label.as_str()));
+                let item = match track.target {
+                    // Подпись страницы: обрезка и блокировка в рекламе — у общей строки.
+                    AudioTrackMenuTarget::PageDub(_) => page_variant_row(
+                        ui,
+                        &track.label,
+                        PageVariantRowState {
+                            is_selected: track.is_selected,
+                            availability: view.availability(),
+                        },
+                    ),
+                    AudioTrackMenuTarget::EmbeddedTrack(_)
+                    | AudioTrackMenuTarget::WebAudioVersion(_)
+                    | AudioTrackMenuTarget::WebAudioLanguage(_) => {
+                        ui.add(RadioButton::new(track.is_selected, track.label.as_str()))
+                    }
+                };
                 if item.clicked() {
                     actions.push(ControlAction::AudioTracks(control_action_for(track.target)));
                     ui.close();
@@ -57,5 +76,6 @@ fn control_action_for(target: AudioTrackMenuTarget) -> AudioTrackControlAction {
         AudioTrackMenuTarget::WebAudioLanguage(language) => {
             AudioTrackControlAction::SwitchWebAudioLanguage(language)
         }
+        AudioTrackMenuTarget::PageDub(choice) => AudioTrackControlAction::SwitchPageDub(choice),
     }
 }

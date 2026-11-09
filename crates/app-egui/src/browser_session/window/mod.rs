@@ -48,8 +48,10 @@ mod player_port;
 mod remote;
 mod render_path;
 mod settings;
+mod subtitle_test_trigger;
 #[cfg(test)]
 mod test_support;
+mod variant_test_trigger;
 mod wake;
 
 use std::sync::Arc;

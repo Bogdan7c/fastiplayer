@@ -28,6 +28,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 mod page_quality;
+mod page_variants;
+mod subtitle_test_trigger;
 
 use super::super::opened_page::{OpenedPage, PageArrival};
 use super::super::playback::metered_audio::{AudioMeter, BrowserAudioOutputChoice};
@@ -62,6 +64,7 @@ use crate::state::{
 };
 use crate::system_capabilities::probe_system_capabilities;
 use crate::telemetry::Telemetry;
+use crate::ui::player_controls::TransportControlAction;
 use crate::viewer_transport::ViewerTransportIntent;
 
 /// Почему окно браузерного режима не собралось.
@@ -398,6 +401,7 @@ impl BrowserWindowInstance {
             .ad_plate()
             .is_some_and(|plate| plate.locks_transport);
         let ad_offer_available = self.app_state.ad_offer_is_free();
+        let next_episode_offered = self.app_state.next_episode_offered();
         TransportObservation {
             playback_state: snapshot.playback_state,
             position: timeline.current_position,
@@ -409,6 +413,7 @@ impl BrowserWindowInstance {
             seekable: timeline.seekable && !transport_locked_by_ad,
             volume: snapshot.volume,
             ad_offer_available,
+            next_episode_offered,
         }
     }
 
@@ -780,8 +785,11 @@ impl DesktopWindowPort for BrowserWindowInstance {
             .map_err(|error| error.to_string())
     }
 
-    fn activate_ad_offer(&mut self) {
-        let outcome = self.app_state.activate_ad_offer();
-        debug!(?outcome, "MPRIS Next while an ad plate may offer a button");
+    fn activate_next(&mut self) {
+        // Тот же путь, что кнопка Next и клавиша N: плашка рекламы, затем следующая серия.
+        let outcome = self
+            .app_state
+            .route_page_led_transport_action(TransportControlAction::Next);
+        debug!(?outcome, "MPRIS Next in the browser window");
     }
 }

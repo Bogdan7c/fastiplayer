@@ -57,6 +57,8 @@ pub(crate) struct TransportObservation {
     /// «Next» медиа-виджета делает то же, что клик по ней (09d). Иначе «Next» окну
     /// нечего делать, и `CanGoNext` ложно.
     pub(crate) ad_offer_available: bool,
+    /// Страница предлагает следующую серию и рекламы нет (14a): «Next» её просит.
+    pub(crate) next_episode_offered: bool,
 }
 
 /// Почему команда с шины не дошла до окна.
@@ -77,9 +79,9 @@ pub(super) enum IgnoredReason {
 pub(super) enum PlannedAction {
     /// Исполнить так же, как кнопку окна: через `AppState::send_transport_command`.
     Player(PlayerCommand),
-    /// «Next» при плашке рекламы с кнопкой: то же, что клик по кнопке плашки
-    /// (`AppState::activate_ad_offer`).
-    ActivateAdOffer,
+    /// «Next» при плашке рекламы с кнопкой или при следующей серии страницы: то же, что
+    /// кнопка Next окна (плашка главнее серии, `AppState::route_page_led_transport_action`).
+    ActivateNext,
     /// Не исполнять.
     Ignored(IgnoredReason),
 }
@@ -103,10 +105,12 @@ pub(super) fn plan_command(
     match &command.action {
         // Пока плашка рекламы предлагает кнопку, «Next» нажимает её (робот стенда жмёт
         // пропуск именно так); команда виджета, видевшего прошлое видео окна, не исполняется.
-        Action::Next if observation.ad_offer_available => match fenced_page(command, page) {
-            Ok(_) => PlannedAction::ActivateAdOffer,
-            Err(reason) => PlannedAction::Ignored(reason),
-        },
+        Action::Next if observation.ad_offer_available || observation.next_episode_offered => {
+            match fenced_page(command, page) {
+                Ok(_) => PlannedAction::ActivateNext,
+                Err(reason) => PlannedAction::Ignored(reason),
+            }
+        }
         Action::Next | Action::Previous | Action::SetLoopStatus(_) | Action::SetShuffle(_) => {
             PlannedAction::Ignored(IgnoredReason::NoQueueInThisWindow)
         }
@@ -204,7 +208,7 @@ fn playback_status(state: PlaybackState) -> DesktopPlaybackStatus {
 /// Метаданные: `xesam:title` — заголовок страницы (пустой — домен), `xesam:album` —
 /// домен. MPRIS живёт на шине сеансов, на диск его не пишет сам; человек, у которого
 /// медиа-виджет, видит там «что играет» — это и есть его назначение.
-/// Next/Previous всегда недоступны.
+/// Previous недоступен всегда, Next — только при кнопке плашки или следующей серии.
 pub(super) fn build_view(
     revision: u64,
     page: Option<&PageInfo>,
@@ -220,8 +224,9 @@ pub(super) fn build_view(
     view.control_revision = Some(page.control_revision());
     view.playback_status = playback_status(observation.playback_state);
     view.capabilities = DesktopCapabilities {
-        // «Next» жив, только пока плашка рекламы предлагает кнопку (иначе очереди нет).
-        can_go_next: observation.ad_offer_available,
+        // «Next» жив, только пока плашка рекламы предлагает кнопку или страница — следующую
+        // серию (иначе очереди нет).
+        can_go_next: observation.ad_offer_available || observation.next_episode_offered,
         can_go_previous: false,
         can_play: true,
         can_pause: true,
@@ -284,6 +289,7 @@ mod tests {
             seekable: true,
             volume: 0.5,
             ad_offer_available: false,
+            next_episode_offered: false,
         }
     }
 
@@ -418,6 +424,38 @@ mod tests {
                 &observation()
             ),
             PlannedAction::Player(PlayerCommand::SetVolume(0.25))
+        );
+    }
+
+    /// 14a: пока страница предлагает следующую серию, MPRIS `Next` жив и идёт окну тем же
+    /// путём, что кнопка Next (порядок «реклама → серия» решает окно).
+    #[test]
+    fn next_lives_while_the_page_offers_the_next_episode() {
+        let offered = TransportObservation {
+            next_episode_offered: true,
+            ..observation()
+        };
+        assert_eq!(
+            plan_command(
+                &command(DesktopTransportAction::Next, Some(3)),
+                Some(&page(3)),
+                &offered
+            ),
+            PlannedAction::ActivateNext
+        );
+        assert!(
+            build_view(4, Some(&page(3)), &offered)
+                .capabilities
+                .can_go_next
+        );
+        assert_eq!(
+            plan_command(
+                &command(DesktopTransportAction::Next, Some(2)),
+                Some(&page(3)),
+                &offered
+            ),
+            PlannedAction::Ignored(IgnoredReason::StaleControl),
+            "a widget that saw the previous video does not skip this one"
         );
     }
 

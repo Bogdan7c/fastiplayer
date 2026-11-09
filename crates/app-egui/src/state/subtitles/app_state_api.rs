@@ -18,7 +18,7 @@ use super::{
     CurrentMediaForSubtitles, EmbeddedUpdate, PageAdPresence, PlacedSubtitleOverlay,
     SubmittedFrameForSubtitles, subtitle_source_of,
 };
-use crate::page_subtitles::{PageSubtitleShelfView, PageTracksUpdate};
+use crate::page_subtitles::{PageSubtitleShelfView, PageSubtitleViewerChoice, PageTracksUpdate};
 use crate::state::notifications::{NotificationCenter, TransientReplaceKey};
 use crate::state::{ActiveMediaSource, AppState};
 use crate::subtitle_message::{
@@ -210,7 +210,20 @@ impl AppState {
         &mut self,
         shelf: &PageSubtitleShelfView,
     ) -> PageTracksUpdate {
-        self.subtitles.attach_page_tracks(shelf)
+        // Подсказка страницы (14a) действует только в окне, где транспорт ведёт страница.
+        let preference = self.page_subtitle_preference_for_window(shelf.preference());
+        if preference == shelf.preference() {
+            return self.subtitles.attach_page_tracks(shelf);
+        }
+        self.subtitles
+            .attach_page_tracks(&shelf.clone().with_preference(preference))
+    }
+
+    /// Итог последнего действия зрителя с субтитрами для памяти экстеншена (один раз).
+    pub(in crate::state) fn take_viewer_page_subtitle_choice(
+        &mut self,
+    ) -> Option<PageSubtitleViewerChoice> {
+        self.subtitles.take_viewer_page_choice_report()
     }
 
     /// Плашка рекламы появилась или ушла: пока она на экране, слой субтитров не рисуется.

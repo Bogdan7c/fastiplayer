@@ -1,8 +1,10 @@
 //! Меню кнопки качества «1080p» в окне браузерного режима (сессия 13c, решения 267, 277, 278).
 //!
-//! Зритель в этом окне не выбирает качество сам: его выбирает плеер страницы. Кнопка лишь
-//! **показывает**, что играет сейчас (разрешение, битрейт, кодек, частота кадров), и даёт
-//! пункт «Change quality on the page», который просит браузер показать вкладку.
+//! Качество выбирает плеер страницы. Кнопка **показывает**, что играет сейчас (разрешение,
+//! битрейт, кодек, частота кадров), и даёт пункт «Change quality on the page», который просит
+//! браузер показать вкладку. Если адаптер сайта сообщил меню качеств (14a), над этим пунктом
+//! стоит список качеств страницы с отметкой выбранного: выбор уходит странице. Подпись кнопки
+//! по-прежнему по картинке на экране (13c), а не по пункту страницы.
 //!
 //! # Владение и слои
 //! - [`QualityMenuView`] — снимок на кадр: что показать. Собирается из снимка плеера
@@ -23,6 +25,7 @@ use player_core::PlayerSnapshot;
 pub(crate) use self::format::QualityMenuText;
 pub(super) use self::journal::QualityLabelJournal;
 use crate::page_quality::{PageQualityFacts, PageViewOffer};
+use crate::page_variants::{PageVariantAvailability, PageVariantMenuView};
 use pushed_media_source::MediaBitrate;
 
 /// Размер картинки, которую видит зритель (в пикселях, без отступов декодера).
@@ -34,6 +37,25 @@ pub(crate) struct ShownPicture {
     pub(crate) height: u32,
 }
 
+/// Качества плеера страницы для меню (14a) и можно ли их сейчас выбирать.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PageQualityChoices {
+    menu: PageVariantMenuView,
+    availability: PageVariantAvailability,
+}
+
+impl PageQualityChoices {
+    /// Меню качеств страницы (подписи очищены сеансом, отметка — выбранное на странице).
+    pub(crate) const fn menu(&self) -> &PageVariantMenuView {
+        &self.menu
+    }
+
+    /// Во время рекламы выбор заблокирован (пункты неактивны).
+    pub(crate) const fn availability(&self) -> PageVariantAvailability {
+        self.availability
+    }
+}
+
 /// Что меню показывает о воспроизводимом видео.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QualityMenuContent {
@@ -42,6 +64,8 @@ pub(crate) struct QualityMenuContent {
     codec_id: Option<String>,
     frames_per_second: Option<u32>,
     page_view: PageViewOffer,
+    /// Список качеств страницы (`None` — адаптер меню не сообщил).
+    page_qualities: Option<PageQualityChoices>,
 }
 
 /// Снимок меню качества на кадр.
@@ -90,7 +114,37 @@ impl QualityMenuView {
             codec_id: selected_video_codec_id(snapshot),
             frames_per_second: format::frames_per_second(snapshot.video_frame_duration_estimate),
             page_view: facts.page_view,
+            page_qualities: None,
         })
+    }
+
+    /// Тот же снимок со списком качеств страницы (`menu` — `None`: меню нет). У скрытой
+    /// кнопки списка нет: показывать его негде.
+    #[must_use]
+    pub(crate) fn with_page_qualities(
+        self,
+        menu: Option<&PageVariantMenuView>,
+        availability: PageVariantAvailability,
+    ) -> Self {
+        match self {
+            Self::Hidden => Self::Hidden,
+            Self::Shown(content) => Self::Shown(QualityMenuContent {
+                page_qualities: menu.map(|menu| PageQualityChoices {
+                    menu: menu.clone(),
+                    availability,
+                }),
+                ..content
+            }),
+        }
+    }
+
+    /// Список качеств страницы (`None` — кнопки нет или меню страница не сообщила).
+    #[must_use]
+    pub(crate) const fn page_qualities(&self) -> Option<&PageQualityChoices> {
+        match self {
+            Self::Hidden => None,
+            Self::Shown(content) => content.page_qualities.as_ref(),
+        }
     }
 
     /// Подпись кнопки («1080p»); `None` — кнопки нет.

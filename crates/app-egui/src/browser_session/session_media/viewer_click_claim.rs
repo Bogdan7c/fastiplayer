@@ -190,6 +190,11 @@ impl SessionMedia {
     /// цель (ворота 04d), загруженному — перемотка плеера; если она перечит клику
     /// зрителя во время смены поколения — клик повторяется один раз (решение 149).
     pub(super) fn follow_page_seek(&mut self, target: Duration) {
+        // Возврат на секунду после смены варианта (решение 280): сброс нового `MediaSource`
+        // на ноль его не перебивает (`position_carry`).
+        if self.position_carry_absorbs_page_seek(target) {
+            return;
+        }
         let page_seek = self.judge_page_seek_against_click(target);
         // Переходник сообщил перемотку источнику САМОГО НОВОГО поколения: пока оно не
         // отдано плееру, это его цель — данные страницы будут там. Повтор клика — когда

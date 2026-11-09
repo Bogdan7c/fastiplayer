@@ -10,8 +10,8 @@ use super::track_selection::settle;
 use super::*;
 use crate::page_subtitles::{
     PageSubtitleArrival, PageSubtitleDisplay, PageSubtitleDocument, PageSubtitleFormatHint,
-    PageSubtitleLabel, PageSubtitleLanguage, PageSubtitleShelfId, PageSubtitleShelfView,
-    PageSubtitleTrackNumber, PageTracksUpdate, ShelvedPageSubtitle,
+    PageSubtitleLabel, PageSubtitleLanguage, PageSubtitlePreference, PageSubtitleShelfId,
+    PageSubtitleShelfView, PageSubtitleTrackNumber, PageTracksUpdate, ShelvedPageSubtitle,
 };
 
 /// WebVTT: одна реплика с 1 по 4 с.
@@ -46,6 +46,7 @@ pub(super) struct TestShelf {
     id: PageSubtitleShelfId,
     next_arrival: PageSubtitleArrival,
     entries: Vec<ShelvedPageSubtitle>,
+    preference: PageSubtitlePreference,
 }
 
 impl TestShelf {
@@ -55,6 +56,7 @@ impl TestShelf {
             id: PageSubtitleShelfId::FIRST,
             next_arrival: PageSubtitleArrival::FIRST,
             entries: Vec::new(),
+            preference: PageSubtitlePreference::NotGiven,
         }
     }
 
@@ -84,9 +86,15 @@ impl TestShelf {
         self.view()
     }
 
+    /// Страница подсказала выбор субтитров (14a); возвращает снимок, как его получит окно.
+    pub(super) fn prefer(&mut self, preference: PageSubtitlePreference) -> PageSubtitleShelfView {
+        self.preference = preference;
+        self.view()
+    }
+
     /// Снимок склада.
     pub(super) fn view(&self) -> PageSubtitleShelfView {
-        PageSubtitleShelfView::new(self.id, self.entries.clone())
+        PageSubtitleShelfView::new(self.id, self.entries.clone()).with_preference(self.preference)
     }
 }
 

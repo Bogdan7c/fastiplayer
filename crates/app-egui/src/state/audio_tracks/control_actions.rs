@@ -22,8 +22,9 @@ use tracing::warn;
 
 use super::labels::audio_selected_toast;
 use super::menu_view::{AudioTrackMenuTarget, AudioTrackMenuView};
-use crate::state::AppState;
+use crate::page_variants::PageVariantChoice;
 use crate::state::notifications::TransientReplaceKey;
+use crate::state::{AppState, PageVariantSelectOutcome};
 use crate::ui::player_controls::AudioTrackControlAction;
 
 /// Toast, если команда выбора дорожки не дошла до плеера.
@@ -129,6 +130,7 @@ impl AppState {
                 // Как и версия: исполнится после egui pass-а вместе с toast-ом.
                 self.request_web_audio_language_by_user(language);
             }
+            AudioTrackControlAction::SwitchPageDub(choice) => self.select_page_dub(choice),
             AudioTrackControlAction::SelectNextTrack => {
                 self.select_next_audio_track(player_snapshot)
             }
@@ -159,6 +161,10 @@ impl AppState {
                 self.request_web_audio_language_by_user(language);
             }
             NextTrackPlan::Switch {
+                target: AudioTrackMenuTarget::PageDub(choice),
+                ..
+            } => self.select_page_dub(choice),
+            NextTrackPlan::Switch {
                 target: AudioTrackMenuTarget::EmbeddedTrack(track_id),
                 label,
             } => {
@@ -173,6 +179,15 @@ impl AppState {
                     self.mark_pending_worker_redraw();
                 }
             }
+        }
+    }
+
+    /// Озвучка страницы (меню «♪» или клавиша `B`): выбор уходит странице через окно.
+    /// Тост «Audio: …» покажет сеанс, когда выбор принят; отказ (реклама, устаревшее меню)
+    /// тоста не даёт — как у перемотки в рекламе, только строка журнала.
+    fn select_page_dub(&mut self, choice: PageVariantChoice) {
+        if self.select_page_variant(choice) == PageVariantSelectOutcome::Queued {
+            self.mark_pending_worker_redraw();
         }
     }
 

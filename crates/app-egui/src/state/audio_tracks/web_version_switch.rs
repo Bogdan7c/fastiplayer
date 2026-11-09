@@ -23,7 +23,9 @@ use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
 
 use super::labels::audio_selected_toast;
 use super::menu_view::{AudioTrackMenuView, WebAudioMenuSource};
+use super::page_dubs::page_dub_menu_source;
 use super::web_versions::{WebAudioVersionEntry, web_audio_versions};
+use crate::page_variants::PageVariantKind;
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::state::AppState;
 use crate::state::notifications::TransientReplaceKey;
@@ -75,6 +77,11 @@ impl AppState {
     /// Одновременно источник показывает только один вид выбора, чтобы в меню не было двух
     /// отметок «играет» и круг клавиши `B` оставался однозначным.
     fn web_audio_menu_source(&self) -> Option<WebAudioMenuSource> {
+        // Окно браузерного режима: озвучки плеера страницы главнее всего (14a, решение 283).
+        // Обычное окно меню страницы не хранит (`note_page_variants`), здесь будет `None`.
+        if let Some(menu) = self.page_variant_facts().menu(PageVariantKind::Audio) {
+            return Some(page_dub_menu_source(menu, self.page_variant_availability()));
+        }
         if let Some(versions) = self.web_audio_version_entries() {
             return Some(WebAudioMenuSource::Versions(versions));
         }

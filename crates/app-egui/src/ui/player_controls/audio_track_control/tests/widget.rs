@@ -1,6 +1,7 @@
 //! Настоящий egui-кадр: клики по «♪» и стрелке, меню, выбор дорожки и отсутствие виджета.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use egui::{Event, Modifiers, PointerButton, Pos2, pos2};
 use media_core::TrackId;
@@ -23,6 +24,10 @@ struct Scene {
     time_seconds: f64,
     window_width: f32,
     node_centers: BTreeMap<String, Pos2>,
+    /// Ширина узла AccessKit по подписи (обрезка длинных подписей страницы).
+    node_widths: BTreeMap<String, f32>,
+    /// Неактивные узлы (пункты страницы во время рекламы).
+    disabled_nodes: BTreeSet<String>,
 }
 
 impl Scene {
@@ -34,6 +39,8 @@ impl Scene {
             time_seconds: 0.0,
             window_width,
             node_centers: BTreeMap::new(),
+            node_widths: BTreeMap::new(),
+            disabled_nodes: BTreeSet::new(),
         }
     }
 
@@ -48,11 +55,18 @@ impl Scene {
         });
         if let Some(update) = output.platform_output.accesskit_update {
             self.node_centers.clear();
+            self.node_widths.clear();
+            self.disabled_nodes.clear();
             for (_, node) in &update.nodes {
                 let Some(label) = node.label().or_else(|| node.value()) else {
                     continue;
                 };
+                if node.is_disabled() {
+                    self.disabled_nodes.insert(label.to_owned());
+                }
                 if let Some(bounds) = node.bounds() {
+                    self.node_widths
+                        .insert(label.to_owned(), (bounds.x1 - bounds.x0) as f32);
                     self.node_centers.insert(
                         label.to_owned(),
                         pos2(
@@ -147,7 +161,8 @@ fn one_track_view() -> AudioTrackMenuView {
         id: match two.tracks()[0].target {
             crate::state::AudioTrackMenuTarget::EmbeddedTrack(track_id) => track_id,
             crate::state::AudioTrackMenuTarget::WebAudioVersion(_)
-            | crate::state::AudioTrackMenuTarget::WebAudioLanguage(_) => {
+            | crate::state::AudioTrackMenuTarget::WebAudioLanguage(_)
+            | crate::state::AudioTrackMenuTarget::PageDub(_) => {
                 panic!("two_track_view contains only embedded tracks")
             }
         },
@@ -281,6 +296,8 @@ fn bottom_panel_shows_the_audio_button_only_for_two_or_more_tracks() {
                         audio_menu: view,
                         quality_menu: &crate::state::QualityMenuView::hidden(),
                         view_profile: crate::window_view_profile::WindowViewProfile::Standard,
+                        page_next_episode:
+                            crate::ui::player_controls::PageNextEpisodeButton::NotOffered,
                     },
                 );
             });
@@ -406,5 +423,90 @@ fn menu_with_many_tracks_is_height_bounded_and_scrolls_to_the_last_one() {
     assert!(
         last_row.y < first_row.y + super::super::menu::TRACK_LIST_MAX_HEIGHT,
         "last row {last_row:?} must be scrolled into the visible list"
+    );
+}
+
+// ---- озвучки страницы (окно браузерного режима, 14a) ----------------------------------
+
+/// Подпись страницы длиннее любой строки меню.
+const LONG_DUB_LABEL: &str = "Ukrainian dub by a very long named studio with an even longer \
+                              description of the voice cast and the season it belongs to";
+
+/// Меню озвучек страницы поверх одной встроенной дорожки: «Original» отмечена.
+fn page_dub_view(
+    availability: crate::page_variants::PageVariantAvailability,
+) -> AudioTrackMenuView {
+    use crate::page_variants::{
+        PageVariantIndex, PageVariantKind, PageVariantMenuRevision, PageVariantMenuView,
+    };
+    let menu = PageVariantMenuView::new(
+        PageVariantKind::Audio,
+        PageVariantMenuRevision::new(2),
+        vec![Arc::from("Original"), Arc::from(LONG_DUB_LABEL)],
+        Some(PageVariantIndex::new(0)),
+    );
+    let one_embedded = player_core::PlayerSnapshot::empty();
+    AudioTrackMenuView::for_page_dubs_test(&one_embedded, &menu, availability)
+}
+
+/// Открывает меню «♪» и возвращает сцену.
+fn scene_with_open_menu(view: &AudioTrackMenuView) -> Scene {
+    let (note, _) = centers(FULL_WINDOW);
+    let mut scene = Scene::new(FULL_WINDOW);
+    scene.settle(view);
+    scene.left_click(note, view);
+    scene.settle(view);
+    assert!(scene.popup_open());
+    scene
+}
+
+#[test]
+fn a_page_dub_click_asks_for_that_dub_and_a_long_label_is_cut_to_the_row() {
+    use crate::page_variants::PageVariantAvailability;
+    let view = page_dub_view(PageVariantAvailability::Selectable);
+    let mut scene = scene_with_open_menu(&view);
+    assert!(
+        scene.disabled_nodes.is_empty(),
+        "{:?}",
+        scene.disabled_nodes
+    );
+    let width = scene.node_widths[LONG_DUB_LABEL];
+    assert!(
+        width <= crate::ui::player_controls::page_variant_row::PAGE_VARIANT_ROW_MAX_WIDTH + 1.0,
+        "the long page label is truncated, the row is {width} wide"
+    );
+
+    let actions = scene.left_click(scene.center_of(LONG_DUB_LABEL), &view);
+    let crate::state::AudioTrackMenuTarget::PageDub(expected) = view.tracks()[1].target else {
+        panic!("page dub rows");
+    };
+    assert_eq!(
+        actions,
+        vec![ControlAction::AudioTracks(
+            AudioTrackControlAction::SwitchPageDub(expected)
+        )]
+    );
+}
+
+#[test]
+fn during_an_ad_the_page_dubs_are_disabled_and_a_click_does_nothing() {
+    use crate::page_variants::PageVariantAvailability;
+    let view = page_dub_view(PageVariantAvailability::BlockedDuringAd);
+    let mut scene = scene_with_open_menu(&view);
+    for label in ["Original", LONG_DUB_LABEL] {
+        assert!(
+            scene.disabled_nodes.contains(label),
+            "`{label}` is disabled: {:?}",
+            scene.disabled_nodes
+        );
+    }
+    assert!(
+        scene
+            .left_click(scene.center_of("Original"), &view)
+            .is_empty()
+    );
+    assert_eq!(
+        crate::ui::player_controls::page_variant_row::UNAVAILABLE_DURING_AD_HINT,
+        "Unavailable during an ad"
     );
 }

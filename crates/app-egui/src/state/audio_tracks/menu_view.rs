@@ -11,14 +11,18 @@
 //!   выбранной версии, а смешанный список имел бы две отметки «играет» (версия + дорожка) и
 //!   ломал бы круг клавиши `B`. Редкий случай «в одной версии несколько дорожек» — известное
 //!   ограничение (memory `app-egui/web-audio-versions-menu`).
+//! - Окно браузерного режима с меню озвучек страницы (14a) — строки и есть озвучки страницы
+//!   (`page_dubs.rs`), по тем же причинам; во время рекламы они неактивны.
 
 use media_core::{TrackId, TrackKind};
 use media_source_open::web_media_open::audio_languages::WebAudioLanguageAction;
 use player_core::PlayerSnapshot;
 
 use super::labels::{AudioTrackNumber, audio_track_label};
+use super::page_dubs::PageDubRows;
 use super::web_audio_languages::WebAudioLanguageEntry;
 use super::web_versions::WebAudioVersionEntry;
+use crate::page_variants::{PageVariantAvailability, PageVariantChoice};
 use crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction;
 
 /// Сколько строк нужно, чтобы выбор имел смысл (и кнопка «♪» показывалась).
@@ -33,6 +37,8 @@ pub(crate) enum AudioTrackMenuTarget {
     WebAudioVersion(ComponentVariantSelectionAction),
     /// Другой язык звука (дубляж) того же ролика: same-item switch на ту же позицию.
     WebAudioLanguage(WebAudioLanguageAction),
+    /// Озвучка плеера страницы (окно браузерного режима, 14a): выбор уходит странице.
+    PageDub(PageVariantChoice),
 }
 
 /// Что web-источник предлагает вместо встроенных дорожек.
@@ -42,6 +48,8 @@ pub(super) enum WebAudioMenuSource {
     Versions(Vec<WebAudioVersionEntry>),
     /// Языки звука yt-dlp-видео (оригинал и дубляжи).
     Languages(Vec<WebAudioLanguageEntry>),
+    /// Озвучки плеера страницы (окно браузерного режима).
+    PageDubs(PageDubRows),
 }
 
 /// Одна строка меню.
@@ -62,6 +70,8 @@ pub(crate) struct AudioTrackMenuItem {
 pub(crate) struct AudioTrackMenuView {
     /// Строки в порядке показа: web-версии либо встроенные дорожки в порядке контейнера.
     tracks: Vec<AudioTrackMenuItem>,
+    /// Можно ли сейчас выбирать строки (озвучки страницы во время рекламы — нельзя).
+    availability: PageVariantAvailability,
 }
 
 impl AudioTrackMenuView {
@@ -87,7 +97,22 @@ impl AudioTrackMenuView {
                     )
                 })
                 .collect(),
+            availability: PageVariantAvailability::Selectable,
         }
+    }
+
+    /// Меню озвучек страницы поверх встроенных дорожек `snapshot` (тесты «♪» и `B`).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn for_page_dubs_test(
+        snapshot: &PlayerSnapshot,
+        menu: &crate::page_variants::PageVariantMenuView,
+        availability: PageVariantAvailability,
+    ) -> Self {
+        Self::compose(
+            snapshot,
+            Some(super::page_dubs::page_dub_menu_source(menu, availability)),
+        )
     }
 
     /// Строит единый список: строки web-источника, если они переданы, иначе встроенные дорожки.
@@ -96,8 +121,22 @@ impl AudioTrackMenuView {
         snapshot: &PlayerSnapshot,
         web_source: Option<WebAudioMenuSource>,
     ) -> Self {
+        let mut availability = PageVariantAvailability::Selectable;
         let tracks = match web_source {
             None => embedded_tracks(snapshot),
+            Some(WebAudioMenuSource::PageDubs(rows)) => {
+                availability = rows.availability;
+                rows.entries
+                    .into_iter()
+                    .map(|dub| {
+                        web_item(
+                            AudioTrackMenuTarget::PageDub(dub.choice),
+                            dub.label,
+                            dub.is_active,
+                        )
+                    })
+                    .collect()
+            }
             Some(WebAudioMenuSource::Versions(versions)) => versions
                 .into_iter()
                 .map(|version| {
@@ -119,13 +158,22 @@ impl AudioTrackMenuView {
                 })
                 .collect(),
         };
-        Self { tracks }
+        Self {
+            tracks,
+            availability,
+        }
     }
 
     /// Строки меню.
     #[must_use]
     pub(crate) fn tracks(&self) -> &[AudioTrackMenuItem] {
         &self.tracks
+    }
+
+    /// Можно ли сейчас выбирать строки (во время рекламы озвучки страницы неактивны).
+    #[must_use]
+    pub(crate) const fn availability(&self) -> PageVariantAvailability {
+        self.availability
     }
 
     /// Сколько строк в меню.

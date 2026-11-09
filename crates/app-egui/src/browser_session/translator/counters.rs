@@ -12,8 +12,11 @@ pub(crate) struct TranslatorCounters {
     pub(crate) rejected_generation_inputs: u64,
     /// Вход экземпляра, который уже просили закрыть.
     pub(crate) closing_instance_inputs: u64,
-    /// Сообщения, которые переходник не исполняет (меню вариантов).
+    /// Сообщения, которые переходник не исполняет (`attach`, если бы он дошёл мимо сервера).
     pub(crate) ignored_messages: u64,
+    /// Слова страницы о вариантах (меню, навигация, подсказка субтитров), отданные главному
+    /// циклу (14a).
+    pub(crate) page_variant_words: u64,
     /// `tab_gone` страницы: переходник его только отмечает — сеанс закрывает сервер
     /// (4002), а доигрывание полученного ведёт главный цикл.
     pub(crate) tab_gone_messages: u64,
@@ -38,6 +41,14 @@ pub(crate) struct TranslatorCounters {
     pub(crate) page_subtitle_refusals: u64,
     /// Ресурсы HLS-поколений (рамки и итоги очереди ресурсов).
     pub(crate) resources: HlsResourceCounters,
+}
+
+impl TranslatorCounters {
+    /// Сообщение страницы, которое переходник не исполняет: отметка в журнале и счётчике.
+    pub(crate) fn note_ignored_message(&mut self) {
+        tracing::debug!("Page message is not consumed by the stream translator");
+        self.ignored_messages += 1;
+    }
 }
 
 /// Счётчики ресурсов HLS (для журнала и тестов; только числа).

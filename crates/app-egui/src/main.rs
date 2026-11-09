@@ -33,6 +33,7 @@ mod mesa_wsi_workaround;
 mod page_label;
 mod page_quality;
 mod page_subtitles;
+mod page_variants;
 mod player_error_message;
 mod playlist_action_runtime;
 mod playlist_runtime;

@@ -13,6 +13,7 @@ use player_core::{PlaybackRate as PlayerPlaybackRate, PreparedMedia};
 use crate::browser_session::hls_bridge::capabilities::{
     DecodeCapabilitiesAnswer, DecodeCapabilitiesSource,
 };
+use crate::browser_session::playback::track_layout::ShownTrackLayout;
 use crate::browser_session::playback::{
     BrowserPlayback, BrowserPlaybackCommandError, LoadStart, MediaLoadTicket, PlaybackObservation,
 };
@@ -59,6 +60,12 @@ pub(crate) trait MediaPlayback: DecodeCapabilitiesSource {
     fn offer_downloaded_range(&mut self, range: DownloadedRange);
     /// Шаг плеера: события, кадры, звук, журнал.
     fn pump(&mut self, now: Instant) -> PlaybackObservation;
+    /// Описание дорожек показанного медиа по последнему [`Self::pump`]: по его смене внутри
+    /// поколения возврат на секунду (14a) понимает, что новое поколение не придёт. Плеер,
+    /// который этого не знает (тестовые заглушки), отвечает `Unknown`.
+    fn shown_track_layout(&self) -> ShownTrackLayout {
+        ShownTrackLayout::Unknown
+    }
     /// Итоговая строка журнала и остановка плеера.
     fn finish(self: Box<Self>);
 }
@@ -96,6 +103,11 @@ impl MediaPlayback for BrowserPlayback {
 
     /// У безоконного плеера нет таймлайна: о скачанном спрашивать некому.
     fn offer_downloaded_range(&mut self, _range: DownloadedRange) {}
+
+    fn shown_track_layout(&self) -> ShownTrackLayout {
+        // Собственный метод плеера (у него приоритет перед методом типажа).
+        BrowserPlayback::shown_track_layout(self)
+    }
 
     fn pump(&mut self, now: Instant) -> PlaybackObservation {
         Self::pump(self, now)

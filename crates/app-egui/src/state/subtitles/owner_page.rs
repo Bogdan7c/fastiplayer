@@ -12,6 +12,12 @@
 //!   главнее; новый `showing` его не перебивает, и смена поколения его не сбрасывает —
 //!   `page_viewer_choice`). Последний по времени `showing` побеждает. Иначе действует обычный
 //!   автовыбор по языку (`TrackOrigin::Page`).
+//! - подсказка страницы (`subtitle_preference`, 14a) едет в снимке склада и сильнее `showing`,
+//!   но слабее зрителя: она применяется к каждому медиа сеанса, когда сменилась или когда
+//!   пришли новые документы (подсказанная дорожка могла прийти только что);
+//! - отчёт странице (`subtitle_choice`, 14a): после действия зрителя владелец кладёт итог —
+//!   дорожка страницы или «выключено» ([`SubtitleOwner::note_viewer_page_choice_report`]);
+//!   автовыбор и подсказка отчёта не дают.
 //! - реклама: пока на экране плашка рекламы, слой субтитров не рисуется
 //!   ([`SubtitleOwner::set_page_ad_presence`]); после неё виден снова без перезагрузки.
 //! - доказательства в журнале: строка готовности дорожки и счётчик кадров со слоем субтитров
@@ -33,14 +39,16 @@ use super::active_track::ActiveSubtitleTrack;
 use super::intents::SubtitleVisibility;
 use super::page_load_job::{ParsedPageTrack, format_log_label};
 use super::page_track::{PageTrackDescription, distinguish_page_track_names};
-use super::page_viewer_choice::{PageTrackPreference, ViewerTrackChoice, picked_track};
+use super::page_viewer_choice::{
+    PageTrackEvidence, PageTrackPreference, PageVisibilityWill, ViewerTrackChoice, picked_track,
+};
 use super::sidecar_job::SubtitleLoadFailure;
 use super::track_list::TrackLoadState;
 use super::{JobResultDisposition, SubtitleOwner};
 use crate::page_subtitles::{
     PAGE_SUBTITLE_TRACK_FAILED_LINE, PAGE_SUBTITLE_TRACK_READY_LINE, PageSubtitleArrival,
-    PageSubtitleShelfId, PageSubtitleShelfView, PageSubtitleTrackNumber, PageTracksUpdate,
-    ShelvedPageSubtitle,
+    PageSubtitlePreference, PageSubtitleShelfId, PageSubtitleShelfView, PageSubtitleTrackNumber,
+    PageSubtitleViewerChoice, PageTracksUpdate, ShelvedPageSubtitle,
 };
 
 /// Есть ли на экране реклама страницы (решение 274: во время рекламы субтитры не рисуются).
@@ -84,6 +92,8 @@ pub(super) struct MediaPageTracks {
     attached: Vec<AttachedPageTrack>,
     /// Дорожка, которую страница показывала последней (`showing`).
     shown_on_page: Option<SubtitleTrackId>,
+    /// Подсказка страницы, уже применённая к этому медиа (новое медиа применяет заново).
+    applied_preference: PageSubtitlePreference,
 }
 
 impl MediaPageTracks {
@@ -156,15 +166,19 @@ impl SubtitleOwner {
         if !media.page_tracks.accepts_shelf(shelf.shelf()) {
             return PageTracksUpdate::Unchanged;
         }
+        // Подсказка страницы сеанса (14a): склад только что принят, она — его.
+        self.page_viewer.note_page_preference(shelf.preference());
         // Новые и заменённые документы — в порядке поступления: последний `showing` побеждает.
         let mut fresh: Vec<&ShelvedPageSubtitle> = shelf
             .entries()
             .iter()
             .filter(|entry| !media.page_tracks.holds(entry))
             .collect();
-        if fresh.is_empty() {
+        let preference_is_new = media.page_tracks.applied_preference != shelf.preference();
+        if fresh.is_empty() && !preference_is_new {
             return PageTracksUpdate::Unchanged;
         }
+        media.page_tracks.applied_preference = shelf.preference();
         fresh.sort_by_key(|entry| entry.arrival);
         media.page_tracks.shelf = Some(shelf.shelf());
         let mut page_showed_a_track = false;
@@ -194,12 +208,24 @@ impl SubtitleOwner {
             }
         }
         distinguish_page_track_names(&mut media.tracks.page_descriptions_mut());
-        let page_may_turn_on =
-            !media.user_chose_track && self.page_viewer.lets_page_turn_subtitles_on();
-        if page_showed_a_track && page_may_turn_on {
-            // «Скачала — значит включено» (решение 271): только для этого медиа, конфиг не
-            // трогаем — это не действие зрителя.
-            media.visibility = SubtitleVisibility::Shown;
+        let preferred_track_attached = match shelf.preference() {
+            PageSubtitlePreference::PageTrack(number) => {
+                media.page_tracks.track_of(number).is_some()
+            }
+            PageSubtitlePreference::NotGiven | PageSubtitlePreference::Off => false,
+        };
+        let will = self.page_viewer.page_visibility_will(PageTrackEvidence {
+            preferred_track_attached,
+            page_showed_a_track,
+        });
+        // Подсказка или «скачала — значит включено» (решение 271): только для этого медиа,
+        // конфиг не трогаем — это не действие зрителя. Выбор зрителя в этом медиа главнее.
+        if !media.user_chose_track {
+            match will {
+                PageVisibilityWill::TurnOn => media.visibility = SubtitleVisibility::Shown,
+                PageVisibilityWill::TurnOff => media.visibility = SubtitleVisibility::Hidden,
+                PageVisibilityWill::Untouched => {}
+            }
         }
         // Выбор: память выбора, затем дорожка страницы, затем язык (`reselect_automatically`).
         self.reselect_automatically();
@@ -222,6 +248,28 @@ impl SubtitleOwner {
     /// Зритель включил или выключил субтитры: запоминается на весь сеанс.
     pub(super) fn note_viewer_visibility_choice(&mut self, visibility: SubtitleVisibility) {
         self.page_viewer.note_visibility(visibility);
+    }
+
+    /// Итог действия зрителя (выбор дорожки, включение, выключение) для памяти экстеншена:
+    /// выключено → «off», показана дорожка страницы → её номер, иначе (свой файл, встроенная
+    /// дорожка, нечего показать) — сообщать нечего. Зовут ТОЛЬКО intent-методы зрителя.
+    pub(super) fn note_viewer_page_choice_report(&mut self) {
+        let report = self
+            .media
+            .as_ref()
+            .and_then(|media| match media.visibility {
+                SubtitleVisibility::Hidden => Some(PageSubtitleViewerChoice::Off),
+                SubtitleVisibility::Shown => media
+                    .selected
+                    .and_then(|track_id| media.page_tracks.number_of(track_id))
+                    .map(PageSubtitleViewerChoice::PageTrack),
+            });
+        self.page_viewer.note_report(report);
+    }
+
+    /// Забирает итог последнего действия зрителя для страницы (один раз).
+    pub(super) fn take_viewer_page_choice_report(&mut self) -> Option<PageSubtitleViewerChoice> {
+        self.page_viewer.take_report()
     }
 
     /// Разобранный документ страницы становится готовой дорожкой; строка готовности в журнал.

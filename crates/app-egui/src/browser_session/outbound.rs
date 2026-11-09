@@ -68,13 +68,19 @@ use super::playback::PlaybackObservation;
 
 mod live_window;
 mod page_reopen;
+mod page_variants;
 mod page_view;
 mod resource_requests;
+mod subtitle_choice;
 
 pub(crate) use self::live_window::LiveWindowTold;
 pub(crate) use self::page_reopen::ReopenRequestOutcome;
+pub(crate) use self::page_variants::{
+    NextEpisodePermission, NextEpisodeSendOutcome, SelectVariantSendOutcome,
+};
 pub(crate) use self::page_view::{PageViewPermission, ShowPageRequestOutcome};
 pub(crate) use self::resource_requests::{ResourceQueueOutcome, ResourceRequestPermission};
+pub(crate) use self::subtitle_choice::SubtitleChoiceSendOutcome;
 
 /// Шаг часов: 4 тика в секунду (протокол, решение 85; `results/00c.md`, п. 4).
 /// Чаще — лишняя нагрузка на канал и страницу, реже — муляж элемента заметно
@@ -614,10 +620,14 @@ impl PageOutbound {
 /// Место неотправленного события: новое событие того же места заменяет старое.
 ///
 /// У `play` и `pause` место общее: обе — воля «играть/пауза», и уйти должна последняя.
-/// У остальных место — их вид.
+/// У `select_variant` — своё на каждый вид меню. У остальных место — их вид.
 const fn replacement_slot(message: &PlayerSessionMessage) -> &'static str {
     match message {
         PlayerSessionMessage::Play {} | PlayerSessionMessage::Pause {} => "play_state",
+        // Ящик «один на вид» (14a): выбор озвучки не вытесняет выбор качества.
+        PlayerSessionMessage::SelectVariant { kind, .. } => {
+            page_variants::select_variant_slot(*kind)
+        }
         _ => message_kind(message),
     }
 }
@@ -642,7 +652,7 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::SkipAd {} => "skip_ad",
         PlayerSessionMessage::ReopenPage { .. } => "reopen_page",
         PlayerSessionMessage::ShowPage {} => "show_page",
-        // 14a P2: `subtitle_choice` пока никто не шлёт; вид нужен для журнала.
+        // Выбор субтитров зрителя (14a): одно место в очереди — последний выбор главнее.
         PlayerSessionMessage::SubtitleChoice { .. } => "subtitle_choice",
     }
 }

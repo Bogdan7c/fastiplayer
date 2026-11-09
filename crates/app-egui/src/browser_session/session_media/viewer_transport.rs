@@ -48,6 +48,7 @@ use tracing::debug;
 
 use super::SessionMedia;
 use super::generation_placement::PendingAim;
+use super::position_carry::CarryEnd;
 use super::viewer_click_claim::ViewerClickClaim;
 use crate::ad_plate::AdPlateAction;
 use crate::browser_session::outbound::clock_rate;
@@ -223,6 +224,8 @@ impl SessionMedia {
             ViewerTransportIntent::Seek(target) => {
                 // Решение 206: пока реклама на экране, перемотка зрителя не исполняется.
                 if !self.refuse_viewer_seek_during_ad() {
+                    // Своя перемотка зрителя главнее возврата после смены варианта (280).
+                    self.forget_position_carry(CarryEnd::ViewerSeeked);
                     self.viewer_seek(target, page_listens);
                 }
             }
@@ -230,6 +233,18 @@ impl SessionMedia {
                 self.viewer_ad_action(AdPlateAction::Skip, now, page_listens);
             }
             ViewerTransportIntent::ShowPage => self.viewer_asks_to_show_page(page_listens),
+            ViewerTransportIntent::SelectPageVariant(choice) => {
+                let outcome = self.viewer_selects_page_variant(choice, now);
+                debug!(?outcome, "Viewer page variant selection");
+            }
+            ViewerTransportIntent::NextEpisode => {
+                let outcome = self.viewer_asks_next_episode(now);
+                debug!(?outcome, "Viewer next episode request");
+            }
+            ViewerTransportIntent::ReportSubtitleChoice(choice) => {
+                let outcome = self.viewer_reports_subtitle_choice(choice);
+                debug!(?outcome, "Viewer subtitle choice report");
+            }
         }
     }
 

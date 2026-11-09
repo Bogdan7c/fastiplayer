@@ -22,6 +22,9 @@ use std::time::Duration;
 use media_core::MediaTime;
 use player_core::{PlaybackRate, PlaybackState, PlayerCommand};
 
+use crate::page_subtitles::PageSubtitleViewerChoice;
+use crate::page_variants::PageVariantChoice;
+
 /// Что зритель сделал с транспортом (уже разрешённое: «переключить» стало play/pause,
 /// относительная перемотка — абсолютной целью).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,6 +41,13 @@ pub(crate) enum ViewerTransportIntent {
     SkipAd,
     /// Показать зрителю страницу, например чтобы сменить качество (меню кнопки качества, 13c).
     ShowPage,
+    /// Выбрать пункт меню страницы: озвучку (меню ♪) или качество (кнопка качества), 14a.
+    SelectPageVariant(PageVariantChoice),
+    /// Следующая серия на странице (кнопка Next, клавиша N, MPRIS Next вне рекламы), 14a.
+    NextEpisode,
+    /// Зритель сам выбрал субтитры (меню CC, клавиши C/V): сообщить странице для памяти
+    /// экстеншена (`subtitle_choice`, 14a). Только дорожка страницы или «выключено».
+    ReportSubtitleChoice(PageSubtitleViewerChoice),
 }
 
 /// Сколько намерений держит ящик между проходами цикла окна.

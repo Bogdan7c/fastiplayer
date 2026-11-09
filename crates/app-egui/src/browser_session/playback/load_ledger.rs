@@ -29,6 +29,7 @@ use player_core::{MediaInstanceId, PlaybackState, PlayerErrorKind, PlayerEvent, 
 
 use super::live_window::LiveWindowObservation;
 use super::media_identity::ShownMediaTracker;
+use super::track_layout::ShownTrackLayout;
 use super::{
     BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicket, PlaybackObservation,
     PlayerSeekAnswers,
@@ -237,6 +238,15 @@ impl LoadLedger {
             seek_answers: self.seek_answers,
             live_window: LiveWindowObservation::from_timeline(&snapshot.timeline),
         }
+    }
+
+    /// Описание дорожек медиа, которое плеер показывает (`Unknown` — показано чужое
+    /// или ничего): признак смены дорожек внутри поколения (`track_layout`).
+    pub(crate) fn shown_track_layout(&self, snapshot: &PlayerSnapshot) -> ShownTrackLayout {
+        ShownTrackLayout::from_snapshot(
+            self.shown_media.shown_load(snapshot.media_instance_id),
+            snapshot,
+        )
     }
 
     /// Загрузка, которой принадлежит экземпляр медиа плеера, — если это ТЕКУЩАЯ

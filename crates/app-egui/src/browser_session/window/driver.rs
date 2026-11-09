@@ -248,6 +248,8 @@ impl WindowPlaybackDriver {
         if let Some(summary) = self.journal.take_due_summary(now) {
             log_playback_summary(SummaryKind::Periodic, &summary);
         }
+        self.desk
+            .publish_shown_tracks(self.ledger.shown_track_layout(&snapshot));
         self.desk.publish(self.ledger.observation(&snapshot));
     }
 

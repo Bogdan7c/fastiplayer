@@ -24,6 +24,8 @@ struct Scene {
     time_seconds: f64,
     node_centers: BTreeMap<String, Pos2>,
     disabled_nodes: BTreeSet<String>,
+    /// Отмеченные радио-пункты (отметка «выбрано на странице»).
+    checked_nodes: BTreeSet<String>,
 }
 
 impl Scene {
@@ -35,6 +37,7 @@ impl Scene {
             time_seconds: 0.0,
             node_centers: BTreeMap::new(),
             disabled_nodes: BTreeSet::new(),
+            checked_nodes: BTreeSet::new(),
         }
     }
 
@@ -50,12 +53,16 @@ impl Scene {
         if let Some(update) = output.platform_output.accesskit_update {
             self.node_centers.clear();
             self.disabled_nodes.clear();
+            self.checked_nodes.clear();
             for (_, node) in &update.nodes {
                 let Some(label) = node.label().or_else(|| node.value()) else {
                     continue;
                 };
                 if node.is_disabled() {
                     self.disabled_nodes.insert(label.to_owned());
+                }
+                if node.toggled() == Some(egui::accesskit::Toggled::True) {
+                    self.checked_nodes.insert(label.to_owned());
                 }
                 if let Some(bounds) = node.bounds() {
                     self.node_centers.insert(
@@ -218,4 +225,81 @@ fn without_a_frame_there_is_no_button() {
         .center();
     assert!(scene.left_click(place, &hidden).is_empty());
     assert!(!egui::Popup::is_any_open(&scene.context));
+}
+
+// ---- качества страницы (14a) ---------------------------------------------------------
+
+/// Вид с качествами страницы «1080p» и «720p» (отмечено «720p»).
+fn view_with_page_qualities(
+    availability: crate::page_variants::PageVariantAvailability,
+) -> QualityMenuView {
+    use std::sync::Arc;
+
+    use crate::page_variants::{
+        PageVariantIndex, PageVariantKind, PageVariantMenuRevision, PageVariantMenuView,
+    };
+    let menu = PageVariantMenuView::new(
+        PageVariantKind::Quality,
+        PageVariantMenuRevision::new(9),
+        vec![Arc::from("1080p"), Arc::from("720p")],
+        Some(PageVariantIndex::new(1)),
+    );
+    view(PageViewOffer::Available).with_page_qualities(Some(&menu), availability)
+}
+
+#[test]
+fn page_qualities_are_listed_with_the_mark_above_the_page_item_and_a_pick_is_published() {
+    use crate::page_variants::{PageVariantAvailability, PageVariantIndex};
+    let view = view_with_page_qualities(PageVariantAvailability::Selectable);
+    let mut scene = Scene::new();
+    scene.open_menu(&view);
+
+    assert_eq!(
+        scene.checked_nodes,
+        BTreeSet::from(["720p".to_owned()]),
+        "one mark, on the quality the page selected"
+    );
+    let page_item_y = scene.center_of(CHANGE_QUALITY_ITEM).y;
+    for quality in ["1080p", "720p"] {
+        assert!(
+            scene.center_of(quality).y < page_item_y,
+            "`{quality}` is above `{CHANGE_QUALITY_ITEM}`"
+        );
+    }
+    // Подпись кнопки по-прежнему по картинке на экране (13c).
+    assert!(scene.has_node(BUTTON_LABEL));
+
+    let actions = scene.left_click(scene.center_of("1080p"), &view);
+    let expected = view
+        .page_qualities()
+        .and_then(|choices| choices.menu().choice(PageVariantIndex::new(0)))
+        .expect("1080p");
+    assert_eq!(
+        actions,
+        vec![ControlAction::Quality(
+            QualityControlAction::SelectPageQuality(expected)
+        )]
+    );
+    scene.settle(&view);
+    assert!(
+        !egui::Popup::is_any_open(&scene.context),
+        "a pick closes the menu"
+    );
+}
+
+#[test]
+fn during_an_ad_the_page_qualities_are_disabled_but_the_page_item_is_not() {
+    use crate::page_variants::PageVariantAvailability;
+    let view = view_with_page_qualities(PageVariantAvailability::BlockedDuringAd);
+    let mut scene = Scene::new();
+    scene.open_menu(&view);
+    for quality in ["1080p", "720p"] {
+        assert!(
+            scene.disabled_nodes.contains(quality),
+            "`{quality}`: {:?}",
+            scene.disabled_nodes
+        );
+    }
+    assert!(!scene.disabled_nodes.contains(CHANGE_QUALITY_ITEM));
+    assert!(scene.left_click(scene.center_of("1080p"), &view).is_empty());
 }

@@ -6,6 +6,9 @@
 //! Codec        H.264
 //! Frame rate   60 fps          (только если известна)
 //! ───────────
+//! ( ) 1080p                    (качества страницы, 14a — если адаптер сообщил меню;
+//! (•) 720p                      отметка — выбранное на странице; в рекламе неактивны)
+//! ───────────
 //! Change quality on the page   (виден, когда страницу можно попросить;
 //!                               выключен с подсказкой, если экстеншен устарел)
 //! ```
@@ -14,8 +17,10 @@
 
 use egui::{Button, Grid, Ui};
 
+use super::super::page_variant_row::{PageVariantRowState, page_variant_row};
 use super::{ControlAction, QualityControlAction};
 use crate::page_quality::PageViewOffer;
+use crate::page_variants::{PageVariantAvailability, PageVariantMenuView, PageVariantSelection};
 use crate::state::QualityMenuView;
 
 /// Минимальная ширина меню: числа не должны прыгать от открытия к открытию.
@@ -43,6 +48,10 @@ pub(super) fn show(ui: &mut Ui, view: &QualityMenuView, actions: &mut Vec<Contro
                 row(ui, "Frame rate", frame_rate);
             }
         });
+    if let Some(choices) = view.page_qualities() {
+        ui.separator();
+        page_quality_rows(ui, choices.menu(), choices.availability(), actions);
+    }
     match view.page_view_offer() {
         PageViewOffer::Available => {
             ui.separator();
@@ -58,6 +67,31 @@ pub(super) fn show(ui: &mut Ui, view: &QualityMenuView, actions: &mut Vec<Contro
         }
         // Страницы нет или она ещё не подключилась: просить некого, пункта нет.
         PageViewOffer::PageAway | PageViewOffer::NotAttached => {}
+    }
+}
+
+/// Качества плеера страницы радио-списком (общая строка: обрезка подписи, блокировка в
+/// рекламе); выбор публикует [`QualityControlAction::SelectPageQuality`] и закрывает меню.
+fn page_quality_rows(
+    ui: &mut Ui,
+    menu: &PageVariantMenuView,
+    availability: PageVariantAvailability,
+    actions: &mut Vec<ControlAction>,
+) {
+    for option in menu.options() {
+        let state = PageVariantRowState {
+            is_selected: option.selection == PageVariantSelection::Selected,
+            availability,
+        };
+        if !page_variant_row(ui, option.label, state).clicked() {
+            continue;
+        }
+        if let Some(choice) = menu.choice(option.index) {
+            actions.push(ControlAction::Quality(
+                QualityControlAction::SelectPageQuality(choice),
+            ));
+            ui.close();
+        }
     }
 }
 

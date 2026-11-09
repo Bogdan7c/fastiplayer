@@ -63,6 +63,8 @@ use super::instance::{
 };
 use super::page_view_notice::show_page_view_notice;
 use super::remote::PlaybackDesk;
+use super::subtitle_test_trigger::SubtitleTestTrigger;
+use super::variant_test_trigger::VariantTestTrigger;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakePort, AppWakeProxy};
 use crate::process_shutdown::ShutdownDeadline;
 use crate::settings_runtime::BrowserBufferWindowOwner;
@@ -127,6 +129,10 @@ pub(super) struct BrowserWindowApp {
     end_notice: ShownEndNotice,
     /// Ядро уже закрыто, окно показывает сообщение о конце сеанса до этого момента.
     closing_after_notice: Option<Instant>,
+    /// Выбор варианта страницы тестовой переменной (только тесты 14a; без неё — ничего).
+    variant_test_trigger: VariantTestTrigger,
+    /// Действие зрителя с субтитрами тестовой переменной (только тесты 14a; без неё — ничего).
+    subtitle_test_trigger: SubtitleTestTrigger,
 }
 
 impl BrowserWindowApp {
@@ -159,6 +165,8 @@ impl BrowserWindowApp {
             finish: None,
             end_notice: ShownEndNotice::default(),
             closing_after_notice: None,
+            variant_test_trigger: VariantTestTrigger::from_environment(),
+            subtitle_test_trigger: SubtitleTestTrigger::from_environment(),
         }
     }
 
@@ -252,6 +260,11 @@ impl BrowserWindowApp {
             instance.apply_page_quality(step.page_quality);
             // Просьба «Change quality on the page» принята: тост «переключитесь на браузер».
             show_page_view_notice(instance, step.page_view_notice);
+            // Варианты страницы (14a): меню, «следующая серия есть» и тост принятого выбора.
+            instance.apply_page_variants(step.page_variants);
+            instance.show_page_variant_notice(step.page_variant_notice);
+            instance.poll_variant_test_trigger(&mut self.variant_test_trigger);
+            instance.poll_subtitle_test_trigger(&mut self.subtitle_test_trigger);
         }
         if let Some(instance) = self.instance.as_mut() {
             {

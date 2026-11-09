@@ -11,6 +11,7 @@ use player_core::PlayerSnapshot;
 use super::quality_menu::{QualityMenuView, journal::QualityJournalOutcome};
 use super::{TransportRoute, ViewerTransportIntent, WindowMode};
 use crate::page_quality::{PageQualityFacts, PageViewOffer};
+use crate::page_variants::PageVariantKind;
 use crate::state::AppState;
 use crate::ui::player_controls::QualityControlAction;
 
@@ -58,12 +59,26 @@ impl WindowMode {
 impl WindowMode {
     /// Исполняет действие кнопки качества. Кнопки нет в обычном окне, но действие всё равно
     /// проверяется по виду окна: профиль главнее присланного намерения.
-    fn apply_quality_control_action(&mut self, action: QualityControlAction) {
-        let QualityControlAction::ShowPage = action;
+    pub(super) fn apply_quality_control_action(&mut self, action: QualityControlAction) {
         if !self.view.offers_page_quality_view() {
-            tracing::debug!("Show page ignored: this window has no quality button");
+            tracing::debug!(
+                ?action,
+                "Quality action ignored: this window has no quality button"
+            );
             return;
         }
+        match action {
+            QualityControlAction::ShowPage => self.apply_show_page_request(),
+            QualityControlAction::SelectPageQuality(choice) => {
+                // Качество страницы (14a): те же правила окна, что у озвучки (реклама, ревизия).
+                let outcome = self.select_page_variant(choice);
+                tracing::debug!(?outcome, "Page quality selection");
+            }
+        }
+    }
+
+    /// «Change quality on the page»: просьба показать страницу.
+    fn apply_show_page_request(&mut self) {
         match self.request_page_view() {
             PageViewRequestOutcome::Queued => {}
             outcome @ (PageViewRequestOutcome::NotAvailable(_)
@@ -76,11 +91,15 @@ impl WindowMode {
     }
 
     /// Снимок меню качества на кадр: только если вид окна его предлагает.
-    fn quality_menu_view(&self, snapshot: &PlayerSnapshot) -> QualityMenuView {
+    pub(super) fn quality_menu_view(&self, snapshot: &PlayerSnapshot) -> QualityMenuView {
         if !self.view.offers_page_quality_view() {
             return QualityMenuView::hidden();
         }
-        QualityMenuView::from_snapshot(snapshot, &self.page_quality)
+        // Список качеств страницы (14a) — над пунктом «Change quality on the page».
+        QualityMenuView::from_snapshot(snapshot, &self.page_quality).with_page_qualities(
+            self.page_variants.menu(PageVariantKind::Quality),
+            self.page_variant_availability(),
+        )
     }
 }
 

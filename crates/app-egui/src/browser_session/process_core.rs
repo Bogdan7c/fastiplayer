@@ -44,7 +44,8 @@ use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
 use super::session_media::{
     DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PageReopenNotice,
-    PageViewNotice, PausedDrain, SessionMedia, ViewerCloseStep, ViewerSeekNotice,
+    PageViewNotice, PausedDrain, PositionCarryPolicy, SessionMedia, ViewerCloseStep,
+    ViewerSeekNotice,
 };
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
@@ -54,6 +55,7 @@ use super::translator::stream_port::PushedStreamFactory;
 use crate::ad_plate::AdPlate;
 use crate::page_quality::PageQualityFacts;
 use crate::page_subtitles::PageSubtitleShelfView;
+use crate::page_variants::{PageVariantFacts, PageVariantNotice};
 use crate::settings_runtime::BrowserBufferWindowOwner;
 use crate::viewer_transport::ViewerTransportIntent;
 
@@ -95,6 +97,11 @@ pub(super) struct CoreStep {
     pub(super) page_quality: PageQualityFacts,
     /// Просьба зрителя показать страницу принята (13c): окно показывает тост.
     pub(super) page_view_notice: PageViewNotice,
+    /// Варианты страницы (14a): меню озвучек и качеств, «следующая серия есть»; безоконный
+    /// процесс их не читает.
+    pub(super) page_variants: PageVariantFacts,
+    /// Выбор зрителя или Next ушли странице за шаг (14a): окно показывает тост.
+    pub(super) page_variant_notice: Option<PageVariantNotice>,
 }
 
 /// Открывался ли за шаг сеанс.
@@ -229,6 +236,10 @@ impl BrowserSessionCore {
         // Ожидание данных у цели клика — тот же срок, что у перемотки плеера.
         .with_placement_policy(GenerationPlacementPolicy::from_seek_config(
             &settings.app_config().player.seek,
+        ))
+        // Срок возврата на секунду после смены варианта (14a, решение 280).
+        .with_position_carry_policy(PositionCarryPolicy::from_config(
+            &settings.app_config().browser_session,
         ));
         let runtime = BrowserSessionRuntime::new(
             desk,
@@ -279,6 +290,8 @@ impl BrowserSessionCore {
             page_subtitles: self.media.page_subtitle_shelf(),
             page_quality: self.media.page_quality_facts(),
             page_view_notice: self.media.take_page_view_notice(),
+            page_variants: self.media.page_variant_facts(),
+            page_variant_notice: self.media.take_page_variant_notice(),
         }
     }
 

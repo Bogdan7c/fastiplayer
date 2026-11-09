@@ -28,6 +28,7 @@ use crate::ad_plate::{AdActionProgress, AdPlate, AdPlateAction};
 use crate::downloaded_range::DownloadedRange;
 use crate::page_label::PageLabel;
 use crate::page_quality::PageQualityFacts;
+use crate::page_variants::PageVariantFacts;
 use crate::ui::player_controls::TransportControlAction;
 use crate::viewer_transport::{
     TransportRoute, ViewerTransportIntent, ViewerTransportOutbox, viewer_intent_for_command,
@@ -36,8 +37,12 @@ use crate::window_view_profile::WindowViewProfile;
 
 mod ad_gate;
 mod page_quality;
+mod page_subtitle_choice;
+mod page_variants;
 mod quality_menu;
 
+use self::page_variants::NextActivation;
+pub(crate) use self::page_variants::PageVariantSelectOutcome;
 pub(crate) use self::quality_menu::QualityMenuView;
 
 /// Название приложения в шапке окна, когда страницы-источника нет.
@@ -58,6 +63,8 @@ pub(crate) struct WindowMode {
     page_quality: PageQualityFacts,
     /// Помнит последнюю записанную в журнал подпись качества.
     quality_journal: QualityLabelJournal,
+    /// Факты сеанса о вариантах страницы: меню озвучек и качеств, следующая серия (14a).
+    page_variants: PageVariantFacts,
 }
 
 impl WindowMode {
@@ -77,6 +84,7 @@ impl WindowMode {
             ad_gate: AdTransportGate::default(),
             page_quality: PageQualityFacts::default(),
             quality_journal: QualityLabelJournal::default(),
+            page_variants: PageVariantFacts::default(),
         }
     }
 
@@ -264,9 +272,10 @@ impl AppState {
                 PageLedTransportAction::SentToSession
             }
             // «Следующее» в этом окне — кнопка плашки рекламы, если плашка её предлагает
-            // (хоткей N и медиаклавиша «следующая»); очереди здесь нет.
+            // (хоткей N и медиаклавиша «следующая»), вне рекламы — следующая серия страницы
+            // (14a, решение 283); очереди здесь нет.
             TransportControlAction::Next
-                if self.activate_ad_offer() == AdOfferActivation::Requested =>
+                if self.window_mode.activate_next() != NextActivation::NothingToDo =>
             {
                 PageLedTransportAction::SentToSession
             }
@@ -314,12 +323,6 @@ impl AppState {
         self.window_mode.ad_offer_is_free()
     }
 
-    /// «Следующее» зрителя (хоткей N, медиаклавиша, MPRIS Next): если плашка предлагает
-    /// кнопку и она не занята, делает то же, что клик по ней.
-    pub(crate) fn activate_ad_offer(&mut self) -> AdOfferActivation {
-        self.window_mode.activate_ad_offer()
-    }
-
     /// Медиа-часть сеанса сообщила, что скачано у показанного медиа (каждый проход
     /// окна; `Unknown` — нет показанного поколения потока, файл, эфир или открывается
     /// новое). Обычному окну сведение не нужно: его плеер достаёт байты сам.
@@ -357,6 +360,8 @@ impl AppState {
 
 #[cfg(test)]
 mod ad_tests;
+#[cfg(test)]
+mod page_variant_menus_tests;
 
 #[cfg(test)]
 mod tests {

@@ -105,6 +105,8 @@ mod tests {
                         // Кнопка качества — в той же строке: высота панели от неё не зависит.
                         quality_menu: &crate::state::QualityMenuView::hidden(),
                         view_profile: crate::window_view_profile::WindowViewProfile::Standard,
+                        page_next_episode:
+                            crate::ui::player_controls::PageNextEpisodeButton::NotOffered,
                     },
                 );
                 remaining_height = ui.available_height();

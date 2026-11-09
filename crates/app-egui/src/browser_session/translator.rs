@@ -53,6 +53,7 @@ mod file_generation;
 mod hls_generation;
 mod page_link;
 mod page_subtitles;
+mod page_variants;
 
 pub(crate) use self::counters::TranslatorCounters;
 
@@ -423,15 +424,13 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             offered @ PageSessionMessage::SubtitleTrackOffered { .. } => {
                 self.offer_page_subtitle(offered);
             }
-            PageSessionMessage::PageNavigation { .. }
-            | PageSessionMessage::SubtitlePreference { .. }
-            | PageSessionMessage::VariantMenuChanged { .. }
-            | PageSessionMessage::Attach { .. } => {
-                // 14a P2: `page_navigation`, `subtitle_preference` и меню вариантов пока не
-                // потребляются; `attach` до приёмников не доходит (его съедает сервер).
-                debug!("Page message is not consumed by the stream translator yet");
-                self.counters.ignored_messages += 1;
+            variants @ (PageSessionMessage::VariantMenuChanged { .. }
+            | PageSessionMessage::PageNavigation { .. }
+            | PageSessionMessage::SubtitlePreference { .. }) => {
+                self.forward_page_variants(&session, variants, out);
             }
+            // `attach` до приёмников не доходит (его съедает сервер).
+            PageSessionMessage::Attach { .. } => self.counters.note_ignored_message(),
         }
     }
 

@@ -25,6 +25,7 @@ use pushed_media_source::{
 };
 
 use super::hls_bridge::opener::HlsGenerationOpener;
+use super::page_variants::{PageVariantSlot, PageVariantUpdate};
 use crate::page_subtitles::PageSubtitleDocument;
 
 /// Что случилось со страницей сеанса, пока связь держится (протокол 1.4, «сирота»).
@@ -207,6 +208,14 @@ pub(crate) enum IntakeNotice {
         /// Готовый документ.
         document: Box<PageSubtitleDocument>,
     },
+    /// Слово страницы о вариантах (14a): меню озвучек/качеств или «есть ли следующая
+    /// серия». Только сведения страницы; решает и хранит медиа-часть (склад вариантов).
+    PageVariants {
+        /// Сеанс.
+        session: SessionRef,
+        /// Что сказала страница.
+        update: PageVariantUpdate,
+    },
     /// Сеанс надо закрыть этим кодом (`SessionControl::close_session` — только
     /// этот экземпляр, не тот, что успел его заменить).
     CloseSession {
@@ -229,6 +238,7 @@ impl IntakeNotice {
             | Self::InstanceSealed { session }
             | Self::PageLink { session, .. }
             | Self::PageSubtitleReady { session, .. }
+            | Self::PageVariants { session, .. }
             | Self::Reject { session, .. }
             | Self::CloseSession { session, .. } => session,
         }
@@ -254,7 +264,10 @@ impl IntakeNotice {
     /// - новый поток, отказ, закрытие — единичные события, без них сеанс зависнет;
     /// - готовый документ субтитров страницы — терять НЕЛЬЗЯ: страница его второй раз не
     ///   пришлёт. Ящик не раздувается: документов за сеанс не больше, чем предложений, а
-    ///   главный цикл выбирает ящик каждый проход.
+    ///   главный цикл выбирает ящик каждый проход;
+    /// - слово о вариантах страницы (14a) — терять НЕЛЬЗЯ последнее (меню пропало бы или
+    ///   «следующая серия» застряла бы), но важно только последнее на место: новое меню
+    ///   вида вытесняет неисполненное того же вида, навигация — навигацию.
     pub(crate) const fn overflow_rule(&self) -> OverflowRule {
         match self {
             Self::PageIntent {
@@ -262,6 +275,7 @@ impl IntakeNotice {
                 ..
             } => OverflowRule::ReplacePendingPageSeek,
             Self::AdState { .. } => OverflowRule::ReplacePendingAdState,
+            Self::PageVariants { .. } => OverflowRule::ReplacePendingPageVariant,
             Self::PageIntent { .. } | Self::PlayerSeekAcknowledged { .. } => {
                 OverflowRule::Droppable
             }
@@ -292,6 +306,23 @@ impl IntakeNotice {
     pub(crate) fn is_ad_state_of(&self, session: &SessionRef) -> bool {
         matches!(self, Self::AdState { session: notice_session, .. } if notice_session == session)
     }
+
+    /// Это слово о вариантах сеанса `session` в месте `slot` (меню того же вида или навигация).
+    pub(crate) fn is_page_variant_of(&self, session: &SessionRef, slot: PageVariantSlot) -> bool {
+        matches!(
+            self,
+            Self::PageVariants { session: notice_session, update }
+                if notice_session == session && update.slot() == slot
+        )
+    }
+
+    /// Место слова о вариантах в ящике (`None` — это не слово о вариантах).
+    pub(crate) fn page_variant_slot(&self) -> Option<PageVariantSlot> {
+        match self {
+            Self::PageVariants { update, .. } => Some(update.slot()),
+            _ => None,
+        }
+    }
 }
 
 /// Как уведомление ложится в переполненный ящик ([`IntakeNotice::overflow_rule`]).
@@ -305,4 +336,7 @@ pub(crate) enum OverflowRule {
     ReplacePendingPageSeek,
     /// Ложится, вытесняя прежнее неисполненное состояние рекламы того же сеанса.
     ReplacePendingAdState,
+    /// Ложится, вытесняя прежнее неисполненное слово о вариантах того же места и сеанса
+    /// (меню того же вида или навигацию): нужно только последнее, терять его нельзя.
+    ReplacePendingPageVariant,
 }

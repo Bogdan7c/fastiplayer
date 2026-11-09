@@ -14,6 +14,8 @@ use crate::window_view_profile::WindowViewProfile;
 
 mod audio_track_control;
 mod open_file_button;
+mod page_next_episode;
+mod page_variant_row;
 #[cfg(test)]
 pub(crate) mod playback_button_test_harness;
 mod playback_rate;
@@ -24,6 +26,7 @@ mod transport;
 #[cfg(test)]
 mod view_profile_tests;
 pub use audio_track_control::AudioTrackControlAction;
+pub(crate) use page_next_episode::PageNextEpisodeButton;
 pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
 pub use quality_control::QualityControlAction;
 pub use subtitle_control::SubtitleControlAction;
@@ -99,6 +102,8 @@ pub(crate) struct BottomControlsInput<'a, S: PlayerSkin> {
     pub(crate) quality_menu: &'a crate::state::QualityMenuView,
     /// Вид окна: есть ли кнопка Open и навигация по очереди (Previous/Next/Shuffle/Repeat).
     pub(crate) view_profile: WindowViewProfile,
+    /// Окно без очереди: есть ли Next «следующая серия» страницы (14a).
+    pub(crate) page_next_episode: PageNextEpisodeButton,
 }
 
 /// Рисует нижнюю player controls панель и возвращает действия пользователя.
@@ -120,6 +125,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
         audio_menu,
         quality_menu,
         view_profile,
+        page_next_episode,
     } = input;
     // Кнопка качества есть не в каждом виде окна: профиль главнее присланного снимка.
     let no_quality_button = crate::state::QualityMenuView::hidden();
@@ -167,6 +173,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
                 audio_menu,
                 quality_menu,
                 view_profile,
+                page_next_episode,
                 &mut actions,
             );
         });
@@ -190,6 +197,7 @@ fn render_button_row(
     audio_menu: &crate::state::AudioTrackMenuView,
     quality_menu: &crate::state::QualityMenuView,
     view_profile: WindowViewProfile,
+    page_next_episode: PageNextEpisodeButton,
     actions: &mut Vec<ControlAction>,
 ) {
     let controls_style = skin.controls_style();
@@ -304,6 +312,15 @@ fn render_button_row(
             ui,
             playback_rate_layout.next_button_rect,
             playlist_transport.next,
+            controls_style,
+            actions,
+        );
+    } else {
+        // Окно страницы: Next — только «следующая серия», когда страница её предлагает (14a).
+        page_next_episode::render(
+            ui,
+            playback_rate_layout.next_button_rect,
+            page_next_episode,
             controls_style,
             actions,
         );

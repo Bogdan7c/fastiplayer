@@ -466,3 +466,56 @@ fn a_finished_page_subtitle_document_is_never_dropped_from_a_full_queue() {
     assert_eq!(delivery.dropped_hints, 0);
     assert_eq!(inbox.take_batch().intake_notices.len(), 2);
 }
+
+#[test]
+fn a_newer_variant_menu_replaces_the_pending_one_of_its_kind_only() {
+    use crate::browser_session::page_variants::PageVariantUpdate;
+    use browser_bridge_protocol::session::{NextEpisodeAvailability, VariantKind, VariantMenu};
+
+    let (inbox, _wake) = inbox_with(InboxCapacity {
+        intake_notices: 1,
+        ..InboxCapacity::default()
+    });
+    let menu_notice = |kind: VariantKind| IntakeNotice::PageVariants {
+        session: session("a"),
+        update: PageVariantUpdate::Menu(VariantMenu {
+            kind,
+            options: Vec::new(),
+        }),
+    };
+    let navigation = |availability| IntakeNotice::PageVariants {
+        session: session("a"),
+        update: PageVariantUpdate::Navigation(availability),
+    };
+    // Ящик полон после первого меню: следующее меню того же вида вытесняет его, другой вид
+    // и навигация ложатся рядом, навигация вытесняет только навигацию.
+    let delivery = inbox.post_intake_notices([
+        menu_notice(VariantKind::Audio),
+        navigation(NextEpisodeAvailability::Available),
+        menu_notice(VariantKind::Quality),
+        menu_notice(VariantKind::Audio),
+        navigation(NextEpisodeAvailability::Unavailable),
+    ]);
+    assert_eq!(delivery.queued, 5);
+    let slots: Vec<_> = inbox
+        .take_batch()
+        .intake_notices
+        .iter()
+        .map(|notice| match notice {
+            IntakeNotice::PageVariants {
+                update: PageVariantUpdate::Menu(menu),
+                ..
+            } => format!("menu {:?}", menu.kind),
+            IntakeNotice::PageVariants {
+                update: PageVariantUpdate::Navigation(availability),
+                ..
+            } => format!("navigation {availability:?}"),
+            other => panic!("unexpected notice {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        slots,
+        ["menu Quality", "menu Audio", "navigation Unavailable"],
+        "the newest word of every place is delivered, the stale ones are gone"
+    );
+}

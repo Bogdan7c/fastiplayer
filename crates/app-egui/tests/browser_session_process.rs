@@ -893,3 +893,13 @@ mod page_subtitles;
 // Сессия 13c: кнопка качества окна — подпись «64p» → «96p» по картинке, которую видит зритель.
 #[path = "browser_session_process/quality_button.rs"]
 mod quality_button;
+
+// Сессия 14a: варианты страницы — смена озвучки на той же секунде (решение 280), выбор
+// качества и «следующая серия» по MPRIS Next.
+#[path = "browser_session_process/page_variants.rs"]
+mod page_variants;
+
+// Сессия 14a: обмен выбором субтитров со страницей — подсказка страницы включает свою
+// дорожку до кадров окна, выбор зрителя уходит странице одним `subtitle_choice`.
+#[path = "browser_session_process/page_subtitle_preference.rs"]
+mod page_subtitle_preference;

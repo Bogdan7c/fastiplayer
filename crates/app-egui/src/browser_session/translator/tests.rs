@@ -281,6 +281,11 @@ enum Seen {
     PageLink(u64, PageLinkChange),
     /// Готовый документ субтитров страницы: (экземпляр, номер дорожки, байты).
     PageSubtitle(u64, u32, Vec<u8>),
+    /// Слово страницы о вариантах (14a).
+    PageVariants(
+        u64,
+        crate::browser_session::page_variants::PageVariantUpdate,
+    ),
 }
 
 fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
@@ -320,6 +325,9 @@ fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
                 document.track.get(),
                 document.bytes.to_vec(),
             ),
+            IntakeNotice::PageVariants { session, update } => {
+                Seen::PageVariants(session.instance.0, update.clone())
+            }
         })
         .collect()
 }
@@ -770,4 +778,5 @@ mod log_privacy;
 mod page_link;
 mod page_removal;
 mod page_subtitles;
+mod page_variants;
 mod real_source;

@@ -209,6 +209,56 @@ impl PageSubtitleArrival {
     }
 }
 
+/// Подсказка страницы о субтитрах этой серии (`subtitle_preference`, протокол 1.7, 14a):
+/// экстеншен помнит, что зритель выбрал в прошлых сериях, и напоминает плееру.
+///
+/// Порядок силы у владельца субтитров: действие зрителя в этом сеансе > подсказка страницы >
+/// `showing` страницы (13b) > наш автовыбор. Последнее слово страницы главнее и действует на
+/// текущее и следующие поколения сеанса.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PageSubtitlePreference {
+    /// Страница ничего не подсказывала.
+    #[default]
+    NotGiven,
+    /// Включить дорожку страницы с этим номером (ждёт, пока дорожка придёт).
+    PageTrack(PageSubtitleTrackNumber),
+    /// Субтитры выключены.
+    Off,
+}
+
+impl PageSubtitlePreference {
+    /// Слово для журнала (`preference=page_track`).
+    pub(crate) const fn log_label(self) -> &'static str {
+        match self {
+            Self::NotGiven => "not_given",
+            Self::PageTrack(_) => "page_track",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// Выбор зрителя, который плеер сообщает странице для её памяти (`subtitle_choice`, 1.7).
+///
+/// Только то, что экстеншен может запомнить: дорожка страницы или «выключено». Свой файл и
+/// встроенная дорожка сюда не попадают — у страницы их нет.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageSubtitleViewerChoice {
+    /// Зритель выбрал (или включил) дорожку страницы с этим номером.
+    PageTrack(PageSubtitleTrackNumber),
+    /// Зритель выключил субтитры.
+    Off,
+}
+
+impl PageSubtitleViewerChoice {
+    /// Слово для журнала (`choice=off`).
+    pub(crate) const fn log_label(self) -> &'static str {
+        match self {
+            Self::PageTrack(_) => "page_track",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// Документ на складе и когда он поступил.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShelvedPageSubtitle {
@@ -218,12 +268,15 @@ pub(crate) struct ShelvedPageSubtitle {
     pub(crate) document: Arc<PageSubtitleDocument>,
 }
 
-/// Снимок склада для окна: дешёвая копия (`Arc`), сравнивается по номеру склада и
-/// последнему поступлению.
+/// Снимок склада для окна: дешёвая копия (`Arc`), сравнивается по номеру склада,
+/// последнему поступлению и подсказке страницы.
 #[derive(Debug, Clone)]
 pub(crate) struct PageSubtitleShelfView {
     shelf: PageSubtitleShelfId,
     entries: Arc<[ShelvedPageSubtitle]>,
+    /// Последняя подсказка страницы этого сеанса (14a). Едет вместе со складом: у них одна
+    /// жизнь (сеанс) и один номер, поэтому подсказка нового сеанса не достанется старому.
+    preference: PageSubtitlePreference,
 }
 
 impl PageSubtitleShelfView {
@@ -233,7 +286,20 @@ impl PageSubtitleShelfView {
         Self {
             shelf,
             entries: entries.into(),
+            preference: PageSubtitlePreference::NotGiven,
         }
+    }
+
+    /// Тот же снимок с подсказкой страницы `preference`.
+    #[must_use]
+    pub(crate) const fn with_preference(mut self, preference: PageSubtitlePreference) -> Self {
+        self.preference = preference;
+        self
+    }
+
+    /// Последняя подсказка страницы о субтитрах.
+    pub(crate) const fn preference(&self) -> PageSubtitlePreference {
+        self.preference
     }
 
     /// Пустой снимок склада `shelf`.
@@ -267,12 +333,14 @@ pub(crate) enum PageTracksUpdate {
 }
 
 /// Два снимка равны, если это один склад в одном и том же состоянии: на складе только
-/// добавляют и заменяют, и каждое изменение даёт новое поступление.
+/// добавляют и заменяют, и каждое изменение даёт новое поступление; подсказка страницы
+/// сравнивается отдельно (она меняется без нового документа).
 impl PartialEq for PageSubtitleShelfView {
     fn eq(&self, other: &Self) -> bool {
         self.shelf == other.shelf
             && self.entries.len() == other.entries.len()
             && self.latest_arrival() == other.latest_arrival()
+            && self.preference == other.preference
     }
 }
 

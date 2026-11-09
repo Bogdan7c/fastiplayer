@@ -26,6 +26,7 @@ use media_core::TrackId;
 use super::ControlAction;
 use super::quality_control::QualityNeighbor;
 use super::subtitle_control::SubtitleNeighbor;
+use crate::page_variants::PageVariantChoice;
 use crate::state::AudioTrackMenuView;
 use crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction;
 use layout::{AudioTrackControlLayout, AudioTrackControlMode, choose_mode};
@@ -51,6 +52,8 @@ pub enum AudioTrackControlAction {
     SwitchWebAudioVersion(ComponentVariantSelectionAction),
     /// Выбрать другой язык звука (дубляж) yt-dlp-видео из того же меню.
     SwitchWebAudioLanguage(WebAudioLanguageAction),
+    /// Выбрать озвучку плеера страницы (окно браузерного режима, 14a).
+    SwitchPageDub(PageVariantChoice),
     /// Следующая дорожка по кругу (клавиша `B`).
     SelectNextTrack,
 }

@@ -197,6 +197,10 @@ impl BrowserSessionInbox {
                             // Прежнее слово о рекламе устарело: нужно только последнее.
                             remove_last_ad_state_of(&mut state.intake_notices, notice.session());
                         }
+                        OverflowRule::ReplacePendingPageVariant => {
+                            // Прежнее меню того же вида (или навигация) устарело (14a).
+                            remove_last_page_variant_of(&mut state.intake_notices, &notice);
+                        }
                     }
                 }
                 state.intake_notices.push(notice);
@@ -318,6 +322,20 @@ fn remove_last_ad_state_of(notices: &mut Vec<IntakeNotice>, session: &SessionRef
     if let Some(index) = notices
         .iter()
         .rposition(|queued| queued.is_ad_state_of(session))
+    {
+        let _superseded = notices.remove(index);
+    }
+}
+
+/// Убирает последнее неисполненное слово о вариантах того же места и сеанса, что
+/// `newer` (только при полном ящике).
+fn remove_last_page_variant_of(notices: &mut Vec<IntakeNotice>, newer: &IntakeNotice) {
+    let Some(slot) = newer.page_variant_slot() else {
+        return;
+    };
+    if let Some(index) = notices
+        .iter()
+        .rposition(|queued| queued.is_page_variant_of(newer.session(), slot))
     {
         let _superseded = notices.remove(index);
     }

@@ -308,6 +308,19 @@ impl GenerationPlacement {
         self.retarget(target, TargetOrigin::Viewer);
     }
 
+    /// Цель зрителя снята: возврат на секунду после смены варианта (14a) достался поколению
+    /// рекламы. Поколение встаёт там, где страница перемоталась сама, а если она ничего не
+    /// называла — с первого общего момента всех полос (как без цели). Цель страницы не трогается.
+    pub(super) fn release_viewer_target(&mut self) {
+        if self.awaited_viewer_target().is_none() {
+            return;
+        }
+        match self.page_position {
+            Some(position) => self.retarget(position, TargetOrigin::Page),
+            None => *self = Self::first_common_data(self.policy),
+        }
+    }
+
     /// Страница перемоталась сама. В другое место — новая цель (последняя побеждает);
     /// совпала с уже выбранной (`is_same_target` — допуск источника) — та же перемотка:
     /// срок не продлевается (см. [`PageAim`]).

@@ -124,6 +124,12 @@ impl AppState {
         let subtitle_menu = self.subtitle_menu_view();
         let audio_menu = self.audio_track_menu_view(player_snapshot);
         let quality_menu = self.quality_menu_view(player_snapshot);
+        // Next «следующая серия» окна страницы (14a): реклама и старый экстеншен его прячут.
+        let page_next_episode = if self.next_episode_offered() {
+            player_controls::PageNextEpisodeButton::Offered
+        } else {
+            player_controls::PageNextEpisodeButton::NotOffered
+        };
         let render_diagnostics = frame_context.render_diagnostics();
         let selected_skin = skin::skin_from_config(self.committed_config_snapshot.ui_skin())
             .unwrap_or_else(|| {
@@ -271,6 +277,7 @@ impl AppState {
                     subtitle_menu: &subtitle_menu,
                     audio_menu: &audio_menu,
                     quality_menu: &quality_menu,
+                    page_next_episode,
                 },
             );
             control_actions = bottom_controls.inner;
