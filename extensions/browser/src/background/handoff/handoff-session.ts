@@ -37,7 +37,6 @@
 import type {
   HandOffTabOutcome,
   HandoffEndCause,
-  HandoffStartOutcome,
   HeldVideoReply,
   HeldVideoReport,
   PageCommand,
@@ -62,6 +61,7 @@ import { playerAbilitiesOf } from "./hls-player-support.ts";
 import { createDocumentTranslator, type DocumentTranslator, type OutgoingItem, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { createSessionAdMirror } from "./ad-skip-mirror.ts";
 import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
+import type { SessionPhase } from "./session-phase.ts";
 
 export type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 export type { HandoffSessionDependencies, HandoffTarget, SessionDoor, TabDescription } from "./handoff-session-dependencies.ts";
@@ -75,13 +75,14 @@ import {
   type SocketEndCause,
 } from "./session-socket.ts";
 import { referrerOf, startCheckedPulledSource, type PulledSourceEvent } from "./pulled-source-start.ts";
-import { createSessionSourceFeeds } from "./session-source-feeds.ts";
+import { createSessionSourceFeeds, networkForSource } from "./session-source-feeds.ts";
+import { createPageSubtitleRelay } from "./page-subtitles/page-subtitle-relay.ts";
 import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
 import type { ChosenVideo } from "./video-choice.ts";
 import { createVideoRelocation } from "./video-relocation.ts";
-import { describeRefusal, describeSocketEnd, playerWindowOf } from "./session-outcome-words.ts";
+import { describeRefusal, describeSocketEnd, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
 import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
@@ -91,21 +92,6 @@ import { createPagePresence } from "./session-page-presence.ts";
 function startsGeneration(item: OutgoingItem): boolean {
   return item.kind === "message" && item.message.type === "generation_started";
 }
-
-/**
- * Фазы:
- * - opening — ждём `open_session` и `attached`;
- * - abandoning — сеанс выдан, но страница пропала: ждём `attached`, чтобы честно послать `tab_gone`;
- * - beginning — порт к фрейму открыт, ждём `handoff_began`;
- * - active — тень стоит, поток идёт, сторож тишины слушает пульс тени;
- * - between_videos — тени нет, страница убрала видео, а следующее ещё не появилось (сессия 09c2);
- * - moving — фон принял задержанное видео и ждёт `handoff_began` от его документа;
- * - ending — мы послали `end_handoff`, ждём `handoff_ended{returned}` (или таймаут);
- * - page_away — страница ушла «сиротой» (11b2): тени и порта нет, связь с плеером держим, ждём `reopen_page`
- *   и открытия страницы; тень вернувшейся страницы встаёт через `moving`;
- * - finished — всё освобождено.
- */
-type SessionPhase = "opening" | "abandoning" | "beginning" | "active" | "between_videos" | "moving" | "ending" | "page_away" | "finished";
 
 /** Где сейчас стоит сеанс. Меняется при переезде. */
 interface SessionPlace {
@@ -185,12 +171,19 @@ export function startHandoffSession(
   // Фрейм живого порта.
   let portFrameId = target.frameId;
   let translator: DocumentTranslator | undefined;
+  // Сеть браузера для всего, что фон качает сам: файл, HLS, `<track src>`.
+  const sourceNetwork = { fetch: dependencies.fetchRange, fileReferrer: dependencies.fileReferrer, localAddressBlock: dependencies.localAddressBlock };
   // Загрузчики источников, которые фон качает сам: файл (09b) и нативный HLS (10a2); у MSE их нет.
-  const feeds = createSessionSourceFeeds({
-    fetch: dependencies.fetchRange,
-    fileReferrer: dependencies.fileReferrer,
-    localAddressBlock: dependencies.localAddressBlock,
+  const feeds = createSessionSourceFeeds({ ...sourceNetwork, scheduler: dependencies.scheduler });
+  // Субтитры страницы (13b2): номера дорожек живут на сеанс, а не на документ; свои закачки `<track src>`.
+  const subtitles = createPageSubtitleRelay({
+    sink: () => socket,
+    agreedProtocol: () => agreedProtocol,
+    streamIsOpen: acceptsStream,
+    networkFor: (referrer) => networkForSource(sourceNetwork, { referrer, rule: place.fileAddressRule }),
+    fileAddressRule: () => place.fileAddressRule,
     scheduler: dependencies.scheduler,
+    note: dependencies.noteForDeveloper,
   });
   // Версия протокола, о которой договорились с плеером (из выдачи сеанса): новее неё сообщений не шлём.
   // До выдачи неизвестна; самая ранняя версия - безопасная сторона.
@@ -361,6 +354,8 @@ export function startHandoffSession(
     framePort = port;
     // Новое подключение = новый документ: свои локальные ключи MediaSource, общий счёт поколений.
     translator = createDocumentTranslator(numbering);
+    // Субтитры: номера по документу (фрейм + метка), не по порту; закачки прежнего подключения отменены.
+    subtitles.beginDocument({ frameId, documentTag: incomingRef.document });
     port.onMessage.addListener((message) => handleFrameMessage(port, message));
     port.onDisconnect.addListener(() => handleFrameGone(port));
   }
@@ -488,6 +483,11 @@ export function startHandoffSession(
       case "next_video_held":
         // Донесение сторожа идёт мимо порта, через пограничника: по порту его не бывает.
         return;
+      case "subtitle_document":
+      case "subtitle_track_source":
+        // Передатчик сам отбрасывает события вне потока (`acceptsStream`) и версию плеера ниже 1.5.
+        subtitles.accept(event);
+        return;
       default:
         forwardStreamEvent(event);
     }
@@ -518,11 +518,6 @@ export function startHandoffSession(
     relocation.videoStarted(incomingVideo);
     adMirror.videoStarted();
     resolveOutcome({ kind: "started", player_window: playerWindow });
-  }
-
-  /** Исход команды по отказу страницы начать тень. */
-  function outcomeOfRefusedBegin(refused: Exclude<HandoffStartOutcome, "started">): HandOffTabOutcome {
-    return refused === "protected" ? { kind: "protected" } : { kind: "no_video" };
   }
 
   function handleHandoffEnded(cause: HandoffEndCause): void {
@@ -757,6 +752,8 @@ export function startHandoffSession(
     adMirror.stop();
     // Текущие загрузки источников обрываются: ни рамки после конца сеанса или ухода страницы.
     feeds.dispose();
+    // Закачки субтитров страницы тоже: после конца сеанса или ухода страницы ничего не шлётся.
+    subtitles.endDocument();
     if (framePort !== undefined) disconnectQuietly(framePort);
     framePort = undefined;
   }

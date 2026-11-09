@@ -1,0 +1,17 @@
+// Фазы сеанса передачи (вынесено из `handoff-session.ts` без изменения поведения, сессия 13b2:
+// сеанс упёрся в предел 800 строк).
+
+/**
+ * Фазы:
+ * - opening — ждём `open_session` и `attached`;
+ * - abandoning — сеанс выдан, но страница пропала: ждём `attached`, чтобы честно послать `tab_gone`;
+ * - beginning — порт к фрейму открыт, ждём `handoff_began`;
+ * - active — тень стоит, поток идёт, сторож тишины слушает пульс тени;
+ * - between_videos — тени нет, страница убрала видео, а следующее ещё не появилось (сессия 09c2);
+ * - moving — фон принял задержанное видео и ждёт `handoff_began` от его документа;
+ * - ending — мы послали `end_handoff`, ждём `handoff_ended{returned}` (или таймаут);
+ * - page_away — страница ушла «сиротой» (11b2): тени и порта нет, связь с плеером держим, ждём `reopen_page`
+ *   и открытия страницы; тень вернувшейся страницы встаёт через `moving`;
+ * - finished — всё освобождено.
+ */
+export type SessionPhase = "opening" | "abandoning" | "beginning" | "active" | "between_videos" | "moving" | "ending" | "page_away" | "finished";

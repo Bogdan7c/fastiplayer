@@ -292,6 +292,11 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
       case "hls_source":
       case "shadow_alive":
         return event.kind;
+      // Оба события субтитров страницы (13b2) делят один вид бюджета: он считает события, а байты документов
+      // считает счётчик копий MAIN-мира и потолки сеанса в фоне.
+      case "subtitle_document":
+      case "subtitle_track_source":
+        return "subtitle";
       default:
         return undefined;
     }
@@ -319,8 +324,9 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
 
   /** Заменить то, что страница сказала о своём документе, на прочитанное в этом мире. */
   function withOwnDocumentFacts(event: PageEvent): PageEvent {
-    // `hls_source` несёт те же факты Referer, что `file_source`: происхождение документа берём своё, не страницы.
-    if ((event.kind !== "file_source" && event.kind !== "hls_source") || event.referrer_origin === null) return event;
+    // `hls_source` и `subtitle_track_source` несут те же факты Referer, что `file_source`: происхождение
+    // документа берём своё, не страницы.
+    if ((event.kind !== "file_source" && event.kind !== "hls_source" && event.kind !== "subtitle_track_source") || event.referrer_origin === null) return event;
     return { ...event, referrer_origin: dependencies.ownDocument().origin };
   }
 
@@ -411,7 +417,7 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
       return;
     }
     try {
-      port.postMessage(event.kind === "bytes" ? { ...event, bytes: exactBytes(event.bytes) } : event);
+      port.postMessage(withExactBytes(event));
     } catch {
       // Порт уже мёртв: его onDisconnect придёт следом и снимет тень; событие отдать некому.
       undeliverablePageEvents += 1;
@@ -608,6 +614,14 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     withdrawViewerOffer: (element) => viewerOffer.withdraw(element),
     counters: () => ({ rejectedPageMessages, undeliverablePageEvents, rejectedBackgroundMessages, droppedFloodEvents }),
   };
+}
+
+/**
+ * Событие с байтами ровно своего размера (`bytes` и `subtitle_document`); прочие — как есть. Пограничник
+ * (`parsePageEvent`) не копирует байты, поэтому «вид вместо копии» здесь режется перед отправкой фону.
+ */
+function withExactBytes(event: PageEvent): PageEvent {
+  return event.kind === "bytes" || event.kind === "subtitle_document" ? { ...event, bytes: exactBytes(event.bytes) } : event;
 }
 
 /**

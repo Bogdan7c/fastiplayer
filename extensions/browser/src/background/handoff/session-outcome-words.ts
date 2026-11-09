@@ -1,7 +1,7 @@
 // Машинные слова исходов сеанса: отказ `open_session` и конец сокета в строках `reason` для попапа 10.
 
 import type { GrantOutcome } from "../../protocol/index.ts";
-import type { HandOffTabOutcome, PlayerWindow } from "../../shared/handoff-contract.ts";
+import type { HandOffTabOutcome, HandoffStartOutcome, PlayerWindow } from "../../shared/handoff-contract.ts";
 import type { OpenSessionOutcome } from "../host-link/open-session-requests.ts";
 import type { SocketEndCause } from "./session-socket.ts";
 
@@ -36,4 +36,9 @@ export function describeSocketEnd(cause: SocketEndCause): string {
     default:
       return cause.kind;
   }
+}
+
+/** Исход команды по отказу страницы начать тень (вынесено из `handoff-session.ts` без изменения поведения). */
+export function outcomeOfRefusedBegin(refused: Exclude<HandoffStartOutcome, "started">): HandOffTabOutcome {
+  return refused === "protected" ? { kind: "protected" } : { kind: "no_video" };
 }

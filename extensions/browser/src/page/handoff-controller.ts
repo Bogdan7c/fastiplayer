@@ -66,6 +66,7 @@ import { positionMicros } from "./mse-values.ts";
 import type { IncomingPageMessage } from "./page-command-guard.ts";
 import type { PagePort } from "./page-channel.ts";
 import type { PagePlayerFailureHooks, PagePlayerFailureWatchStarter } from "./page-player-failure-watch.ts";
+import type { PageSubtitleHandoff, PageSubtitleSeam } from "./page-subtitles/subtitle-seam.ts";
 import type { OddityReporter } from "./prototype-wrap.ts";
 import { sendStreamItem, StreamBytesRefused, type StreamMessage } from "./stream-sender.ts";
 import type { ProtectionReader, VideoCandidates } from "./video-candidates.ts";
@@ -92,6 +93,8 @@ export interface HandoffControllerEnvironment {
   readonly anchor?: HandoffAnchorHooks;
   /** Сторож «плеер страницы сломался» для MSE-передач (11a, решение 237); без него — не следим. */
   readonly watchPagePlayerFailure?: PagePlayerFailureWatchStarter;
+  /** Субтитры страницы (13b2): склад отдаётся сразу за журналом, пойманное позже — сразу; без шва — не отдаём. */
+  readonly subtitles?: PageSubtitleSeam;
 }
 
 /** Что контроллеру нужно от сторожа следующего видео. */
@@ -123,6 +126,8 @@ interface ActiveHandoff {
   flooded: boolean;
   /** Сторож ошибки плеера страницы (только MSE, ставится вместе с тенью); `null` — не следим. */
   failureWatch: PagePlayerFailureHooks | null;
+  /** Субтитры этой передачи (13b2); `null` — ещё не начаты или шва нет. */
+  subtitles: PageSubtitleHandoff | null;
 }
 
 /** Зачем открывается поток MediaSource воркера. */
@@ -271,7 +276,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
-    const active: ActiveHandoff = { element, liveMediaSources, session: null, held: this.#environment.nextVideo.take(element), announcedStartUs: null, flooded: false, failureWatch: null };
+    const active: ActiveHandoff = { element, liveMediaSources, session: null, held: this.#environment.nextVideo.take(element), announcedStartUs: null, flooded: false, failureWatch: null, subtitles: null };
     this.#active = active;
     if (source.kind === "worker_media_source") {
       // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
@@ -280,6 +285,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     }
     try {
       const shadowSource = this.#openStream(active, port, source, hlsStream ?? "vod");
+      // Сразу за журналом MSE (у файла и HLS — за их событием источника): склад субтитров и осмотр дорожек.
+      this.#beginSubtitles(active);
       // Повтор главного потока синхронный: элемент стоит там же, T0 — ровно названный.
       this.#startShadow(active, shadowSource, active.announcedStartUs ?? this.#startPositionOf(element));
     } catch (error) {
@@ -318,6 +325,27 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     // Тень встала — передача активна (11a): заглушке нужен элемент, а MSE — сторож ошибок плеера страницы.
     if (shadowSource === "media_source") active.failureWatch = this.#environment.watchPagePlayerFailure?.(element) ?? null;
     this.#environment.anchor?.handoffStood(element);
+  }
+
+  /**
+   * Субтитры страницы (13b2) сразу за журналом: склад документов и осмотр `<track>`/`TextTrack` элемента.
+   * Необязательная часть передачи: любой сбой — одна отладочная запись, передача идёт дальше без субтитров.
+   * События уходят только пока передача та же: после `handoff_ended` ничего (`#release` снимает осмотр).
+   */
+  #beginSubtitles(active: ActiveHandoff): void {
+    const seam = this.#environment.subtitles;
+    if (seam === undefined || this.#active !== active) return;
+    try {
+      active.subtitles = seam.begin({
+        element: active.element,
+        referrerFacts: () => this.#referrerFactsOf(active.element),
+        send: (event, transfer) => {
+          if (this.#active === active) this.#port?.send(event, [...transfer]);
+        },
+      });
+    } catch {
+      this.#environment.reportOddity("page subtitles failed to start");
+    }
   }
 
   /** Настоящая позиция элемента (T0), мкс. Бросает — решает вызывающий. */
@@ -385,6 +413,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         if (this.#active !== active || role !== "handoff_source") return;
         try {
           // Воркер повторяет журнал асинхронно, и элемент мог уйти вперёд: T0 читается заново.
+          this.#beginSubtitles(active);
           this.#startShadow(active, "media_source", this.#startPositionOf(active.element));
         } catch {
           this.#failToStart(active);
@@ -487,6 +516,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
    */
   #onPlayerClockTick(active: ActiveHandoff): void {
     this.#environment.anchor?.clockTick();
+    active.subtitles?.clockTick();
     // Тень могла кончить передачу на этом же тике (пустой источник дольше допуска).
     if (this.#active !== active || active.failureWatch?.onClockTick() !== "end_for_page_player_failure") return;
     this.#environment.reportOddity("the page's own player failed during the handoff");
@@ -568,8 +598,18 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     this.#active = null;
     if (released !== null) this.#environment.nextVideo.noteHandoffEnded(released.element);
     released?.failureWatch?.stop();
+    this.#endSubtitles(released);
     this.#environment.anchor?.handoffEnded();
     this.#environment.workerMediaSources.closeAllStreams();
+  }
+
+  /** Снять субтитры передачи; сбой снятия не должен мешать остальному освобождению. */
+  #endSubtitles(released: ActiveHandoff | null): void {
+    try {
+      released?.subtitles?.end();
+    } catch {
+      this.#environment.reportOddity("page subtitles failed to stop");
+    }
   }
 
   #sendItem(mediaSourceKey: string, item: ReplayItem, origin: StreamOrigin): void {

@@ -26,6 +26,7 @@ import type { ClockState, ResumeState } from "../protocol/session/player.ts";
 import type { LiveSeekable } from "../protocol/session/live-window.ts";
 import type { PagePlaybackRequest, RemovalEnd } from "../protocol/session/page.ts";
 import type { ReferrerPolicyName } from "./referrer-policy.ts";
+import type { PageSubtitleEvent } from "./page-subtitle-contract.ts";
 
 /** Имя порта участка 2: его открывает фон к выбранному фрейму (`tabs.connect`). */
 export const HANDOFF_PORT_NAME = "fastiplayer-handoff";
@@ -316,7 +317,12 @@ export type PageEvent =
    * `element`. Событие проходит только пока сторож взведён, поэтому страница не может будить фон сама.
    * `trigger` — почему сторож задержал видео (см. `HeldVideoTrigger`).
    */
-  | { readonly kind: "next_video_held"; readonly element: ElementKey; readonly candidates: readonly VideoCandidate[]; readonly trigger: HeldVideoTrigger };
+  | { readonly kind: "next_video_held"; readonly element: ElementKey; readonly candidates: readonly VideoCandidate[]; readonly trigger: HeldVideoTrigger }
+  /**
+   * Субтитры страницы (сессия 13b2): готовый документ или `<track src>`, который качает фон.
+   * Договор и смысл полей — `page-subtitle-contract.ts`. Идут только после `handoff_began{started}`.
+   */
+  | PageSubtitleEvent;
 
 /**
  * Почему сторож задержал видео:
@@ -349,7 +355,17 @@ export const SHADOW_SILENCE_LIMIT_MS = 10_000;
  * `malformed` — сообщения не договорной формы: страница, сыплющая мусором, тратит тот же бюджет.
  * Байты бюджет не считает: их держит потолок очереди сеанса.
  */
-export type PageEventBudgetKind = "mse" | "page_seek" | "player_seek_applied" | "page_playback" | "file_source" | "hls_source" | "shadow_alive" | "malformed";
+export type PageEventBudgetKind =
+  | "mse"
+  | "page_seek"
+  | "player_seek_applied"
+  | "page_playback"
+  | "file_source"
+  | "hls_source"
+  | "shadow_alive"
+  /** Оба события субтитров страницы (13b2): документы и `<track src>` считаются вместе. */
+  | "subtitle"
+  | "malformed";
 
 /** Вид донесения «страница превысила бюджет»: он НЕ входит в `PageEvent`. */
 export const PAGE_FLOOD_NOTICE_KIND = "page_flood";

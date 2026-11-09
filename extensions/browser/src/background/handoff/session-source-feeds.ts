@@ -69,6 +69,18 @@ export interface SessionSourceFeeds {
   dispose(): void;
 }
 
+/**
+ * Сеть для источника: заслон локальных адресов внутри, Referer снаружи. Общая для файла, HLS и
+ * `<track src>` (13b2): одна композиция, чтобы правила не расходились.
+ */
+export function networkForSource(
+  parameters: Pick<SessionSourceFeedsParameters, "fetch" | "fileReferrer" | "localAddressBlock">,
+  source: Pick<PulledSourceStart, "referrer" | "rule">,
+): RangeFetch {
+  const guarded = parameters.localAddressBlock.around(parameters.fetch, source.rule);
+  return source.referrer === null ? guarded : parameters.fileReferrer.around(guarded, source.referrer);
+}
+
 export function createSessionSourceFeeds(parameters: SessionSourceFeedsParameters): SessionSourceFeeds {
   const { scheduler } = parameters;
   // Одна стойка на сеанс: счётчик номерков не сбрасывается между поколениями.
@@ -76,11 +88,7 @@ export function createSessionSourceFeeds(parameters: SessionSourceFeedsParameter
   let fileFeed: RangeFetcher | undefined;
   let hlsFeed: HlsResourceFetcher | undefined;
 
-  /** Сеть для источника: заслон локальных адресов внутри, Referer снаружи. */
-  function networkFor(source: PulledSourceStart): RangeFetch {
-    const guarded = parameters.localAddressBlock.around(parameters.fetch, source.rule);
-    return source.referrer === null ? guarded : parameters.fileReferrer.around(guarded, source.referrer);
-  }
+  const networkFor = (source: PulledSourceStart): RangeFetch => networkForSource(parameters, source);
 
   /** Снять живые загрузки и забыть номерки; повтор безопасен. */
   function endActiveFeeds(): void {

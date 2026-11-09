@@ -293,7 +293,7 @@ describe("кандидаты видео", () => {
 
 const MSE_EVENT = { kind: "mse", event: { kind: "timestamp_offset_changed", media_source: "ms-1", source_buffer: 0, offset_us: 0 } };
 const TINY_LIMITS = {
-  limitsPerSecond: { mse: 3, page_seek: 2, page_playback: 2, player_seek_applied: 2, file_source: 1, hls_source: 1, shadow_alive: 2, malformed: 2 },
+  limitsPerSecond: { mse: 3, page_seek: 2, page_playback: 2, player_seek_applied: 2, file_source: 1, hls_source: 1, shadow_alive: 2, subtitle: 2, malformed: 2 },
   replayEventCredit: 0,
 };
 const FLOOD_NOTICE = (overBudget: string) => ({ kind: "page_flood", over_budget: overBudget });

@@ -38,6 +38,7 @@ import { captureChannelOriginals, captureRendezvousOriginals, listenForPageChann
 import { VideoCandidates } from "./video-candidates.ts";
 import { isAutoHandoffPageCommand, isPointerQuery, isViewerOfferPageCommand } from "./page-command-guard.ts";
 import { capturePointerReaders, PointerVideo } from "./pointer-video.ts";
+import { installPageSubtitles, type InstalledPageSubtitles, type PageSubtitleWindow } from "./page-subtitles/index.ts";
 import { installWorkerCapture, type WorkerCaptureWindow, type WorkerChannelExtension, type WorkerHookSource, type WorkerMediaSources } from "./worker-capture/index.ts";
 
 /** Окно, против которого работает MAIN-мир. */
@@ -49,7 +50,8 @@ export interface PageBridgeWindow
     BinaryWindow,
     RandomWindow,
     WorkerCaptureWindow,
-    DrmWindow {
+    DrmWindow,
+    PageSubtitleWindow {
   /** Конструктор `Event` нужен встрече канала участка 1 (`RendezvousWindow`). */
   readonly Event: RendezvousWindow["Event"];
   /** Нужны для «видео под указателем» (10c); нет чего-то из них — вход по указателю не включается. */
@@ -88,6 +90,8 @@ export interface PageBridge {
   readonly workerMediaSources: WorkerMediaSources;
   /** Метки DRM (только для тестов). */
   readonly drmMarks: DrmMarks;
+  /** Субтитры страницы (13b2): склад и что из хуков встало (только для тестов). */
+  readonly subtitles: InstalledPageSubtitles;
   /** «Видео под указателем» (10c); `null` — окружение не даёт оригиналов, вход по указателю выключен. */
   readonly pointerVideo: PointerVideo | null;
   /** Якорь переданного видео для заглушки (11a); `null` — окружение без оригиналов событий. */
@@ -146,13 +150,18 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     documentEvents: win,
   });
   const anchor = createAnchor(win, dom, reportOddity);
+  // Один счётчик копий на документ: поток MSE и документы субтитров делят общий предел (решение 200).
+  const meter = createForwardByteMeter();
+  // Субтитры страницы (13b2): хуки `fetch`/XHR встают сейчас же, до скриптов страницы.
+  const subtitles = installPageSubtitles(win, { binary, channel, meter, reportOddity });
   const watchPagePlayerFailure = pagePlayerFailureWatchStarterFor(win, (element) => dom.hasPlaybackFailureError(element), dependencies.now);
   const controller: HandoffController = new HandoffController({
     registry,
     candidates,
     dom,
     binary,
-    meter: createForwardByteMeter(),
+    meter,
+    subtitles: subtitles.seam,
     startShadow: dependencies.startShadow,
     workerMediaSources,
     reportOddity,
@@ -222,7 +231,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     },
     reportOddity,
   );
-  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, pointerVideo, anchor, workersWrapped: workerCapture.wrapped, documentTag };
+  return { hooked, tracker, controller, registry, workerMediaSources, drmMarks, subtitles, pointerVideo, anchor, workersWrapped: workerCapture.wrapped, documentTag };
 }
 
 /**
