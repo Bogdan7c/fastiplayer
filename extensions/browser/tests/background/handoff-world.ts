@@ -17,6 +17,8 @@ import type { PageTabRevealApi } from "../../src/background/handoff/page-tab-rev
 import { createMemoryTabModelStore, type TabModelStore } from "../../src/background/tab-model/session-store.ts";
 import { createTabModel } from "../../src/background/tab-model/tab-model.ts";
 import { createTabHandoffs } from "../../src/background/handoff/tab-handoffs.ts";
+import { createChoiceMemoryStore } from "../../src/background/choice-memory/choice-memory-store.ts";
+import { memoryStore } from "./auto-handoff-lists-fake-dom.ts";
 import type { HandOffTabOutcome, PageEvent, VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import type { LocalAddressSetting } from "../../src/shared/local-address-setting.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
@@ -96,6 +98,8 @@ export interface WorldOptions {
   readonly pageReopen?: PageReopenBrowser;
   /** Браузерная сторона «показать страницу» (13c); по умолчанию — вкладка на месте, всё получается. */
   readonly pageTabReveal?: PageTabRevealApi;
+  /** Вкладка в приватном окне (14b2); по умолчанию — обычное окно. */
+  readonly incognito?: boolean;
 }
 
 /** «Показать страницу» по умолчанию: вкладка в окне 1, окно слушается (сценарии до 13c его не зовут). */
@@ -158,8 +162,12 @@ export function setup(
     reportFailureOnce: () => {},
   });
   const tabModel = createTabModel({ store, now: () => clock.scheduler.now(), reportStoreFailure: (error) => void storeFailures.push(error) });
+  // Память выбора (14b2) на своём хранилище в памяти: тесты читают, что в неё записано.
+  const choiceStorage = memoryStore();
+  const choiceMemory = createChoiceMemoryStore({ store: choiceStorage.store, now: () => clock.scheduler.now() });
   const handoffs = createTabHandoffs({
     tabModel,
+    choiceMemory,
     door,
     scheduler: clock.scheduler,
     createWebSocket: sockets.create,
@@ -174,7 +182,7 @@ export function setup(
     },
     extensionVersion: WORLD_EXTENSION_VERSION,
     describeTab: () =>
-      Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl, windowId: options.tabWindowId, incognito: false } : undefined),
+      Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl, windowId: options.tabWindowId, incognito: options.incognito ?? false } : undefined),
     pageReopen: options.pageReopen ?? NO_PAGE_REOPEN,
     pageTabReveal: options.pageTabReveal ?? NO_PAGE_TAB_REVEAL,
     tabExists: () => {
@@ -198,6 +206,7 @@ export function setup(
     armings,
     adMirror: adMirrorFake,
     variantMirror: variantMirrorFake,
+    choiceStorage,
     sessionRules,
     settingFailures,
     handoffs,

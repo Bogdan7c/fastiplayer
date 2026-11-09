@@ -58,7 +58,7 @@ import type { FileAddressRule } from "./file-address-guard.ts";
 import type { FramePort } from "./frame-port.ts";
 import { playerAbilitiesOf } from "./hls-player-support.ts";
 import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
-import { createSessionSiteAdapters } from "./session-site-adapters.ts";
+import { choiceMemoryWritingOf, createSessionSiteAdapters } from "./session-site-adapters.ts";
 import { DEMAND_REASON, NATIVE_HLS_NOT_YET, startsGeneration, TOP_FRAME_ID, UNKNOWN_HINTS, type PageDelivery, type SessionPlace } from "./handoff-session-basics.ts";
 import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 import type { SessionPhase } from "./session-phase.ts";
@@ -114,6 +114,7 @@ export function startHandoffSession(
     agreedProtocol: () => agreedProtocol,
     send: (message) => socket?.enqueue({ kind: "message", message }),
     note: dependencies.noteForDeveloper,
+    choiceMemory: { store: dependencies.choiceMemory, pageUrl: () => presence.pageUrl(), writing: choiceMemoryWritingOf(target.incognito) },
   });
   const releaseDemand = dependencies.door.acquireDemand(DEMAND_REASON);
   // Вкладка страницы сеанса (после возврата страницы, 11b2, — другая) и вопросы браузеру о её уходе.
@@ -161,6 +162,7 @@ export function startHandoffSession(
     fileAddressRule: () => place.fileAddressRule,
     scheduler: dependencies.scheduler,
     note: dependencies.noteForDeveloper,
+    onTrackOffered: (track) => siteAdapters.subtitleTrackOffered(track),
   });
   // Версия протокола, о которой договорились с плеером (из выдачи сеанса): новее неё сообщений не шлём.
   // До выдачи неизвестна; самая ранняя версия - безопасная сторона.
@@ -574,6 +576,8 @@ export function startHandoffSession(
   function handlePlayerMessage(message: PlayerSessionMessage): void {
     // Секунда плеера нужна возврату страницы во всех фазах (11b2): в сироте часы — единственная новость.
     if (message.type === "clock") pageReturn.notePlayerSecond(message.position_us);
+    // Память выбора решает по часам, у начала ли серия (14b2); в сироте её слушатели и так молчат.
+    if (message.type === "clock") siteAdapters.playerClock(message.position_us);
     if (phase === "page_away") {
       if (message.type === "reopen_page") pageReturn.reopenRequested();
       if (message.type === "show_page") dependencies.noteForDeveloper("show_page ignored: the page is away");

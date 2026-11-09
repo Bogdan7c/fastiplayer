@@ -24,6 +24,19 @@ function assertWireSafe(description: PageVariantDescription | null): void {
 }
 
 describe("нормализация меню вариантов", () => {
+  it("пометка «Auto» (14b2) остаётся в фоне и не уходит плееру", () => {
+    const menus = normalizeVariantMenus({
+      ...describeWith([]),
+      quality: [
+        { id: "auto", label: "Auto", selected: true, automatic: true },
+        { id: "q720", label: "720p", selected: false },
+      ],
+    });
+    assert.deepEqual([...menus.automatic.quality], ["auto"]);
+    assert.deepEqual(menus.quality.options[0], { id: "auto", label: "Auto", selection: "selected" });
+    assertWireSafe({ ...describeWith([]), quality: [{ id: "auto", label: "Auto", selected: true, automatic: true }] });
+  });
+
   it("годное меню — как есть, «выбран» переходит в selected", () => {
     const menus = normalizeVariantMenus(describeWith([{ id: "dub-a", label: "Озвучка «Студия»", selected: true }], true));
     assert.deepEqual(menus.audio, { kind: "audio", options: [{ id: "dub-a", label: "Озвучка «Студия»", selection: "selected" }] });

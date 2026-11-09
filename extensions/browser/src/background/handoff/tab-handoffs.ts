@@ -234,6 +234,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         fileAddressRule,
         video: chosen,
         pagePlace: returnablePageOf(tab),
+        incognito: tab.incognito,
         movePageToTab: (newTabId) => movePageToTab(entry, newTabId),
         nextBeginRequestId: takeBeginRequestId,
         ...(replacing === undefined ? {} : { afterPreviousSession: () => waitForSessionEnd(replacing) }),

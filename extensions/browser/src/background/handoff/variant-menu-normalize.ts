@@ -6,6 +6,7 @@
 // - повтор id — второй пункт выбрасывается;
 // - подпись чистится и режется до 256 байт (`sanitizeVariantLabel`); пустая — пункт выбрасывается;
 // - пунктов не больше 256; «выбран» — не больше одного (первый).
+// Пометка «Auto» сайта (`automatic`, 14b2) плееру не уходит: её читает только память выбора фона.
 
 import {
   isValidVariantId,
@@ -22,10 +23,18 @@ export interface NormalizedVariantMenus {
   readonly audio: VariantMenu;
   readonly quality: VariantMenu;
   readonly nextEpisode: NextEpisodeAvailability;
+  /** id оставленных пунктов, которые адаптер пометил как автоматический выбор сайта. Только для фона. */
+  readonly automatic: Readonly<Record<PageVariantKind, ReadonlySet<string>>>;
 }
 
-function normalizeMenu(kind: PageVariantKind, options: readonly PageVariantOption[]): VariantMenu {
+interface NormalizedMenu {
+  readonly menu: VariantMenu;
+  readonly automatic: ReadonlySet<string>;
+}
+
+function normalizeMenu(kind: PageVariantKind, options: readonly PageVariantOption[]): NormalizedMenu {
   const normalized: VariantOption[] = [];
+  const automatic = new Set<string>();
   const seenIds = new Set<string>();
   let selectedSeen = false;
   for (const option of options) {
@@ -37,15 +46,19 @@ function normalizeMenu(kind: PageVariantKind, options: readonly PageVariantOptio
     const selected: boolean = option.selected && !selectedSeen;
     selectedSeen ||= selected;
     normalized.push({ id: option.id, label, selection: selected ? "selected" : "available" });
+    if (option.automatic === true) automatic.add(option.id);
   }
-  return { kind, options: normalized };
+  return { menu: { kind, options: normalized }, automatic };
 }
 
 /** Меню для плеера; `null` (меню нет) — оба меню пустые и следующей серии нет. */
 export function normalizeVariantMenus(description: PageVariantDescription | null): NormalizedVariantMenus {
+  const audio = normalizeMenu("audio", description?.audio ?? []);
+  const quality = normalizeMenu("quality", description?.quality ?? []);
   return {
-    audio: normalizeMenu("audio", description?.audio ?? []),
-    quality: normalizeMenu("quality", description?.quality ?? []),
+    audio: audio.menu,
+    quality: quality.menu,
     nextEpisode: description?.nextEpisode === true ? "available" : "unavailable",
+    automatic: { audio: audio.automatic, quality: quality.automatic },
   };
 }

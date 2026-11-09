@@ -89,8 +89,8 @@ export function translatePlayerMessage(message: PlayerSessionMessage, latestGene
     case "next_episode":
       return { kind: "site_adapter", command: { kind: "next_episode" } };
     case "subtitle_choice":
-      // 14a P2: выбор субтитров зрителем (протокол 1.7) экстеншен запомнит позже; пока пропускается.
-      return { kind: "ignore" };
+      // Выбор субтитров зрителем (протокол 1.7): странице его не передаём, его запоминает память выбора (14b2).
+      return { kind: "site_adapter", command: { kind: "subtitle_choice", choice: message.choice } };
     case "reopen_page":
       // Возврат страницы (протокол 1.4, 11b2) сеанс принимает сам и только в фазе сироты (`page_away`), до
       // этого перевода: при живой странице просьба ничего не значит.

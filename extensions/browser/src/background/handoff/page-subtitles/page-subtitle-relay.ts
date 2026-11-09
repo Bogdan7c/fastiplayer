@@ -22,6 +22,7 @@ import { admitsResourceUrl } from "../hls/resource-admission.ts";
 import type { OutgoingItem } from "../page-event-translator.ts";
 import { referrerOf } from "../pulled-source-start.ts";
 import type { RangeFetch } from "../range-fetcher.ts";
+import type { OfferedPageTrack } from "../../choice-memory/page-track-catalog.ts";
 import { protocolNamingOf } from "./track-naming.ts";
 import { createTrackDownloader, type TrackDownloadOutcome, type TrackDownloader } from "./track-downloader.ts";
 import { createTrackRegistry, type SubtitleDocumentIdentity, type TrackRegistry } from "./track-registry.ts";
@@ -46,6 +47,8 @@ export interface PageSubtitleRelayParameters {
   readonly scheduler: Scheduler;
   /** Отладочный журнал фона. */
   readonly note: (message: string) => void;
+  /** Дорожка ушла плееру (и при замене тем же номером): память выбора узнаёт её язык и подпись (14b2). */
+  readonly onTrackOffered?: (track: OfferedPageTrack) => void;
 }
 
 /** Документ, готовый к отправке плееру. */
@@ -117,6 +120,11 @@ export function createPageSubtitleRelay(
     // Заголовок и рамки - одним подряд идущим куском очереди: байты документа ни с чем не перемешаны.
     sink.enqueue({ kind: "message", message: sending.value.offer });
     for (const piece of sending.value.pieces) sink.enqueue({ kind: "frame", header: piece.header, payload: piece.payload });
+    parameters.onTrackOffered?.({
+      track: admission.track,
+      language: language.kind === "known" ? language.tag : null,
+      label: label.kind === "text" ? label.text : null,
+    });
     return { kind: "sent", track: admission.track, replaced: admission.replaced };
   }
 

@@ -142,3 +142,13 @@ If the popup asks you to update the extension or Fastiplayer, the two are too fa
 ### What the extension asks for
 
 Every permission and the reason for it is listed in [`extensions/browser/manifest/PERMISSIONS.md`](../../extensions/browser/manifest/PERMISSIONS.md). It does not read cookies and does not talk to the Internet.
+
+### Remembered dub, quality and subtitles
+
+On sites the extension knows, Fastiplayer shows the site's dubs in the ♪ menu and its qualities in the quality button. The extension remembers what you pick for each series — in the Fastiplayer menus or on the page itself — and sets it again when the next episode starts:
+
+- the dub is set only at the start of an episode, because on many sites changing the dub starts the episode over;
+- the quality is set at any moment, because the site keeps playing from the same second;
+- subtitles are suggested to Fastiplayer once per episode; whatever you change during the episode stays as you set it.
+
+The series is stored only as an irreversible fingerprint, never by its name or address. Private windows use remembered choices but never save new ones. The extension settings page shows how many series are remembered, lets you change the limit (500 by default) and has a "Forget remembered choices" button.

@@ -41,12 +41,14 @@ function isKeyOrNull(value: unknown): value is string | null {
 }
 
 function parseOption(value: unknown): PageVariantOption | undefined {
-  const record = exactRecord(value, ["id", "label", "selected"]);
+  // Пометка `automatic` необязательна (14b2): без неё — ровно три поля, с ней — четыре.
+  const record = exactRecord(value, ["id", "label", "selected"]) ?? exactRecord(value, ["id", "label", "selected", "automatic"]);
   if (record === undefined) return undefined;
-  const { id, label, selected } = record;
+  const { id, label, selected, automatic } = record;
   if (!isBoundedString(id, 1, MAX_REPORTED_VARIANT_ID_LENGTH)) return undefined;
   if (!isBoundedString(label, 0, MAX_REPORTED_VARIANT_LABEL_LENGTH) || typeof selected !== "boolean") return undefined;
-  return { id, label, selected };
+  if (automatic === undefined) return { id, label, selected };
+  return typeof automatic === "boolean" ? { id, label, selected, automatic } : undefined;
 }
 
 function parseOptions(value: unknown): readonly PageVariantOption[] | undefined {

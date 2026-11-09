@@ -256,6 +256,11 @@ describe("приём донесений", () => {
     const tooMany = Array.from({ length: 257 }, (_, index) => ({ id: `v${index}`, label: `${index}`, selected: false }));
     listener(report({ ...SERIES, quality: tooMany }), frameSender);
     listener(report({ ...SERIES, seriesKey: "" }), frameSender);
+    // Пометка «Auto» (14b2) — только булева.
+    listener({ ...report(SERIES), description: { ...SERIES, quality: [{ id: "auto", label: "Auto", selected: true, automatic: "yes" }] } }, frameSender);
     assert.deepEqual(received, []);
+    const withAuto = report({ ...SERIES, quality: [{ id: "auto", label: "Auto", selected: true, automatic: true }] });
+    listener(withAuto, frameSender);
+    assert.deepEqual(received, [[TAB, 3, withAuto]]);
   });
 });

@@ -6,6 +6,7 @@
 import type { PageIdentity } from "../../protocol/index.ts";
 import type { OpenSessionOutcome, OpenSessionRequest } from "../host-link/open-session-requests.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
+import type { ChoiceMemoryStore } from "../choice-memory/choice-memory-store.ts";
 import type { AdMirrorBrowser } from "./ad-skip-mirror.ts";
 import type { VariantMirrorBrowser } from "./variant-mirror.ts";
 import type { FileAddressRule } from "./file-address-guard.ts";
@@ -53,6 +54,8 @@ export interface HandoffSessionDependencies {
   readonly pageReopen: PageReopenBrowser;
   /** Браузерная сторона «показать страницу» (протокол 1.6, решение 278): вкладка, окно, подсветка. */
   readonly pageTabReveal: PageTabRevealApi;
+  /** Память выбора озвучки, качества и субтитров (14b2): одно хранилище фона на все сеансы. */
+  readonly choiceMemory: ChoiceMemoryStore;
 }
 
 /** Что фон знает о вкладке: подпись окна и адрес документа. */
@@ -89,6 +92,8 @@ export interface HandoffTarget {
   readonly video: Pick<ChosenVideo, "role" | "mayBeAd" | "durationS">;
   /** Где живёт страница: окно и адрес для возврата, если она уйдёт (11b2). */
   readonly pagePlace: ReturnablePage | undefined;
+  /** Вкладка в приватном окне (память выбора там не пишет, 14b2); `undefined` — браузер не сказал. */
+  readonly incognito: boolean | undefined;
   /**
    * Страница сеанса вернулась в другую вкладку (11b2): владелец сеансов перенаправляет донесения сторожа и
    * закрытие вкладки этому сеансу уже по новому номеру.

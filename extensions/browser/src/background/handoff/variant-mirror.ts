@@ -17,6 +17,11 @@
 // - `next_episode` — во фрейм, который сказал «следующая серия есть».
 // Исход команды (`person_only`, `no_such_variant`, `failed`) — строка в журнал разработчика: подсказку
 // зрителю для `person_only` даст сессия 15 вместе с YouTube.
+//
+// Наблюдатель (память выбора, 14b2) узнаёт от зеркала то же, что видит плеер, плюс ключи сериала и серии и
+// пометку «Auto», и исход каждой команды выбора с её происхождением (зритель или сама память). Свой выбор
+// память делает через те же ворота, что и зритель (`selectRemembered`): только пункт последнего меню и
+// только во фрейм, приславший это меню.
 
 import {
   pageSessionIntroducedIn,
@@ -30,7 +35,7 @@ import type { PageVariantKind, VariantActionOutcome, VariantCommand, VariantWatc
 import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
 import { createVariantFrameSummary } from "./variant-frame-summary.ts";
-import { normalizeVariantMenus } from "./variant-menu-normalize.ts";
+import { normalizeVariantMenus, type NormalizedVariantMenus } from "./variant-menu-normalize.ts";
 
 /** Срок одной аренды наблюдения: три продления подряд могут потеряться. */
 export const VARIANT_WATCH_LEASE_MS = 3_000;
@@ -46,6 +51,31 @@ export interface VariantMirrorBrowser {
   sendVariantCommand(tabId: number, frameId: number, command: VariantCommand): Promise<VariantActionOutcome>;
 }
 
+/** Что видно на странице сейчас: главное меню (уже отправленное плееру) и ключи сериала и серии. */
+export interface DescribedVariantPage {
+  /** Ключ сериала адаптера; `null` — у страницы нет понятия сериала. Плееру не уходит (решение 283). */
+  readonly seriesKey: string | null;
+  /** Ключ серии; `null` — неизвестен. */
+  readonly episodeKey: string | null;
+  readonly menus: Pick<NormalizedVariantMenus, "audio" | "quality" | "automatic">;
+}
+
+/** Кто попросил выбрать пункт: зритель в нашем меню или память выбора. */
+export type VariantSelectionOrigin = "viewer" | "memory";
+
+/** Что зеркало сообщает наблюдателю (памяти выбора). Наблюдатель не бросает: его сбой — его забота. */
+export interface VariantMirrorObserver {
+  /** Сводка пересчитана (и на каждом продлении аренды); `null` — меню на странице сейчас нет. */
+  pageDescribed(page: DescribedVariantPage | null): void;
+  /** Команда выбора ушла во фрейм. */
+  selectionStarted(kind: PageVariantKind, origin: VariantSelectionOrigin): void;
+  /** Команда выбора кончилась; `label` — подпись пункта в меню, по которому выбирали. Сбой доставки — `failed`. */
+  selectionFinished(kind: PageVariantKind, origin: VariantSelectionOrigin, outcome: VariantActionOutcome, label: string): void;
+}
+
+/** Исход просьбы памяти выбрать пункт. */
+export type RememberedSelectOutcome = "sent" | "not_in_menu" | "stopped";
+
 export interface SessionVariantMirrorDependencies {
   /** Вкладка страницы сеанса сейчас (после возврата страницы, 11b2, — другая). */
   readonly currentTabId: () => number;
@@ -59,6 +89,8 @@ export interface SessionVariantMirrorDependencies {
   readonly send: (message: PageSessionMessage) => void;
   /** Отметка в журнал разработчика. */
   readonly note: (message: string) => void;
+  /** Наблюдатель меню и команд выбора (память выбора); нет — никто не слушает. */
+  readonly observer?: VariantMirrorObserver;
 }
 
 export interface SessionVariantMirror {
@@ -68,6 +100,8 @@ export interface SessionVariantMirror {
   acceptFrameReport(frameId: number, report: VariantWatchReport): void;
   /** Плеер просит выбрать пункт `variantId` вида `kind`. */
   selectVariant(kind: PageVariantKind, variantId: string): void;
+  /** Память выбора просит выбрать пункт: те же ворота, что у зрителя, но без отметки «не нашёл» в журнале. */
+  selectRemembered(kind: PageVariantKind, variantId: string): RememberedSelectOutcome;
   /** Плеер просит следующую серию. */
   nextEpisode(): void;
   /** Сеанс кончился: аренда не продлевается, донесения не принимаются. */
@@ -112,7 +146,8 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
       // Версия адаптера — в журнал разработчика (решение 283): без адресов и названий.
       dependencies.note(`variant adapter ${chosen.adapter} describes the page`);
     }
-    const menus = normalizeVariantMenus(chosen?.description ?? null);
+    const description = chosen?.description ?? null;
+    const menus = normalizeVariantMenus(description);
     for (const kind of PAGE_VARIANT_KINDS) {
       const menu = menus[kind];
       const key = menuKeyOf(menu);
@@ -126,6 +161,11 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
       if (!running) return;
     }
     sendNavigation(menus.nextEpisode, chosen?.frameId);
+    if (!running) return;
+    // Наблюдателю — после плеера: пункт, который он выберет, уже есть в последнем отправленном меню.
+    dependencies.observer?.pageDescribed(
+      description === null ? null : { seriesKey: description.seriesKey, episodeKey: description.episodeKey, menus },
+    );
   }
 
   function sendNavigation(nextEpisode: NextEpisodeAvailability, frameId: number | undefined): void {
@@ -143,13 +183,32 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
     if (running) renewTimer.start(VARIANT_WATCH_RENEW_MS, renew);
   }
 
-  /** Отдать команду фрейму и записать исход в журнал. */
-  function command(frameId: number, request: VariantCommand, what: string): void {
-    browser.sendVariantCommand(currentTabId(), frameId, request).then(
+  /** Отдать команду фрейму и записать исход в журнал. Исход тоже возвращается (сбой доставки — `failed`). */
+  function command(frameId: number, request: VariantCommand, what: string): Promise<VariantActionOutcome> {
+    return browser.sendVariantCommand(currentTabId(), frameId, request).then(
       (outcome) => {
         if (outcome !== "done") dependencies.note(`${what} not done on the page: ${outcome}`);
+        return outcome;
       },
-      (error: unknown) => dependencies.note(`${what} could not reach the frame: ${String(error)}`),
+      (error: unknown) => {
+        dependencies.note(`${what} could not reach the frame: ${String(error)}`);
+        return "failed" as const;
+      },
+    );
+  }
+
+  /** Пункт последнего отправленного меню и фрейм этого меню; нет — `undefined`. */
+  function menuOption(kind: PageVariantKind, variantId: string): { readonly frameId: number; readonly label: string } | undefined {
+    const frameId = sent.menuFrame[kind];
+    const option = sent.menus[kind].options.find((candidate) => candidate.id === variantId);
+    return frameId === undefined || option === undefined ? undefined : { frameId, label: option.label };
+  }
+
+  /** Выбор пункта: команда во фрейм меню, наблюдателю — начало и исход. */
+  function select(kind: PageVariantKind, variantId: string, origin: VariantSelectionOrigin, place: { readonly frameId: number; readonly label: string }): void {
+    dependencies.observer?.selectionStarted(kind, origin);
+    void command(place.frameId, { kind: "select", variant_kind: kind, variant_id: variantId }, `select_variant ${kind}`).then((outcome) =>
+      dependencies.observer?.selectionFinished(kind, origin, outcome, place.label),
     );
   }
 
@@ -169,13 +228,20 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
     },
     selectVariant(kind, variantId) {
       if (!running) return;
-      const frameId = sent.menuFrame[kind];
+      const place = menuOption(kind, variantId);
       // Пункт должен быть в последнем меню, которое видел плеер: устаревший выбор не нажимает чужое.
-      if (frameId === undefined || !sent.menus[kind].options.some((option) => option.id === variantId)) {
+      if (place === undefined) {
         dependencies.note(`select_variant ignored: no such ${kind} option in the last menu`);
         return;
       }
-      command(frameId, { kind: "select", variant_kind: kind, variant_id: variantId }, `select_variant ${kind}`);
+      select(kind, variantId, "viewer", place);
+    },
+    selectRemembered(kind, variantId) {
+      if (!running) return "stopped";
+      const place = menuOption(kind, variantId);
+      if (place === undefined) return "not_in_menu";
+      select(kind, variantId, "memory", place);
+      return "sent";
     },
     nextEpisode() {
       if (!running) return;
@@ -183,7 +249,7 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
         dependencies.note("next_episode ignored: the page offers no next episode");
         return;
       }
-      command(sent.nextEpisodeFrame, { kind: "next" }, "next_episode");
+      void command(sent.nextEpisodeFrame, { kind: "next" }, "next_episode");
     },
     stop() {
       running = false;

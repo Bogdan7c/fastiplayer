@@ -27,17 +27,19 @@ function variantView(root: FakeNode, hostname = "127.0.0.1"): VariantPageView {
 }
 
 /** Плеер страницы в её окне: то, что видит рука-функция. Ломается по просьбе сценария. */
-function fakePagePlayer(options: { broken?: boolean } = {}) {
+function fakePagePlayer(options: { broken?: boolean; autoQuality?: unknown } = {}) {
   const calls: string[] = [];
   const state = { quality: "video-360", episode: 1 };
   const player = {
     qualities() {
       calls.push("qualities");
       if (options.broken === true) throw new Error("page player crashed");
-      return [
+      const fixed = [
         { id: "video-360", label: "360p", selected: state.quality === "video-360" },
         { id: "video-720", label: "720p", selected: state.quality === "video-720" },
       ];
+      // «Auto» сайта (14b2) — по просьбе сценария, с пометкой какого угодно вида.
+      return options.autoQuality === undefined ? fixed : [{ id: "auto", label: "Auto", selected: false, automatic: options.autoQuality }, ...fixed];
     },
     selectQuality(id: string) {
       calls.push(`selectQuality:${id}`);
@@ -108,6 +110,14 @@ describe("адаптер стенда «сериал»: описание чер�
     });
     // Рука-функция дошла до плеера страницы (через исполнитель MAIN-мира), а не придумала ответ.
     assert.deepEqual(player.calls, ["qualities"]);
+  });
+
+  it("«Auto» сайта приходит с пометкой automatic; пометка не булева — описание срывается (14b2)", async () => {
+    const page = benchSeriesPage({ selectedDub: "dub-a", episode: "1" });
+    const described = await adapterFor(page.root, fakePagePlayer({ autoQuality: true }).window).adapter.describe();
+    assert.deepEqual(described?.quality[0], { id: "auto", label: "Auto", selected: false, automatic: true });
+    assert.deepEqual(described?.quality[1], { id: "video-360", label: "360p", selected: true }, "у обычного пункта пометки нет");
+    await assert.rejects(adapterFor(page.root, fakePagePlayer({ autoQuality: "yes" }).window).adapter.describe(), /quality automatic/u);
   });
 
   it("плеер страницы сломан (функция бросает) — описание срывается целиком, полменю не бывает", async () => {

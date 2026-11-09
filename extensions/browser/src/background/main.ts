@@ -10,6 +10,7 @@ import { startCodecPolicy } from "./codec-policy/browser-wiring.ts";
 import { createFirstLabelRequest } from "./codec-policy/first-label-request.ts";
 import { installTabModel } from "./tab-model/browser-wiring.ts";
 import { installTabHandoffs } from "./handoff/browser-wiring.ts";
+import { installChoiceMemory } from "./choice-memory/browser-wiring.ts";
 import { createBrowserEntryReporter, installEntries } from "./entries/browser-wiring.ts";
 import { installAutoHandoff } from "./auto-handoff/browser-wiring.ts";
 import { NATIVE_HOST_NAME } from "../shared/host-name.ts";
@@ -67,7 +68,9 @@ chrome.runtime.onConnect.addListener((port) => {
 // Модель вкладки (решение 198): снимки найденных видео в storage.session; попап 10 и реклама 09d
 // будут читать её через intent-методы.
 const tabModel = installTabModel(scheduler);
-const tabHandoffs = installTabHandoffs(hostLink, scheduler, tabModel);
+// Память выбора озвучки, качества и субтитров (14b2): одно хранилище фона на все сеансы и страницу настроек.
+const choiceMemory = installChoiceMemory();
+const tabHandoffs = installTabHandoffs(hostLink, scheduler, tabModel, choiceMemory);
 
 // Входы режима 1 (10c): контекстное меню, вход по ссылке, кнопка поверх видео. Все они сводятся к команде
 // передачи вкладки `tabHandoffs`; слушатели ставятся здесь же, синхронно, чтобы браузер будил фон по ним.

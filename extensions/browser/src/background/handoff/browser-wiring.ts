@@ -18,6 +18,7 @@ import { createLocalAddressBlock, localAddressBlockRules } from "./local-address
 import { createSessionRules, type SessionRulesApi } from "./session-rules.ts";
 import type { SessionWebSocket } from "./session-socket.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
+import type { ChoiceMemoryStore } from "../choice-memory/choice-memory-store.ts";
 import { createTabHandoffs, type TabHandoffs } from "./tab-handoffs.ts";
 import { browserPageTabReveal } from "./page-tab-reveal-browser.ts";
 import { browserPageReopen } from "./page-return/browser-page-reopen.ts";
@@ -97,7 +98,7 @@ const sessionRulesApi: SessionRulesApi = {
 };
 
 /** Включает команду «отдать вкладку N» и слежение за закрытием вкладок. */
-export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabModel: TabModel): TabHandoffs {
+export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabModel: TabModel, choiceMemory: ChoiceMemoryStore): TabHandoffs {
   const nonce = createBackgroundNonce();
   // Хост адреса страниц экстеншена: инициатор его запросов. В Firefox это внутренний UUID, а не `runtime.id`.
   const extensionHost = new URL(browserApi.runtime.getURL("")).hostname;
@@ -138,6 +139,7 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
       ),
     pageReopen: browserPageReopen,
     pageTabReveal: browserPageTabReveal,
+    choiceMemory,
     extensionVersion: browserApi.runtime.getManifest().version,
     sessionKeyFor: (tabId, attempt) => `t${tabId}-${attempt}-${nonce}`,
   });

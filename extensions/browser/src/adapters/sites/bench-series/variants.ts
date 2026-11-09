@@ -28,12 +28,14 @@ function doneValue(result: PlayerHandResult, action: string): HandValue {
   return result.value;
 }
 
-/** Пункт качества из ответа страницы `{id, label, selected}`. */
+/** Пункт качества из ответа страницы `{id, label, selected}` и необязательного `automatic` («Auto» сайта, 14b2). */
 function qualityOption(candidate: HandValue): PageVariantOption {
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) throw new BenchSeriesPageError("quality is not an object");
-  const { id, label, selected } = candidate as Readonly<Record<string, HandValue>>;
+  const { id, label, selected, automatic } = candidate as Readonly<Record<string, HandValue>>;
   if (typeof id !== "string" || typeof label !== "string" || typeof selected !== "boolean") throw new BenchSeriesPageError("quality fields");
-  return { id, label, selected };
+  if (automatic === undefined) return { id, label, selected };
+  if (typeof automatic !== "boolean") throw new BenchSeriesPageError("quality automatic");
+  return { id, label, selected, automatic };
 }
 
 /** Исход действия руки-функции, которое отвечает `true` («сделано») или `false` («такого нет»). */

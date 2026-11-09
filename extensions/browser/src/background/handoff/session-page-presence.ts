@@ -24,6 +24,8 @@ export interface PagePresenceBrowser {
 export interface PagePresence {
   /** Вкладка страницы сейчас. */
   tabId(): number;
+  /** Адрес страницы, каким его знал фон при старте или переезде (память выбора берёт из него сайт, 14b2). */
+  pageUrl(): string | undefined;
   /** Страница переехала в другую вкладку (возврат, 11b2): прежняя отметка «закрыта» к новой не относится. */
   moveTo(tabId: number, tabUrl: string | undefined): void;
   /** Браузер сообщил о закрытии вкладки (`tabs.onRemoved`). */
@@ -58,6 +60,7 @@ export function createPagePresence(start: { readonly tabId: number; readonly tab
 
   return {
     tabId: () => tabId,
+    pageUrl: () => tabUrl,
     moveTo(nextTabId, nextTabUrl) {
       tabId = nextTabId;
       tabUrl = nextTabUrl;
