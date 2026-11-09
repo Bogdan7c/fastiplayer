@@ -120,6 +120,7 @@ fn real_mouse_and_keyboard_drive_the_browser(kind: BrowserKind) -> TestResult {
         kind,
         &environment,
         LaunchOptions {
+            window_privacy: browser_bridge_bench::browsers::WindowPrivacy::Normal,
             extensions: vec![ExtensionSource::UnpackedDir(
                 repo.join("extensions/browser/dist").join(dist_name(kind)),
             )],

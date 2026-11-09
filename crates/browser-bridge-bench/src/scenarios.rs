@@ -35,6 +35,7 @@ mod quality;
 mod replay;
 mod run_tweaks;
 mod series;
+mod series_memory;
 mod tab_return;
 
 pub use attacks::attack_page_ids;
@@ -199,6 +200,21 @@ pub fn run_series(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> V
 /// Идентификаторы страниц `series` (для проверки `--page` в командной строке).
 pub fn series_page_ids() -> Vec<&'static str> {
     series::page_ids()
+}
+
+/// Сценарии `series-memory-*` (сессия 14b2): память выбора зрителя — перезапуск браузера на том же
+/// профиле, «забыть», приватное окно.
+pub fn run_series_memory(
+    stand: &Stand,
+    browser: BrowserKind,
+    filter: &PageFilter,
+) -> Vec<StepResult> {
+    series_memory::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `series-memory` (для проверки `--page` в командной строке).
+pub fn series_memory_page_ids() -> Vec<&'static str> {
+    series_memory::page_ids()
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».

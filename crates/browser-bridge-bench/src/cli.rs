@@ -8,7 +8,7 @@ use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
     attack_page_ids, auto_handoff_page_ids, capture_page_ids, end_page_ids, entries_page_ids,
     page_return_page_ids, page_subtitles_page_ids, player_command_page_ids, quality_page_ids,
-    series_page_ids, tab_return_page_ids,
+    series_memory_page_ids, series_page_ids, tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -27,6 +27,7 @@ pub enum Command {
     PageSubtitles,
     Quality,
     Series,
+    SeriesMemory,
     Entries,
     PageReturn,
     TabReturn,
@@ -80,6 +81,7 @@ impl Command {
                 | Self::PageSubtitles
                 | Self::Quality
                 | Self::Series
+                | Self::SeriesMemory
                 | Self::Entries
                 | Self::PageReturn
                 | Self::TabReturn
@@ -101,6 +103,7 @@ impl Command {
             Self::PageSubtitles => filter.matches_any_of(page_subtitles_page_ids()),
             Self::Quality => filter.matches_any_of(quality_page_ids()),
             Self::Series => filter.matches_any_of(series_page_ids()),
+            Self::SeriesMemory => filter.matches_any_of(series_memory_page_ids()),
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
@@ -192,8 +195,11 @@ Commands:
                     and a quality chosen in our menu switch the page's streams, the player returns
                     to the same second, Next opens the next episode in the same dub; a broken
                     adapter leaves plain capture without a menu
+  series-memory     the extension's choice memory (per site + series): a dub picked on the page
+                    is remembered, applied once after a browser restart on the same profile,
+                    erased by forget; in a private window the memory is read but never written
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, page-subtitles, quality, series, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, page-subtitles, quality, series, series-memory, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -413,6 +419,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "page-subtitles" => Ok(Command::PageSubtitles),
         "quality" => Ok(Command::Quality),
         "series" => Ok(Command::Series),
+        "series-memory" => Ok(Command::SeriesMemory),
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
         "tab-return" => Ok(Command::TabReturn),

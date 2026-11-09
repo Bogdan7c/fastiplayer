@@ -60,9 +60,23 @@ pub enum ExtensionSource {
     PackedFile(PathBuf),
 }
 
+/// В каком окне браузер открывает вкладки прогона (14b2: память выбора не пишет в приватном окне).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowPrivacy {
+    /// Обычное окно профиля.
+    #[default]
+    Normal,
+    /// Приватное окно (Chromium: окно инкогнито, Firefox: приватный режим). Наш экстеншен в нём
+    /// разрешён явно: по умолчанию браузер не пускает экстеншены в приватные окна, и без разрешения
+    /// стенд проверял бы пустоту, а не то, что экстеншен сам решает ничего не писать.
+    Private,
+}
+
 /// Параметры запуска браузера.
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
+    /// Окно, в котором открываются вкладки прогона.
+    pub window_privacy: WindowPrivacy,
     /// Экстеншены, которые надо поставить.
     pub extensions: Vec<ExtensionSource>,
     /// Разрешить автовоспроизведение без жеста пользователя.

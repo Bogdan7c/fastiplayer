@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::browsers::ExtensionSource;
+use crate::browsers::{ExtensionSource, WindowPrivacy};
 
 /// Кто из экстеншенов ставится в браузер первым (порядок влияет на то, чья обёртка
 /// `Worker`/`MediaSource` окажется внешней).
@@ -64,6 +64,8 @@ pub(super) struct RunTweaks {
     pub loopback_host_aliases: Vec<String>,
     /// Страницу стенда открыть под этим именем вместо `127.0.0.1` (порт тот же).
     pub page_host: Option<String>,
+    /// Окно браузера прогона: обычное или приватное (память выбора, 14b2).
+    pub window_privacy: WindowPrivacy,
 }
 
 /// Дополнительный экстеншен: распакованный каталог или пакет.

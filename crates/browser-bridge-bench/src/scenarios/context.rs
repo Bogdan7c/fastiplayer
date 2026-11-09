@@ -161,6 +161,7 @@ impl Stand {
         let extensions =
             tweaks.arrange_extensions(scenario_extensions, &self.settings.extra_extensions);
         let options = LaunchOptions {
+            window_privacy: tweaks.window_privacy,
             extensions,
             autoplay_without_gesture: true,
             loopback_host_aliases: tweaks.loopback_host_aliases.clone(),

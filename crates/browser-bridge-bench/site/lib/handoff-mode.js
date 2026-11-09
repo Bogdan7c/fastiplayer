@@ -185,7 +185,8 @@ function snapshot({ video, player, probe }) {
  * Фаза передачи: вызывается страницей ПОСЛЕ её собственных проверок «играет».
  * `hooks` — действия страницы по команде робота (`hook:<имя>`): смена качества, смена поколения.
  * `expectedExtraGenerations` — сколько новых MediaSource страница сама сделает за окно (хуки).
- *   Число либо функция `() => число`, вызываемая в конце окна: так страница объявляет и переходы,
+ *   Число либо функция `(mark) => число`, вызываемая в конце окна (`mark.generations` — сколько поколений было в момент
+ *   передачи; нужно странице, чью смену поколения могут сделать ДО передачи, как память выбора, 14b2): так страница объявляет и переходы,
  *   которые происходят САМИ по её собственной логике (автопереход серии по `ended`), не ослабляя
  *   проверку: каждый лишний MediaSource обязан быть объяснён страницей.
  * `readyMarker` — метка в журнале, по которой робот узнаёт «страница готова» (по умолчанию
@@ -282,7 +283,7 @@ function finishPhase(context, state, mark, samples, { durationS, expectedExtraGe
   check('page-sees-playback-not-pause', !now.paused || now.ended || state.returned === true,
     `paused=${now.paused} ended=${now.ended}`);
   const expectedGenerations = typeof expectedExtraGenerations === 'function'
-    ? expectedExtraGenerations() : expectedExtraGenerations;
+    ? expectedExtraGenerations(mark) : expectedExtraGenerations;
   check('no-unexpected-media-source-reload', extraGenerations === expectedGenerations,
     `generations ${mark.generations} -> ${now.generations}, expected +${expectedGenerations}`);
 }

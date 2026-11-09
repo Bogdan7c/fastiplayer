@@ -25,7 +25,7 @@ use super::support::{
 };
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
-    LaunchOptions, PopupSnapshot, TabHandle,
+    LaunchOptions, PopupSnapshot, TabHandle, WindowPrivacy,
 };
 use crate::environment::process::ManagedProcess;
 use crate::environment::{BenchEnvironment, DisplayTarget};
@@ -81,6 +81,7 @@ pub(crate) fn user_js(
     marionette_port: u16,
     autoplay_without_gesture: bool,
     loopback_host_aliases: &[String],
+    window_privacy: WindowPrivacy,
 ) -> String {
     let uuid_map = json!({ FIREFOX_EXTENSION_ID: EXTENSION_UUID }).to_string();
     // Значение pref — строка JS; JSON-строка является корректным литералом JS.
@@ -112,6 +113,10 @@ pub(crate) fn user_js(
         "user_pref(\"devtools.console.stdout.content\", true);".to_owned(),
         NO_AUDIO_DEVICE_PREF.to_owned(),
     ];
+    if window_privacy == WindowPrivacy::Private {
+        // Все окна браузера приватные: отдельного «приватного окна» через Marionette открывать не надо.
+        lines.push("user_pref(\"browser.privatebrowsing.autostart\", true);".to_owned());
+    }
     if !loopback_host_aliases.is_empty() {
         // Эти имена Firefox разрешает в localhost без DNS (аналог `--host-resolver-rules` у Chromium).
         lines.push(format!(
@@ -191,6 +196,7 @@ pub(crate) fn launch(
             marionette_port,
             options.autoplay_without_gesture,
             &options.loopback_host_aliases,
+            options.window_privacy,
         ),
     )
     .map_err(|source| BrowserError::io("write user.js", source))?;
@@ -228,7 +234,7 @@ pub(crate) fn launch(
     forward_host_stderr(&mut marionette)?;
     for source in &options.extensions {
         let (ExtensionSource::UnpackedDir(path) | ExtensionSource::PackedFile(path)) = source;
-        install_temporary(&mut marionette, path)?;
+        install_temporary(&mut marionette, path, options.window_privacy)?;
     }
     Ok(Firefox {
         process,
@@ -240,13 +246,24 @@ pub(crate) fn launch(
 
 /// Временная установка экстеншена. Повтор по тому же id после правки файлов Firefox принимает
 /// как обновление (10d); так же её можно делать и при открытых вкладках.
-fn install_temporary(marionette: &mut Marionette, path: &Path) -> Result<(), BrowserError> {
+///
+/// В приватный прогон экстеншен ставится с `allowPrivateBrowsing`: иначе Firefox не пустит его в
+/// приватные окна, и стенд проверял бы пустоту.
+fn install_temporary(
+    marionette: &mut Marionette,
+    path: &Path,
+    window_privacy: WindowPrivacy,
+) -> Result<(), BrowserError> {
     let absolute = std::fs::canonicalize(path).map_err(|error| {
         BrowserError::io(format!("resolve extension path {}", path.display()), error)
     })?;
     marionette.command(
         "Addon:Install",
-        json!({ "path": absolute.to_string_lossy(), "temporary": true }),
+        json!({
+            "path": absolute.to_string_lossy(),
+            "temporary": true,
+            "allowPrivateBrowsing": window_privacy == WindowPrivacy::Private,
+        }),
     )?;
     Ok(())
 }
@@ -555,7 +572,8 @@ impl BrowserUnderTest for Firefox {
         source: &ExtensionSource,
     ) -> Result<(), BrowserError> {
         let (ExtensionSource::UnpackedDir(path) | ExtensionSource::PackedFile(path)) = source;
-        install_temporary(&mut self.marionette, path)
+        // Поздняя установка (10d) бывает только в обычных окнах.
+        install_temporary(&mut self.marionette, path, WindowPrivacy::Normal)
     }
 
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {
@@ -589,7 +607,7 @@ mod tests {
 
     #[test]
     fn user_js_pins_the_extension_uuid_and_marionette_port() {
-        let text = user_js(4242, true, &[]);
+        let text = user_js(4242, true, &[], WindowPrivacy::Normal);
         assert!(text.contains("user_pref(\"marionette.port\", 4242);"));
         // Значение pref — JSON-строка с экранированными кавычками: проверяем её целиком.
         let expected_map = format!(
@@ -604,7 +622,7 @@ mod tests {
         // Без этой строки Firefox сам выбирает звук хозяина (ALSA → PipeWire) и изредка
         // навсегда вешает весь свой звук — см. `NO_AUDIO_DEVICE_PREF`.
         for autoplay_without_gesture in [true, false] {
-            let text = user_js(1, autoplay_without_gesture, &[]);
+            let text = user_js(1, autoplay_without_gesture, &[], WindowPrivacy::Normal);
             assert!(
                 text.lines()
                     .any(|line| line == "user_pref(\"media.cubeb.force_null_context\", true);"),
@@ -615,11 +633,12 @@ mod tests {
 
     #[test]
     fn user_js_resolves_loopback_aliases_only_when_asked() {
-        assert!(!user_js(1, true, &[]).contains("network.dns.localDomains"));
+        assert!(!user_js(1, true, &[], WindowPrivacy::Normal).contains("network.dns.localDomains"));
         let text = user_js(
             1,
             true,
             &["public.bench.example".into(), "ad.example".into()],
+            WindowPrivacy::Normal,
         );
         assert!(
             text.contains(
@@ -631,6 +650,6 @@ mod tests {
 
     #[test]
     fn user_js_keeps_autoplay_blocking_when_not_asked() {
-        assert!(!user_js(1, false, &[]).contains("media.autoplay"));
+        assert!(!user_js(1, false, &[], WindowPrivacy::Normal).contains("media.autoplay"));
     }
 }

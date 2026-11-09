@@ -25,7 +25,7 @@ use super::support::{
 use super::toolbar_pin;
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
-    LaunchOptions, PopupSnapshot, TabHandle,
+    LaunchOptions, PopupSnapshot, TabHandle, WindowPrivacy,
 };
 use crate::environment::BenchEnvironment;
 use crate::environment::process::ManagedProcess;
@@ -40,6 +40,8 @@ const POPUP_PAGE: &str = "popup.html";
 /// Сколько ждать ответ зонда в странице попапа.
 const POPUP_PROBE_WAIT: Duration = Duration::from_secs(10);
 /// Имя файла с портом отладки в каталоге профиля.
+/// Сколько ждать цель приватной вкладки в списке целей.
+const PRIVATE_TARGET_WAIT: Duration = Duration::from_secs(10);
 const ACTIVE_PORT_FILE: &str = "DevToolsActivePort";
 
 /// Запущенный Chromium.
@@ -49,6 +51,8 @@ pub(crate) struct Chromium {
     stderr_log: PathBuf,
     /// Цель DevTools служебной страницы экстеншена (фоновая вкладка), если она открыта.
     service_target: Option<Value>,
+    /// Окно прогона: в приватном вкладки стенда и страницы экстеншена открываются в окне инкогнито.
+    window_privacy: WindowPrivacy,
 }
 
 /// Аргументы командной строки (отдельная чистая функция: её проверяют тесты).
@@ -93,11 +97,19 @@ pub(crate) fn command_line(
         // «Публичные» имена стенда ведут на этот же ПК: `MAP имя 127.0.0.1`, правила через запятую.
         arguments.push(host_resolver_rules(&options.loopback_host_aliases).into());
     }
-    if options.runtime_extension_install {
+    // Приватный прогон: экстеншен по `--load-extension` в приватные окна не пускают, разрешение
+    // «работать в инкогнито» даёт только `Extensions.loadUnpacked` с `enableInIncognito` (см. `launch`),
+    // а ему нужен тот же флаг отладки расширений, что и поздней установке. `--incognito` даёт окно
+    // инкогнито со стартовой вкладкой; как открывать в нём остальные вкладки — см. `new_private_target`.
+    let private_window = options.window_privacy == WindowPrivacy::Private;
+    if private_window {
+        arguments.push("--incognito".into());
+    }
+    if options.runtime_extension_install || private_window {
         // Без этого флага `Extensions.loadUnpacked` по CDP отказывает (10d: поздняя установка).
         arguments.push("--enable-unsafe-extension-debugging".into());
     }
-    if !unpacked.is_empty() {
+    if !unpacked.is_empty() && !private_window {
         // `--load-extension` принимает список через запятую.
         let list = unpacked
             .iter()
@@ -149,17 +161,105 @@ pub(crate) fn launch(
         let content = std::fs::read_to_string(&port_file).ok()?;
         content.lines().next()?.trim().parse::<u16>().ok()
     })?;
-    Ok(Chromium {
+    let chromium = Chromium {
         process,
         port,
         stderr_log,
         service_target: None,
-    })
+        window_privacy: options.window_privacy,
+    };
+    if options.window_privacy == WindowPrivacy::Private {
+        // Экстеншены приватного прогона ставятся уже в запущенный браузер и сразу с разрешением
+        // для окон инкогнито (в командной строке для этого флага нет).
+        for source in &options.extensions {
+            chromium.load_unpacked(source, IncognitoAccess::Allowed)?;
+        }
+    }
+    Ok(chromium)
+}
+
+/// Пускать ли экстеншен в окна инкогнито при загрузке по CDP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IncognitoAccess {
+    /// Как после `--load-extension`: только обычные окна.
+    NotAllowed,
+    /// Разрешение «работать в окне инкогнито» включено (`enableInIncognito`).
+    Allowed,
 }
 
 impl Chromium {
+    /// Открывает адрес в новой вкладке ПРИВАТНОГО окна (инкогнито) и возвращает описание цели DevTools.
+    ///
+    /// Что проверено на Chromium 156 (спайк 14b2). Окно инкогнито даёт флаг `--incognito` (в нём лежит
+    /// первая вкладка запуска), но ни `PUT /json/new`, ни `Target.createTarget` вкладку в него не
+    /// кладут: обе открывают ОБЫЧНОЕ окно, и экстеншен видит такую вкладку с `tab.incognito = false`.
+    /// `Target.createBrowserContext` приватную среду создаёт, но экстеншен там заблокирован
+    /// (`ERR_BLOCKED_BY_CLIENT`): разрешение «работать в инкогнито» (`enableInIncognito` при
+    /// `Extensions.loadUnpacked`) относится только к окнам профиля с флагом `--incognito`.
+    /// Поэтому вкладку в окно инкогнито открывает сам экстеншен: `tabs.create({ windowId })` из его
+    /// страницы, открытой в обычном окне (экстеншен пущен в инкогнито, и API ему это позволяет).
+    /// Цель DevTools новой вкладки находим по разнице списка целей до и после.
+    fn new_private_target(&self, url: &str) -> Result<Value, BrowserError> {
+        let known_ids = self.page_target_ids()?;
+        let helper = http_json(
+            self.port,
+            "PUT",
+            &format!(
+                "/json/new?{}",
+                percent_encode_query(&format!(
+                    "chrome-extension://{CHROMIUM_DEVELOPMENT_EXTENSION_ID}/{HAND_OFF_EXTENSION_PAGE}"
+                ))
+            ),
+        )?;
+        let helper_id = target_id(&helper)?;
+        let url_literal = Value::String(url.to_owned()).to_string();
+        let create_tab = format!(
+            "async (api) => {{ \
+               const privateWindow = (await api.windows.getAll()).find((window) => window.incognito); \
+               if (!privateWindow) throw new Error('no incognito window'); \
+               const tab = await api.tabs.create({{ windowId: privateWindow.id, url: {url_literal}, active: true }}); \
+               return String(tab.id); \
+             }}"
+        );
+        let created = self.run_function_in(&helper, &create_tab);
+        let closed = self.close_target(&helper_id);
+        created?;
+        closed?;
+        wait_until(
+            "private tab target in /json/list",
+            PRIVATE_TARGET_WAIT,
+            || {
+                http_json(self.port, "GET", "/json/list")
+                    .ok()?
+                    .as_array()?
+                    .iter()
+                    .find(|target| {
+                        target.get("type").and_then(Value::as_str) == Some("page")
+                            && target.get("id").and_then(Value::as_str).is_some_and(|id| {
+                                id != helper_id && !known_ids.iter().any(|known| known == id)
+                            })
+                    })
+                    .cloned()
+            },
+        )
+    }
+
+    /// Идентификаторы всех открытых страниц-целей.
+    fn page_target_ids(&self) -> Result<Vec<String>, BrowserError> {
+        let targets = http_json(self.port, "GET", "/json/list")?;
+        Ok(targets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|target| target.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect())
+    }
+
     /// Открывает адрес в новой вкладке и возвращает описание цели DevTools.
     fn new_target(&self, url: &str) -> Result<Value, BrowserError> {
+        if self.window_privacy == WindowPrivacy::Private {
+            return self.new_private_target(url);
+        }
         http_json(
             self.port,
             "PUT",
@@ -228,6 +328,53 @@ impl Chromium {
                 other => return other,
             }
         }
+    }
+
+    /// `Extensions.loadUnpacked` по браузерной цели CDP: общая часть поздней установки (10d) и
+    /// установки в приватный прогон (14b2).
+    fn load_unpacked(
+        &self,
+        source: &ExtensionSource,
+        incognito: IncognitoAccess,
+    ) -> Result<(), BrowserError> {
+        let ExtensionSource::UnpackedDir(directory) = source else {
+            return Err(BrowserError::UnsupportedExtension(
+                "Chromium installs at runtime only unpacked extension directories".to_owned(),
+            ));
+        };
+        let absolute = std::fs::canonicalize(directory).map_err(|error| {
+            BrowserError::io(
+                format!("resolve extension path {}", directory.display()),
+                error,
+            )
+        })?;
+        let version = http_json(self.port, "GET", "/json/version")?;
+        let socket_url = version
+            .get("webSocketDebuggerUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                BrowserError::protocol("DevTools", format!("no browser socket url: {version}"))
+            })?;
+        let mut connection = CdpConnection::connect(socket_url)?;
+        let reply = connection.call(
+            "Extensions.loadUnpacked",
+            serde_json::json!({
+                "path": absolute.to_string_lossy(),
+                "enableInIncognito": incognito == IncognitoAccess::Allowed,
+            }),
+        )?;
+        // Идентификатор берётся из `key` манифеста: другой id означал бы, что значок на панели,
+        // посредник и всё остальное стенда смотрят на чужой экстеншен.
+        let loaded_id = reply.get("id").and_then(Value::as_str);
+        if loaded_id != Some(CHROMIUM_DEVELOPMENT_EXTENSION_ID) {
+            return Err(BrowserError::protocol(
+                "DevTools",
+                format!(
+                    "Extensions.loadUnpacked gave id {loaded_id:?}, expected {CHROMIUM_DEVELOPMENT_EXTENSION_ID}"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn close_target(&self, target_id: &str) -> Result<(), BrowserError> {
@@ -422,41 +569,7 @@ impl BrowserUnderTest for Chromium {
         &mut self,
         source: &ExtensionSource,
     ) -> Result<(), BrowserError> {
-        let ExtensionSource::UnpackedDir(directory) = source else {
-            return Err(BrowserError::UnsupportedExtension(
-                "Chromium installs at runtime only unpacked extension directories".to_owned(),
-            ));
-        };
-        let absolute = std::fs::canonicalize(directory).map_err(|error| {
-            BrowserError::io(
-                format!("resolve extension path {}", directory.display()),
-                error,
-            )
-        })?;
-        let version = http_json(self.port, "GET", "/json/version")?;
-        let socket_url = version
-            .get("webSocketDebuggerUrl")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                BrowserError::protocol("DevTools", format!("no browser socket url: {version}"))
-            })?;
-        let mut connection = CdpConnection::connect(socket_url)?;
-        let reply = connection.call(
-            "Extensions.loadUnpacked",
-            serde_json::json!({ "path": absolute.to_string_lossy() }),
-        )?;
-        // Идентификатор берётся из `key` манифеста: другой id означал бы, что значок на панели,
-        // посредник и всё остальное стенда смотрят на чужой экстеншен.
-        let loaded_id = reply.get("id").and_then(Value::as_str);
-        if loaded_id != Some(CHROMIUM_DEVELOPMENT_EXTENSION_ID) {
-            return Err(BrowserError::protocol(
-                "DevTools",
-                format!(
-                    "Extensions.loadUnpacked gave id {loaded_id:?}, expected {CHROMIUM_DEVELOPMENT_EXTENSION_ID}"
-                ),
-            ));
-        }
-        Ok(())
+        self.load_unpacked(source, IncognitoAccess::NotAllowed)
     }
 
     fn shutdown(mut self: Box<Self>) -> Result<BrowserExit, BrowserError> {
@@ -513,6 +626,7 @@ mod tests {
     #[test]
     fn command_line_lists_extensions_with_commas_and_enables_autoplay() {
         let options = LaunchOptions {
+            window_privacy: WindowPrivacy::Normal,
             extensions: vec![
                 ExtensionSource::UnpackedDir("/ext/a".into()),
                 ExtensionSource::UnpackedDir("/ext/b".into()),
@@ -575,6 +689,7 @@ mod tests {
     #[test]
     fn packed_extension_file_is_refused_for_chromium() {
         let options = LaunchOptions {
+            window_privacy: WindowPrivacy::Normal,
             extensions: vec![ExtensionSource::PackedFile("/ext/adblock.zip".into())],
             autoplay_without_gesture: false,
             loopback_host_aliases: Vec::new(),

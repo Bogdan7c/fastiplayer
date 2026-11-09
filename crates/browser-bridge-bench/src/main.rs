@@ -107,6 +107,9 @@ fn run(invocation: Invocation) -> ExitCode {
                 Command::Series => {
                     results.extend(scenarios::run_series(&stand, browser, &pages));
                 }
+                Command::SeriesMemory => {
+                    results.extend(scenarios::run_series_memory(&stand, browser, &pages));
+                }
                 Command::Entries => {
                     results.extend(scenarios::run_entries(&stand, browser, &pages));
                 }
@@ -163,6 +166,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::PageSubtitles,
             Command::Quality,
             Command::Series,
+            Command::SeriesMemory,
             Command::Entries,
             Command::PageReturn,
             Command::TabReturn,
@@ -199,6 +203,7 @@ mod tests {
                 Command::PageSubtitles,
                 Command::Quality,
                 Command::Series,
+                Command::SeriesMemory,
                 Command::Entries,
                 Command::PageReturn,
                 Command::TabReturn,

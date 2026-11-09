@@ -60,7 +60,7 @@ use std::time::{Duration, Instant};
 
 use browser_bridge_bench::browsers::{
     BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOutcome, LaunchOptions, TabHandle,
-    launch,
+    WindowPrivacy, launch,
 };
 use browser_bridge_bench::desktop_input::{DesktopInput, Point};
 use browser_bridge_bench::environment::{
@@ -554,6 +554,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         arguments.browser,
         &environment,
         LaunchOptions {
+            window_privacy: WindowPrivacy::Normal,
             extensions: if arrives_at_start {
                 vec![built_extension.clone()]
             } else {

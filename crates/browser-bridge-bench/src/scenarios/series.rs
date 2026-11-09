@@ -32,13 +32,14 @@ use super::handoff_run::{ExtensionMode, HANDOFF_MODE_QUERY, HandoffRun, PageRead
 use super::outcome::{StepResult, Verdict};
 use super::page_filter::PageFilter;
 use super::player_commands::FRAMES_TIMEOUT;
+use super::run_tweaks::RunTweaks;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::{BenchEnvironment, PlayerTestVariables};
 use crate::observe::{BROWSER_QUALITY_SHOWN_MARKER, PlayerLog, read_host_evidence};
 use crate::player_control::PlayerControl;
 
 /// Страница сценария.
-const SERIES_PAGE: &str = "series-variants";
+pub(super) const SERIES_PAGE: &str = "series-variants";
 /// Хвост адреса прогона «сломанный адаптер».
 const BROKEN_ADAPTER_QUERY: &str = "&adapter=broken";
 
@@ -146,13 +147,14 @@ fn wait_for_page_line(run: &HandoffRun<'_>, marker: &str) -> Result<(), String> 
 }
 
 /// Открыть страницу, дождаться готовности и отдать вкладку. `Err` — готовый вердикт провала.
-fn open_and_hand_off<'a>(
+pub(super) fn open_and_hand_off<'a>(
     stand: &'a Stand,
     environment: &BenchEnvironment,
     browser_kind: BrowserKind,
     query: &str,
+    tweaks: &RunTweaks,
 ) -> Result<Result<HandoffRun<'a>, Verdict>, ScenarioError> {
-    let mut run = HandoffRun::open_with_query(
+    let mut run = HandoffRun::open_tweaked(
         stand,
         environment,
         browser_kind,
@@ -160,6 +162,7 @@ fn open_and_hand_off<'a>(
         "series",
         ExtensionMode::Real,
         query,
+        tweaks,
     )?;
     match run.wait_page_ready() {
         PageReadiness::Ready => {}
@@ -194,7 +197,13 @@ fn drive_variants(
     environment: &BenchEnvironment,
     browser_kind: BrowserKind,
 ) -> Result<Verdict, ScenarioError> {
-    let mut run = match open_and_hand_off(stand, environment, browser_kind, HANDOFF_MODE_QUERY)? {
+    let mut run = match open_and_hand_off(
+        stand,
+        environment,
+        browser_kind,
+        HANDOFF_MODE_QUERY,
+        &RunTweaks::default(),
+    )? {
         Ok(run) => run,
         Err(verdict) => return Ok(verdict),
     };
@@ -299,7 +308,13 @@ fn drive_broken_adapter(
     browser_kind: BrowserKind,
 ) -> Result<Verdict, ScenarioError> {
     let query = format!("{HANDOFF_MODE_QUERY}{BROKEN_ADAPTER_QUERY}");
-    let mut run = match open_and_hand_off(stand, environment, browser_kind, &query)? {
+    let mut run = match open_and_hand_off(
+        stand,
+        environment,
+        browser_kind,
+        &query,
+        &RunTweaks::default(),
+    )? {
         Ok(run) => run,
         Err(verdict) => return Ok(verdict),
     };

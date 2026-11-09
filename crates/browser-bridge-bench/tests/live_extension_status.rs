@@ -47,6 +47,7 @@ fn popup_text_of_real_extension(
         kind,
         &environment,
         LaunchOptions {
+            window_privacy: browser_bridge_bench::browsers::WindowPrivacy::Normal,
             extensions: vec![ExtensionSource::UnpackedDir(
                 repo.join("extensions/browser/dist").join(dist_name),
             )],
