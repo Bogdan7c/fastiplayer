@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>subtitles-fetch</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>subtitles-fetch</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { runMseSubtitlesPage, subtitleUrl } from '../lib/subtitles-page-kit.js';
+
+// MSE-плеер сайта после старта качает `.vtt` через `fetch` со ВТОРОГО origin (CORS `*`), как плееры,
+// которые держат субтитры на CDN. Экстеншен видит ответ и отдаёт плееру одну дорожку; скачанная
+// последней — включена (решение 271).
+await runScenario('subtitles-fetch', async (ctx) => {
+  await runMseSubtitlesPage(ctx, {
+    loadSubtitles: async (context) => {
+      const url = subtitleUrl(context.params.otherOrigin, 'fetched.vtt');
+      const response = await fetch(url);
+      const text = await response.text();
+      context.check('subtitles-fetched', response.ok && text.startsWith('WEBVTT'),
+        `status=${response.status}, bytes=${text.length}, from=${new URL(url).origin}`);
+    },
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>subtitles-track</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>subtitles-track</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { mountVideo, observeHandoff } from '../lib/scenario-kit.js';
+import { subtitleUrl } from '../lib/subtitles-page-kit.js';
+
+// `<video src>` с двумя `<track>`: английская (`default`, браузер показывает её сам) и выключенная
+// украинская. Плеер получает ОБЕ дорожки (решение 272: все `<track src>` качает фон экстеншена),
+// включённой должна оказаться английская — та, у которой режим `showing`.
+await runScenario('subtitles-track', async (ctx) => {
+  const catalog = await loadCatalog();
+  const asset = catalog.assets['progressive-long-h264-aac'];
+  const video = mountVideo();
+  const addTrack = (fileName, language, label, isDefault) => {
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.src = subtitleUrl(location.origin, fileName);
+    track.srclang = language;
+    track.label = label;
+    track.default = isDefault;
+    video.append(track);
+    return track;
+  };
+  const english = addTrack('english.vtt', 'en', 'English', true);
+  const ukrainian = addTrack('ukrainian.vtt', 'uk', 'Ukrainian', false);
+  video.src = `/media/${asset.url}`;
+  await video.play().catch(async () => { video.muted = true; await video.play(); });
+  await checkPlaying(ctx, video, 'playing');
+  const modes = () => `en=${english.track.mode}, uk=${ukrainian.track.mode}`;
+  const englishShowing = await waitFor(() => english.track.mode === 'showing', 4000);
+  ctx.check('english-track-is-showing', englishShowing, modes());
+  ctx.check('ukrainian-track-is-not-showing', ukrainian.track.mode !== 'showing', modes());
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video, player: null }, {}, {
+      durationS: asset.duration_s,
+      skipFinishChecks: ['page-buffer-keeps-filling'],
+    });
+  }
+});
+</script>
+</body>
+</html>

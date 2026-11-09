@@ -134,6 +134,11 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("return-baked-ad"),
     // 11b2, решения 240–241: возврат закрытой вкладки (сценарий `tab-return`): страница грузится дважды.
     page("tab-return"),
+    // 13b2: субтитры, которые страница берёт сама (сценарий `page-subtitles`).
+    page("subtitles-track"),
+    page("subtitles-fetch"),
+    page("subtitles-xhr"),
+    page("subtitles-text-track"),
     // 12a: режим 2 «автозапуск» (сценарий `auto-handoff`): страницы ждут настоящего клика по Play.
     page("auto-film"),
     page("auto-clip"),

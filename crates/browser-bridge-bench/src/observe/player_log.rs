@@ -349,6 +349,18 @@ impl PlayerLog {
             .collect())
     }
 
+    /// Дочитывает файл до конца и возвращает все строки с подстрокой `needle` за ВСЁ время
+    /// (курсор ожидания не трогает): по ним судят события, которые случились не по одному разу.
+    pub fn snapshot_lines_containing(&mut self, needle: &str) -> Result<Vec<String>, ObserveError> {
+        self.refresh()?;
+        Ok(self
+            .lines
+            .iter()
+            .filter(|line| line.contains(needle))
+            .cloned()
+            .collect())
+    }
+
     /// Наибольшее `loads=` среди всех сводок воспроизведения за ВСЁ время (курсор ожидания не
     /// трогает). `None` — сводок с этим полем ещё не было.
     pub fn snapshot_max_loads(&mut self) -> Result<Option<u64>, ObserveError> {

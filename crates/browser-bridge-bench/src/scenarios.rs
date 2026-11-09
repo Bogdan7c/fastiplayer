@@ -28,6 +28,7 @@ mod page_catalog;
 mod page_ends;
 mod page_filter;
 mod page_return;
+mod page_subtitles;
 mod pages;
 mod player_commands;
 mod replay;
@@ -159,6 +160,21 @@ pub fn auto_handoff_page_ids() -> Vec<&'static str> {
 /// `seekable`, после закрытия окна плеера элемент стоит у края эфира.
 pub fn run_hls_live(stand: &Stand, browser: BrowserKind) -> StepResult {
     hls_live::run(stand, browser)
+}
+
+/// Субтитры страницы (13b2): `<track>`, `fetch`, XHR и `addTextTrack` доходят до плеера, слой
+/// субтитров лёг на кадры (все страницы или выбранные `--page`).
+pub fn run_page_subtitles(
+    stand: &Stand,
+    browser: BrowserKind,
+    filter: &PageFilter,
+) -> Vec<StepResult> {
+    page_subtitles::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `page-subtitles` (для проверки `--page` в командной строке).
+pub fn page_subtitles_page_ids() -> Vec<&'static str> {
+    page_subtitles::page_ids()
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».

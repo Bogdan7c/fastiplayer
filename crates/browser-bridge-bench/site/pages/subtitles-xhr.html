@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>subtitles-xhr</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>subtitles-xhr</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { runMseSubtitlesPage, subtitleUrl } from '../lib/subtitles-page-kit.js';
+
+/** Скачивает адрес через XMLHttpRequest с заданным `responseType`; возвращает `response`. */
+function download(url, responseType) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('GET', url);
+    request.responseType = responseType;
+    request.onload = () => (request.status === 200 ? resolve(request.response) : reject(new Error(`status ${request.status}`)));
+    request.onerror = () => reject(new Error('network error'));
+    request.send();
+  });
+}
+
+// Старые плееры сайтов качают субтитры XHR. Сначала `.srt` с `responseType=""` (текст), затем
+// json3 YouTube с `responseType="json"` (объект). Дорожки две; включённой остаётся скачанная ПОСЛЕДНЕЙ
+// (json3), srt — нет (решение 271).
+await runScenario('subtitles-xhr', async (ctx) => {
+  await runMseSubtitlesPage(ctx, {
+    loadSubtitles: async (context) => {
+      const text = await download(subtitleUrl(location.origin, 'xhr.srt'), '');
+      context.check('srt-downloaded-as-text', typeof text === 'string' && text.includes('-->'), `bytes=${text.length}`);
+      const json3Document = await download(subtitleUrl(location.origin, 'xhr.json3'), 'json');
+      context.check('json3-downloaded-as-object', json3Document?.wireMagic === 'pb3' && json3Document.events.length > 0,
+        `events=${json3Document?.events?.length}`);
+    },
+  });
+});
+</script>
+</body>
+</html>

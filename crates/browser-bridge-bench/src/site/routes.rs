@@ -177,7 +177,8 @@ fn method_not_allowed() -> Response {
 }
 
 fn serve_site_file(context: &RouteContext, relative: &str, range: Option<&str>) -> Response {
-    serve_under(&context.shared.site_root, relative, range)
+    // CORS нужен субтитрам: страница главного origin качает `.vtt` со ВТОРОГО origin (`subtitles-fetch`).
+    with_cors(serve_under(&context.shared.site_root, relative, range))
 }
 
 /// Файл внутри корня: небезопасный путь — 400 (его никто честный не пришлёт), нет файла — 404.

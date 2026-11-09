@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>subtitles-text-track</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>subtitles-text-track</h1>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { runMseSubtitlesPage, waitForCondition } from '../lib/subtitles-page-kit.js';
+
+/** Реплика каждые 2 с: номера `from`..`to` (не включая `to`). */
+function addCues(track, from, to) {
+  for (let index = from; index < to; index += 1) {
+    track.addCue(new VTTCue(2 * index, 2 * index + 2, `Live line ${index + 1}`));
+  }
+}
+/** Реплик в первой порции (покрывают 0–40 с) и всего (0–300 с). */
+const FIRST_CUES = 20;
+const ALL_CUES = 150;
+/** Без робота (обычный прогон страницы) остальные реплики приходят через столько мс. */
+const STANDALONE_DELAY_MS = 1500;
+
+// Как hls.js: `video.addTextTrack` без файла, реплики кладутся в дорожку по ходу игры. Экстеншен
+// собирает из реплик WebVTT и отдаёт плееру; растущую дорожку пересылает целиком (замена тем же
+// номером). Включена: режим `showing`.
+await runScenario('subtitles-text-track', async (ctx) => {
+  let track = null;
+  const addRest = () => addCues(track, FIRST_CUES, ALL_CUES);
+  await runMseSubtitlesPage(ctx, {
+    loadSubtitles: async (context, session) => {
+      track = session.video.addTextTrack('subtitles', 'English', 'en');
+      track.mode = 'showing';
+      addCues(track, 0, FIRST_CUES);
+      await waitForCondition(context, 'text-track-showing', () => track.mode === 'showing',
+        () => `mode=${track.mode}, cues=${track.cues?.length}`);
+      // Вне режима передачи (нет робота) дорастить дорожку сами.
+      if (!context.params.handoff) {
+        await new Promise((resolve) => setTimeout(resolve, STANDALONE_DELAY_MS));
+        addRest();
+        context.check('text-track-grew', track.cues.length === ALL_CUES, `cues=${track.cues.length}`);
+      }
+    },
+    hooks: {
+      // Робот шлёт после передачи: страница докладывает остальные реплики (бóльший документ).
+      'add-cues': async (context) => {
+        addRest();
+        context.check('text-track-grew', track.cues.length === ALL_CUES, `cues=${track.cues.length}`);
+      },
+    },
+  });
+});
+</script>
+</body>
+</html>

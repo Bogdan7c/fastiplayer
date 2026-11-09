@@ -37,6 +37,11 @@
 //! `--auto-play ask-first` — включает со словом «Ask first» для нового сайта (на видео — предложение «Ask»).
 //! Настройка пишется в `storage.local` экстеншена сразу после запуска браузера, до первой страницы.
 //!
+//! Сайты, где видео стартует только по клику (Ashdi, Tortuga, 13b2): `--click-at <x>,<y>` — клик настоящей
+//! мышью стенда по точке невидимого экрана после паузы `--wait`, до передачи. `--screenshots <каталог>` —
+//! снимки невидимого экрана (до клика, после клика и каждые 15 с после передачи) копируются в каталог:
+//! по первому снимку находят точку кнопки play, по остальным видно окно плеера. Только `--display virtual`.
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
@@ -49,11 +54,13 @@ use browser_bridge_bench::browsers::{
     BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOutcome, LaunchOptions, TabHandle,
     launch,
 };
+use browser_bridge_bench::desktop_input::{DesktopInput, Point};
 use browser_bridge_bench::environment::{
     BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
 };
 use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
+use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
 
 /// Строки журнала плеера, которые интересны человеку.
@@ -72,6 +79,8 @@ const INTERESTING_LINES: &[&str] = &[
     "The page came back",
     "could not be brought back",
     "about the page reopen",
+    // Субтитры страницы (13b2): документ дошёл до склада плеера, дорожка разобрана или отвергнута.
+    "Page subtitle",
 ];
 /// Сколько окно стоит на паузе до закрытия вкладки и сколько сирота ждёт до play (`--tab-return-after`).
 const TAB_RETURN_PAUSE: Duration = Duration::from_secs(1);
@@ -82,6 +91,10 @@ const SKIP_OFFER: &str = "skip=skip";
 const HAND_OFF_RETRY: Duration = Duration::from_secs(1);
 /// Сколько даём странице прогрева.
 const WARM_UP: Duration = Duration::from_secs(5);
+/// Сколько ждём после клика по play, прежде чем снять экран и звать передачу: сайт заводит видео.
+const AFTER_CLICK: Duration = Duration::from_secs(3);
+/// Как часто снимаем экран после передачи (`--screenshots`).
+const SCREENSHOT_EVERY: Duration = Duration::from_secs(15);
 /// Шаг чтения журнала.
 const LOG_POLL: Duration = Duration::from_millis(200);
 
@@ -142,6 +155,23 @@ struct Arguments {
     tab_return_after: Option<Duration>,
     /// Режим 2: `None` — настройка экстеншена по умолчанию (выключен).
     auto_play: Option<AutoPlay>,
+    /// Клик мышью стенда по этой точке невидимого экрана перед передачей (`None` — не кликать).
+    click_at: Option<Point>,
+    /// Куда копировать снимки невидимого экрана (`None` — не снимать).
+    screenshots: Option<PathBuf>,
+}
+
+/// Точка экрана из `x,y`.
+fn parse_point(value: &str) -> Result<Point, String> {
+    let (x, y) = value
+        .split_once(',')
+        .ok_or_else(|| format!("--click-at expects x,y, got {value}"))?;
+    let coordinate = |text: &str| {
+        text.trim()
+            .parse::<u32>()
+            .map_err(|error| format!("--click-at {value}: {error}"))
+    };
+    Ok(Point::new(coordinate(x)?, coordinate(y)?))
 }
 
 /// Как включить режим 2 «автозапуск» (12b) в свежем профиле.
@@ -182,6 +212,8 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut extension_arrival = ExtensionArrival::AtStart;
     let mut tab_return_after = None;
     let mut auto_play = None;
+    let mut click_at = None;
+    let mut screenshots = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -224,6 +256,8 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--wait", _) => {
                 wait_seconds = value.parse().map_err(|error| format!("--wait: {error}"))?;
             }
+            ("--click-at", _) => click_at = Some(parse_point(&value)?),
+            ("--screenshots", _) => screenshots = Some(PathBuf::from(value)),
             _ => return Err(format!("unknown argument {name} {value}")),
         }
     }
@@ -243,7 +277,33 @@ fn parse_arguments() -> Result<Arguments, String> {
         extension_arrival,
         tab_return_after,
         auto_play,
+        click_at,
+        screenshots,
     })
+}
+
+/// Снимки невидимого экрана для человека: файл снимается в каталог прогона и копируется в `--screenshots`.
+struct Screenshots<'env> {
+    capture: ScreenCapture<'env>,
+    destination: PathBuf,
+}
+
+impl Screenshots<'_> {
+    /// Снять экран с меткой; сбой печатается и прогон не рвёт: это помощник человека.
+    fn take(&self, label: &str) {
+        let shot = match self.capture.take_screenshot(label) {
+            Ok(shot) => shot,
+            Err(error) => {
+                println!("screenshot {label} failed: {error}");
+                return;
+            }
+        };
+        let target = self.destination.join(shot.file_name().unwrap_or_default());
+        match fs::copy(&shot, &target) {
+            Ok(_) => println!("screenshot: {}", target.display()),
+            Err(error) => println!("screenshot {label}: copy failed: {error}"),
+        }
+    }
 }
 
 /// Новые строки журнала после `offset`; неполная последняя строка ждёт следующего чтения.
@@ -329,9 +389,34 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         },
         player_rust_log: "info".to_owned(),
         work_root: std::env::temp_dir(),
-        desktop: DesktopSetup::default(),
+        // Мышь и снимки экрана стенда — только когда их попросили: обычный прогон их не трогает.
+        desktop: if arguments.click_at.is_some() || arguments.screenshots.is_some() {
+            DesktopSetup::pointer_stand()
+        } else {
+            DesktopSetup::default()
+        },
     })
     .map_err(|error| error.to_string())?;
+    if (arguments.click_at.is_some() || arguments.screenshots.is_some())
+        && arguments.display != DisplayTarget::Virtual
+    {
+        return Err("--click-at and --screenshots work only with --display virtual".to_owned());
+    }
+    let screenshots = match &arguments.screenshots {
+        Some(destination) => {
+            fs::create_dir_all(destination).map_err(|error| format!("--screenshots: {error}"))?;
+            let capture = ScreenCapture::new(
+                &environment,
+                &ScreenCapture::icons_dir(&repository, arguments.browser),
+            )
+            .map_err(|error| error.to_string())?;
+            Some(Screenshots {
+                capture,
+                destination: destination.clone(),
+            })
+        }
+        None => None,
+    };
     environment
         .connect_browser(arguments.browser)
         .map_err(|error| error.to_string())?;
@@ -392,6 +477,24 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let (tab, url) = opened.ok_or("nothing to open")?;
     // Пауза до передачи: реклама в начале ролика должна успеть начаться.
     sleep(Duration::from_secs(arguments.wait_seconds));
+    if let Some(shots) = &screenshots {
+        shots.take("before-click");
+    }
+    if let Some(point) = arguments.click_at {
+        let endpoint = environment
+            .desktop_endpoint()
+            .map_err(|error| error.to_string())?;
+        let input = DesktopInput::connect(&endpoint).map_err(|error| error.to_string())?;
+        input
+            .mouse()
+            .click_at(point)
+            .map_err(|error| error.to_string())?;
+        println!("clicked at {},{}", point.x, point.y);
+        sleep(AFTER_CLICK);
+        if let Some(shots) = &screenshots {
+            shots.take("after-click");
+        }
+    }
     let late_extension = match &arguments.extension_arrival {
         ExtensionArrival::AtStart => None,
         ExtensionArrival::LateInstall => Some(built_extension),
@@ -425,7 +528,14 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         .tab_return_after
         .map(|after| Instant::now() + after);
     let mut tab_closed = false;
+    let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
     while started && Instant::now() < deadline {
+        if let Some(shots) = &screenshots
+            && Instant::now() >= next_screenshot
+        {
+            shots.take("after-hand-off");
+            next_screenshot = Instant::now() + SCREENSHOT_EVERY;
+        }
         if !tab_closed && tab_return_at.is_some_and(|at| Instant::now() >= at) {
             tab_closed = true;
             close_tab_and_ask_back(browser.as_mut(), &tab, &control);

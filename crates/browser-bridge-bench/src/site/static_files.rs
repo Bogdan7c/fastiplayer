@@ -26,7 +26,10 @@ pub(super) fn content_type_for(path: &Path) -> &'static str {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
-        "json" => "application/json",
+        // `json3` — формат субтитров YouTube (страница `subtitles-xhr`), по сути JSON.
+        "json" | "json3" => "application/json",
+        // SubRip: типа нет в IANA, но так отдают .srt настоящие сайты.
+        "srt" => "application/x-subrip; charset=utf-8",
         "vtt" => "text/vtt; charset=utf-8",
         "m3u8" => "application/vnd.apple.mpegurl",
         "mp4" | "m4s" | "m4v" => "video/mp4",
@@ -197,6 +200,12 @@ mod tests {
             "application/vnd.apple.mpegurl"
         );
         assert_eq!(content_type_for(Path::new("a.m4s")), "video/mp4");
+        // Субтитры страниц `subtitles-*`: SubRip и json3 YouTube.
+        assert_eq!(
+            content_type_for(Path::new("a.srt")),
+            "application/x-subrip; charset=utf-8"
+        );
+        assert_eq!(content_type_for(Path::new("a.json3")), "application/json");
         assert_eq!(
             content_type_for(Path::new("a.unknown")),
             "application/octet-stream"
