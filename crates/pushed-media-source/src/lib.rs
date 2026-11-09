@@ -62,6 +62,7 @@ mod lane;
 mod lane_demuxer;
 mod live_timeline;
 mod mailbox;
+mod media_bitrate;
 mod monitor;
 mod page_removal;
 mod page_seek;
@@ -88,6 +89,7 @@ pub use download_cut::{DownloadCutOutcome, DownloadCutReport, PlayableEnd};
 pub use error::{LaneLayoutProblem, PushedStreamError, PushedStreamFailureClass};
 pub use framing::{FramingError, SegmentKind};
 pub use lane::{AppendOutcome, LaneId};
+pub use media_bitrate::MediaBitrate;
 pub use monitor::{PushedStreamMonitor, ShelfSeekOutlook};
 pub use page_removal::{
     PageRemovalOutcome, PageRemovalReport, PageRemovedRange, PageRemovedRangeEnd,

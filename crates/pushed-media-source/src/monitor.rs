@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::buffer_window::BufferStatus;
+use crate::media_bitrate::MediaBitrate;
 use crate::page_seek::PageSeekRequest;
 use crate::stream_buffer::StreamBuffer;
 
@@ -65,6 +66,19 @@ impl PushedStreamMonitor {
     /// перемотка самой страницы, пришедшая позже, её заменяет — последняя побеждает.
     pub fn note_page_seek_requested(&self, target: Duration) {
         self.buffer.note_page_seek(target);
+    }
+
+    /// «Вес» видео около позиции плеера: байты сегментов видео на полке ÷ медиавремя,
+    /// которое они покрывают (окно — [`crate::PushedSourcePolicy::bitrate_window`]
+    /// до позиции плеера, включая сегмент под позицией). Решение владельца 277:
+    /// это размер того, что показывается, а не скорость скачивания.
+    ///
+    /// `None` — «неизвестно»: позиции ещё нет, нет полосы с видео, у потока нет
+    /// меток времени (MPEG-TS) или нечего мерить. У полосы, где видео смуксировано
+    /// со звуком, число включает и звук. Ничего не меняет.
+    #[must_use]
+    pub fn video_bitrate_near_position(&self) -> Option<MediaBitrate> {
+        self.buffer.video_bitrate_near_position()
     }
 
     /// Одна ли это перемотка: цели `first` и `second` совпадают в пределах

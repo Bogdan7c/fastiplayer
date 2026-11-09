@@ -111,6 +111,13 @@ const SEEK_SETTLE_WINDOW: Duration = Duration::from_secs(10);
 /// «в другое место» (шаг клавиш — секунды).
 const PAGE_SEEK_MATCH_TOLERANCE: Duration = Duration::from_millis(250);
 
+/// Окно «веса потока»: сколько медиавремени до позиции плеера берётся в расчёт
+/// битрейта видео (`PushedStreamMonitor::video_bitrate_near_position`, решение 277).
+/// 10 с — достаточно, чтобы сгладить разброс размеров соседних сегментов (ключевой
+/// кадр тяжелее обычных), и достаточно мало, чтобы после переключения качества
+/// страницей число быстро следовало за тем, что сейчас на экране.
+const BITRATE_WINDOW: Duration = Duration::from_secs(10);
+
 /// Ошибка сборки пределов: число вне допустимого диапазона компонента.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PushedSourcePolicyError {
@@ -126,6 +133,9 @@ pub enum PushedSourcePolicyError {
     /// Окно буфера с нулевым запасом вперёд: источник всегда был бы «полон».
     #[error("the buffer window must keep more than zero seconds ahead")]
     ZeroBufferAhead,
+    /// Нулевое окно битрейта: расчёт «вес ÷ время» остался бы без времени.
+    #[error("the bitrate window must cover more than zero seconds")]
+    ZeroBitrateWindow,
 }
 
 /// Пределы и сроки одного потока.
@@ -161,6 +171,8 @@ pub struct PushedSourcePolicy {
     shelf_open_tail_reach: Duration,
     /// Сколько после посадки перемотки не верить позиции, далёкой от цели.
     seek_settle_window: Duration,
+    /// Сколько медиавремени до позиции плеера идёт в расчёт битрейта видео.
+    bitrate_window: Duration,
 }
 
 impl PushedSourcePolicy {
@@ -198,6 +210,7 @@ impl PushedSourcePolicy {
             page_seek_match_tolerance: PAGE_SEEK_MATCH_TOLERANCE,
             shelf_open_tail_reach: SHELF_OPEN_TAIL_REACH,
             seek_settle_window: SEEK_SETTLE_WINDOW,
+            bitrate_window: BITRATE_WINDOW,
         })
     }
 
@@ -218,6 +231,24 @@ impl PushedSourcePolicy {
         }
         self.buffer_window = window;
         Ok(self)
+    }
+
+    /// Тот же набор с другим окном расчёта битрейта видео (умолчание — 10 с).
+    pub fn with_bitrate_window(
+        mut self,
+        window: Duration,
+    ) -> Result<Self, PushedSourcePolicyError> {
+        if window.is_zero() {
+            return Err(PushedSourcePolicyError::ZeroBitrateWindow);
+        }
+        self.bitrate_window = window;
+        Ok(self)
+    }
+
+    /// Действующее окно расчёта битрейта видео.
+    #[must_use]
+    pub const fn bitrate_window(&self) -> Duration {
+        self.bitrate_window
     }
 
     /// Действующее окно буфера.
@@ -336,6 +367,7 @@ impl PushedSourcePolicy {
             full_at_held_bytes: self.buffer_full_at_held_bytes(),
             lane_without_video_reserve_bytes: LANE_WITHOUT_VIDEO_RESERVE_BYTES,
             seek_settle_window: self.seek_settle_window,
+            bitrate_window: self.bitrate_window,
         }
     }
 }

@@ -51,6 +51,8 @@ mod neighbourhood;
 mod removal;
 #[path = "shelf_tracks.rs"]
 mod tracks;
+#[path = "shelf_weight.rs"]
+mod weight;
 
 use feed_index::FeedCandidates;
 use forgotten::ForgottenSpans;

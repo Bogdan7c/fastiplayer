@@ -53,6 +53,7 @@ mod delivery_progress;
 mod eviction;
 mod lane_norm;
 mod live;
+mod media_weight;
 mod page_removal;
 mod playable_end;
 mod position;
@@ -209,6 +210,8 @@ pub(crate) struct StreamBuffer {
     seek_match_tolerance: Duration,
     /// Сколько после посадки перемотки не верить позициям далеко от цели.
     seek_settle_window: Duration,
+    /// Сколько медиавремени до позиции берёт расчёт веса видео (модуль `media_weight`).
+    bitrate_window: Duration,
 }
 
 /// Настройки буфера потока (из [`crate::PushedSourcePolicy`]).
@@ -225,6 +228,8 @@ pub(crate) struct StreamBufferRules {
     pub(crate) lane_without_video_reserve_bytes: usize,
     /// Сколько после посадки перемотки не верить позициям далеко от цели.
     pub(crate) seek_settle_window: Duration,
+    /// Окно расчёта битрейта видео до позиции плеера.
+    pub(crate) bitrate_window: Duration,
 }
 
 impl StreamBuffer {
@@ -245,6 +250,7 @@ impl StreamBuffer {
             lane_without_video_reserve_bytes: rules.lane_without_video_reserve_bytes,
             seek_match_tolerance: rules.page_seek_match_tolerance,
             seek_settle_window: rules.seek_settle_window,
+            bitrate_window: rules.bitrate_window,
         }
     }
 
@@ -537,3 +543,7 @@ mod mirror_tests;
 #[cfg(test)]
 #[path = "stream_buffer_settle_tests.rs"]
 mod settle_tests;
+
+#[cfg(test)]
+#[path = "stream_buffer_weight_tests.rs"]
+mod weight_tests;

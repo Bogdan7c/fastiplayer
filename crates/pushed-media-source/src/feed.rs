@@ -121,8 +121,9 @@ impl EpisodeKey {
         }
     }
 
-    /// Можно ли играть сегменты с этими ключами одним демуксером.
-    fn same_episode(&self, other: &Self) -> bool {
+    /// Можно ли играть сегменты с этими ключами одним демуксером. Тот же ключ — то же
+    /// качество: этим пользуется и вес полки (`shelf_weight`, 13c).
+    pub(crate) fn same_episode(&self, other: &Self) -> bool {
         let same_initialization = match (&self.initialization, &other.initialization) {
             (Some(mine), Some(theirs)) => mine.is_same_segment(theirs),
             (None, None) => true,

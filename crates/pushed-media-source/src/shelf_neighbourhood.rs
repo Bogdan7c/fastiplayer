@@ -62,6 +62,11 @@ pub(super) struct ShapeBounds {
 }
 
 impl ShapeBounds {
+    /// Верхняя оценка: на сколько микросекунд конец сегмента отстоит от его начала.
+    pub(super) const fn longest_extent_micros(self) -> i64 {
+        self.longest_extent_micros
+    }
+
     /// Расширяет оценки под сегмент с началом показа `start` и границами `extent`.
     pub(super) fn widen(&mut self, start: MediaTime, extent: Extent) {
         let extent_micros = extent.latest.as_micros().saturating_sub(start.as_micros());
