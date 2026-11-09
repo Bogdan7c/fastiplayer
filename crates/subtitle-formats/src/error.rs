@@ -48,4 +48,13 @@ pub enum SubtitleLoadError {
     /// TTML: структура превысила лимиты (глубина, число токенов, атрибутов, текста или листьев).
     #[error("TTML file exceeds the structure limits")]
     TtmlTooComplex,
+    /// json3: файл не является корректным JSON. Содержимое файла в сообщение не попадает.
+    #[error("json3 file is not well-formed JSON")]
+    MalformedJson3,
+    /// json3: JSON корректен, но это не json3 (корень не объект с `events` или `wireMagic`).
+    #[error("file is not a json3 (YouTube JSON captions) document")]
+    NotJson3,
+    /// json3: вложенность JSON превысила лимит.
+    #[error("json3 file exceeds the nesting limit")]
+    Json3TooComplex,
 }

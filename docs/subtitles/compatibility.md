@@ -335,6 +335,24 @@ Parser: `crates/subtitle-formats/src/srv3/` (XML is read through `bounded-xml-re
 
 Word reveal (`TextSpan::reveal_at`) also works for WebVTT karaoke timestamps (`<00:00:01.500>`). ASS karaoke is a separate path and is unchanged.
 
+## YouTube json3 (session 13b1)
+
+Parser: `crates/subtitle-formats/src/json3/` (JSON is read through `serde_json`). json3 is the JSON form of the same data as srv3, so the reader only fills the existing srv3 raw model and the whole srv3 pipeline (timing, lines, rolling windows, placement, word reveal) is reused unchanged; a test proves that equivalent json3 and srv3 documents give identical events. `sniff_text_subtitle_format` recognises a document whose first significant character is `{` and whose first 4 KiB contain the key `"wireMagic"` or `"events"`. Not searched for as a sidecar file (tracks arrive from the web page).
+
+| json3 field | srv3 equivalent / status |
+|---|---|
+| `events[]` with `segs` (`tStartMs`, `dDurationMs`, `wWinId`, `wpWinPosId`, `wsWinStyleId`, `pPenId`, `aAppend`) | Paragraph `<p t d w wp ws p a>` |
+| `events[]` with `id` and without `segs` | Window definition `<w id wp ws>` |
+| `segs[]` (`utf8`, `tOffsetMs`, `pPenId`; `acAsrConf` ignored silently) | Word `<s t p>` (absolute `reveal_at`); `\n` inside `utf8` starts a new line |
+| `pens[]` (`bAttr`, `iAttr`, `uAttr`, `fcForeColor` / `bcBackColor` as integer `0xRRGGBB`, `foForeAlpha`, `boBackAlpha`, `szPenSize`) | `<pen>`; the array index is the id |
+| `pens[]` `fsFontStyle`, `etEdgeType`, `ecEdgeColor`, `ofOffset`, unknown fields | Ignored; each such pen counted once in `ignored_style_rules` |
+| `wsWinStyles[]` `juJustifCode` | `<ws ju>`; `mhModeHint`, `pdPrintDir`, `sdScrollDir` ignored and counted |
+| `wpWinPositions[]` `apPoint`, `ahHorPos`, `avVerPos`, `rcRows` | `<wp ap ah av rc>`; `ccCols` ignored and counted |
+| Not an object, no `events` array and no `wireMagic` | `NotJson3`; invalid JSON: `MalformedJson3`; nesting deeper than 16 levels: `Json3TooComplex` (stricter than the `serde_json` limit of 128); more events than `max_events`: `TooManyEvents` |
+| Unreadable event field (e.g. a string `tStartMs`), non-object event | Skipped and counted in the parse report, like srv3 |
+
+YouTube does not publish a json3 specification. The layout was checked against real files (2026-11-09): manual and auto-generated English captions of one public video were downloaded in both json3 and srv3, and the parser gives identical events for each pair (315/315 manual, 335/335 auto-generated with a two-row rolling window and per-word reveal).
+
 ## TTML / IMSC (session 13)
 
 Parser: `crates/subtitle-formats/src/ttml/` (XML through `bounded-xml-reader`, budgets derived from `SubtitleParseLimits`, like srv3). `sniff_text_subtitle_format` recognises a root `tt` that declares the namespace `http://www.w3.org/ns/ttml` (with or without prefix, BOM, XML declaration). Input must be UTF-8 or UTF-16 with BOM (decoded before XML reading); the primary source is W3C TTML2 / IMSC 1.1 Text Profile, `imscjs` was used as a behaviour reference only.

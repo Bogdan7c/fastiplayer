@@ -373,7 +373,14 @@ SUBTITLE_CORE_ALLOWED_DEPENDENCIES = frozenset({"oxilangtag", "thiserror"})
 
 # Парсеры текстовых субтитров получают только модель, декодирование и typed errors.
 SUBTITLE_FORMATS_ALLOWED_DEPENDENCIES = frozenset(
-    {"subtitle-core", "encoding_rs", "chardetng", "thiserror", "bounded-xml-reader"}
+    {
+        "subtitle-core",
+        "encoding_rs",
+        "chardetng",
+        "thiserror",
+        "bounded-xml-reader",
+        "serde_json",
+    }
 )
 
 # Декодер PGS (Blu-ray): только модель субтитров и typed errors; ни GPU, ни UI, ни контейнера.

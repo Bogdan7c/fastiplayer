@@ -13,12 +13,12 @@
 //! `3` (srv1/srv2 — другая структура) — фатальная ошибка `NotSrv3`.
 
 mod lines;
-mod model;
-mod pen;
+pub(crate) mod model;
+pub(crate) mod pen;
 mod reader;
 mod rolling;
 mod timing;
-mod window;
+pub(crate) mod window;
 
 use std::collections::BTreeMap;
 
@@ -68,15 +68,24 @@ pub(crate) fn parse_srv3(
     limits: &SubtitleParseLimits,
 ) -> Result<ParsedSubtitleDocument, SubtitleLoadError> {
     let document = reader::read_document(text, limits)?;
+    build_parsed_document(&document, limits)
+}
+
+/// Общая часть конвейера: сырая модель -> события. Её же использует json3
+/// (`crate::json3`): формат другой, а правила времени, окон и строк те же.
+pub(crate) fn build_parsed_document(
+    document: &RawDocument,
+    limits: &SubtitleParseLimits,
+) -> Result<ParsedSubtitleDocument, SubtitleLoadError> {
     let mut report = SubtitleParseReport::new(limits.max_reported_issues);
     report.record_ignored_style_rules(document.ignored_style_items);
-    let paragraphs = timed_paragraphs(&document, &mut report);
+    let paragraphs = timed_paragraphs(document, &mut report);
 
     let mut events: Vec<SubtitleEvent> = Vec::new();
     // Окна (`w`) собираются вместе; абзацы вне окон показываются каждый сам по себе.
     let mut windows: BTreeMap<u32, Vec<ScheduledParagraph<'_>>> = BTreeMap::new();
     for timed in paragraphs {
-        let scheduled = schedule(timed, &document);
+        let scheduled = schedule(timed, document);
         match scheduled.timed.raw.window_id {
             Some(window_id) => windows.entry(window_id).or_default().push(scheduled),
             // Одиночный абзац — окно из одного абзаца без ограничения строк: одно событие на
@@ -94,7 +103,7 @@ pub(crate) fn parse_srv3(
     for (window_id, mut window_paragraphs) in windows {
         window_paragraphs
             .sort_by_key(|paragraph| (paragraph.timed.start_ms, paragraph.timed.raw.ordinal));
-        let max_rows = window_row_limit(&document, window_id);
+        let max_rows = window_row_limit(document, window_id);
         let group = WindowGroup {
             paragraphs: window_paragraphs,
             max_rows,

@@ -12,6 +12,7 @@ mod document;
 mod embedded;
 mod encoding;
 mod error;
+mod json3;
 mod limits;
 mod load;
 mod report;

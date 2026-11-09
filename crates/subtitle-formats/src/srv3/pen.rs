@@ -10,7 +10,7 @@ const DEFAULT_SIZE_PERCENT: u32 = 100;
 
 /// Разобранное перо. Хранит только то, что модель умеет показывать.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct Pen {
+pub(crate) struct Pen {
     bold: bool,
     italic: bool,
     underline: bool,
@@ -22,9 +22,9 @@ pub(super) struct Pen {
 
 /// Перо и признак «в нём были атрибуты, которые мы не показываем».
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ParsedPen {
-    pub(super) pen: Pen,
-    pub(super) has_ignored_attributes: bool,
+pub(crate) struct ParsedPen {
+    pub(crate) pen: Pen,
+    pub(crate) has_ignored_attributes: bool,
 }
 
 impl Pen {
@@ -33,7 +33,7 @@ impl Pen {
     /// Неподдерживаемое (обводка `et/ec`, размер `sz` не 100%, стиль шрифта `fs`, ruby `rb`,
     /// `hg`, нечитаемые значения) не ломает перо: остальное применяется, а вызывающий код
     /// считает такое перо одним «проигнорированным правилом стиля».
-    pub(super) fn from_attributes<'attr>(
+    pub(crate) fn from_attributes<'attr>(
         attributes: impl IntoIterator<Item = (&'attr str, &'attr str)>,
     ) -> ParsedPen {
         let mut pen = Self::default();

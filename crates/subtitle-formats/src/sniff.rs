@@ -1,6 +1,6 @@
 //! Определение текстового формата по содержимому (расширению файла доверять нельзя).
 
-use crate::{ass, srt, srv3, ttml, webvtt};
+use crate::{ass, json3, srt, srv3, ttml, webvtt};
 
 /// Текстовые форматы, которые умеет разбирать этот crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -14,6 +14,8 @@ pub enum TextSubtitleFormat {
     Srv3,
     /// TTML / IMSC — XML-субтитры DASH и стриминга (`<tt xmlns="http://www.w3.org/ns/ttml">`).
     Ttml,
+    /// json3 — JSON-субтитры YouTube (`{"wireMagic":"pb3", ..., "events":[...]}`), модель как у srv3.
+    Json3,
 }
 
 /// Сколько первых строк первого блока проверяем на строку времени:
@@ -27,6 +29,7 @@ const SRT_TIMING_LINE_SEARCH_DEPTH: usize = 2;
 /// без учёта регистра.
 /// srv3: корневой элемент `<timedtext` (после BOM, объявления XML и комментариев).
 /// TTML: корень `tt` с пространством имён `http://www.w3.org/ns/ttml`.
+/// json3: первый значимый символ `{` и в начале текста ключ `"wireMagic"` или `"events"`.
 /// SRT: первый непустой блок содержит строку времени `start --> end` с валидными
 /// SRT-таймстемпами в одной из его первых двух строк.
 pub fn sniff_text_subtitle_format(text: &str) -> Option<TextSubtitleFormat> {
@@ -44,6 +47,9 @@ pub fn sniff_text_subtitle_format(text: &str) -> Option<TextSubtitleFormat> {
     }
     if ttml::has_ttml_signature(text) {
         return Some(TextSubtitleFormat::Ttml);
+    }
+    if json3::has_json3_signature(text) {
+        return Some(TextSubtitleFormat::Json3);
     }
     let first_block_lines = text
         .lines()

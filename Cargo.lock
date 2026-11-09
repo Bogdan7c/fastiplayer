@@ -5104,6 +5104,7 @@ dependencies = [
  "bounded-xml-reader",
  "chardetng",
  "encoding_rs",
+ "serde_json",
  "subtitle-core",
  "thiserror 2.0.18",
 ]

@@ -18,6 +18,8 @@ encoding_rs.workspace = true
 chardetng.workspace = true
 # Бюджетное чтение недоверенного XML (srv3): лимиты глубины, токенов и текста.
 bounded-xml-reader.workspace = true
+# Чтение недоверенного json3 (YouTube): лимит вложенности, затем разбор в сырую модель srv3.
+serde_json.workspace = true
 # Typed errors для фатальных ошибок загрузки файла субтитров.
 thiserror.workspace = true
 

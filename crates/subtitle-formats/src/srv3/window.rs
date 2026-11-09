@@ -19,20 +19,20 @@ pub(super) enum Justification {
 
 /// Стиль окна `<ws>`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct WindowStyle {
+pub(crate) struct WindowStyle {
     /// `ju`: 0 — слева, 1 — справа, 2 — по центру, 3 (по ширине) — как по центру.
     pub(super) justification: Option<Justification>,
 }
 
 /// Результат разбора `<ws>`: стиль и признак неподдерживаемых атрибутов.
-pub(super) struct ParsedWindowStyle {
-    pub(super) style: WindowStyle,
-    pub(super) has_ignored_attributes: bool,
+pub(crate) struct ParsedWindowStyle {
+    pub(crate) style: WindowStyle,
+    pub(crate) has_ignored_attributes: bool,
 }
 
 impl WindowStyle {
     /// Собирает стиль из атрибутов `<ws>`; `mh`, `pd`, `sd` и т. п. не поддерживаются.
-    pub(super) fn from_attributes<'attr>(
+    pub(crate) fn from_attributes<'attr>(
         attributes: impl IntoIterator<Item = (&'attr str, &'attr str)>,
     ) -> ParsedWindowStyle {
         let mut style = Self::default();
@@ -58,7 +58,7 @@ impl WindowStyle {
 
 /// Позиция окна `<wp>`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct WindowPosition {
+pub(crate) struct WindowPosition {
     /// `ap` 0..=8: якорная точка окна по сетке 3x3 (строки сверху вниз, столбцы слева направо).
     anchor_point: Option<u8>,
     /// `ah`: горизонталь якоря, % ширины видео.
@@ -70,9 +70,9 @@ pub(super) struct WindowPosition {
 }
 
 /// Результат разбора `<wp>`.
-pub(super) struct ParsedWindowPosition {
-    pub(super) position: WindowPosition,
-    pub(super) has_ignored_attributes: bool,
+pub(crate) struct ParsedWindowPosition {
+    pub(crate) position: WindowPosition,
+    pub(crate) has_ignored_attributes: bool,
 }
 
 /// Столбец якоря.
@@ -93,7 +93,7 @@ enum AnchorRow {
 
 impl WindowPosition {
     /// Собирает позицию из атрибутов `<wp>`; `cc` (число колонок) не поддерживается.
-    pub(super) fn from_attributes<'attr>(
+    pub(crate) fn from_attributes<'attr>(
         attributes: impl IntoIterator<Item = (&'attr str, &'attr str)>,
     ) -> ParsedWindowPosition {
         let mut position = Self::default();
