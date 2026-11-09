@@ -16,8 +16,8 @@
 // уже приходят на страницу от часов плеера, не чаще раза в `TRACK_GROWTH_CHECK_INTERVAL_MS`. Таймеры
 // не используются: скрытая вкладка Chromium будит их раз в минуту, а тики часов идут всегда.
 
-import { nameSubtitleDocumentByAddress } from "../../adapters/subtitle-naming/index.ts";
-import { labelOrNull, languageOrNull } from "../../adapters/subtitle-naming/language-tag.ts";
+import { nameSubtitleDocumentByAddress } from "../../adapters/registry/page-world.ts";
+import { labelOrNull, languageOrNull } from "../../adapters/capabilities/subtitle-naming/language-tag.ts";
 import type { PageSubtitleKey, PageSubtitleNaming } from "../../shared/page-subtitle-contract.ts";
 import type { ReferrerPolicyName } from "../../shared/referrer-policy.ts";
 import type { PageSubtitleDisplay } from "../../protocol/session/page-subtitles.ts";

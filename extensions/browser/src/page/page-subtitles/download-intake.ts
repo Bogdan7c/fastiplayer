@@ -5,7 +5,7 @@
 // и отбросить кусочки HLS (WebVTT с `X-TIMESTAMP-MAP`): это не дорожка, hls.js соберёт её в `TextTrack`,
 // а оттуда документ придёт репликами.
 
-import { nameSubtitleDocumentByAddress } from "../../adapters/subtitle-naming/index.ts";
+import { nameSubtitleDocumentByAddress } from "../../adapters/registry/page-world.ts";
 import { sniffSubtitleDocument } from "../../shared/subtitle-document-sniff.ts";
 import type { DownloadedSubtitleStore, StoredSubtitleDocument } from "./downloaded-store.ts";
 

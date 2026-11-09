@@ -1,7 +1,7 @@
 // Именование документа субтитров по адресу (13b2, решение 276): настоящие формы адресов YouTube и общий читатель.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { nameSubtitleDocumentByAddress, parseAddressParts, queryValueOf } from "../../src/adapters/subtitle-naming/index.ts";
+import { nameSubtitleDocumentByAddress, parseAddressParts, queryValueOf } from "../../src/adapters/registry/page-world.ts";
 
 /** Адрес timedtext в форме, в какой его шлёт плеер YouTube (идентификатор и подпись вымышлены). */
 const YOUTUBE_TIMEDTEXT = "https://www.youtube.com/api/timedtext?v=abcdefghijk&ei=XXXX&caps=asr&opi=112496729&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1760000000&sparams=ip,ipbits,expire,v,ei,caps,opi,xoaf&signature=ABCDEF.123456&key=yt8&lang=en";

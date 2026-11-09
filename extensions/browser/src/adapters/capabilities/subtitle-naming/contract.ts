@@ -3,7 +3,7 @@
 // Адаптер — чистая функция: по частям адреса возвращает, как назвать дорожку, или `null`
 // («не мой адрес»). Ни сети, ни DOM, ни состояния: его легко тестировать настоящими адресами сайта.
 
-import type { PageSubtitleNaming } from "../../shared/page-subtitle-contract.ts";
+import type { PageSubtitleNaming } from "../../../shared/page-subtitle-contract.ts";
 import type { AddressParts } from "./address-parts.ts";
 
 export interface SubtitleNamingAdapter {

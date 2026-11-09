@@ -1,7 +1,7 @@
 // Разбор чисел из текста страницы. Текст страницы враждебен: берём из него только целые числа и
 // сразу проверяем по лимитам протокола. Всё, что не лезет в лимиты, — «не знаем», а не ошибка.
 
-import { MAX_AD_COUNTDOWN_SECONDS, MAX_ADS_IN_POD, type AdPod, type AdSkip } from "../../protocol/index.ts";
+import { MAX_AD_COUNTDOWN_SECONDS, MAX_ADS_IN_POD, type AdPod, type AdSkip } from "../../../protocol/index.ts";
 
 /** Самый длинный текст-счётчик, который мы разбираем: длиннее — это уже не счётчик. */
 const MAX_COUNTER_TEXT_LENGTH = 48;

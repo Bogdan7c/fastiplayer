@@ -2,8 +2,8 @@
 // сбой читателя. Время фейковое; DOM — подделка из tests/adapters.
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { createYouTubeOrgans } from "../../src/adapters/ad-organs/youtube.ts";
-import type { AdElement, AdFramePlace, AdOrgans, PressSkipOutcome } from "../../src/adapters/ad-organs/index.ts";
+import { createYouTubeOrgans } from "../../src/adapters/sites/youtube/ad-organs.ts";
+import type { AdElement, AdFramePlace, AdOrgans, PressSkipOutcome } from "../../src/adapters/registry/isolated-world.ts";
 import type { PageAdState } from "../../src/protocol/index.ts";
 import { AD_READ_MIN_GAP_MS, AD_REPORT_WINDOW_MS, AD_REPORTS_PER_WINDOW, createAdWatch, type AdMutationWatcher } from "../../src/content/ad-watch.ts";
 import type { AdWatchReport } from "../../src/shared/ad-watch-contract.ts";

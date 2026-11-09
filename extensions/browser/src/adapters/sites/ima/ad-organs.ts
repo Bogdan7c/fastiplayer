@@ -2,10 +2,10 @@
 // читатель работает в том фрейме. Счётчика «N из M» в этом интерфейсе нет (`pod` всегда `unknown`),
 // отсчёт — текст-число, кнопка принимает `click()` (факт разведки), значит показанная кнопка — `available`.
 
-import type { PageAdState } from "../../protocol/index.ts";
-import { countdownFromText, hostMatches } from "./ad-text.ts";
-import type { AdElement, AdFramePlace, AdOrgans, AdPageView, PressSkipOutcome } from "./contract.ts";
-import { IMA_ORGANS } from "./selectors.ts";
+import type { PageAdState } from "../../../protocol/index.ts";
+import { countdownFromText, hostMatches } from "../../capabilities/ad-organs/ad-text.ts";
+import type { AdElement, AdFramePlace, AdOrgans, AdPageView, PressSkipOutcome } from "../../capabilities/ad-organs/contract.ts";
+import { IMA_ORGANS } from "./ad-selectors.ts";
 
 export function createImaOrgans(view: AdPageView): AdOrgans {
   /** Контейнер рекламы, если он показан. */

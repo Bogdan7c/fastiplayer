@@ -7,9 +7,9 @@
 //   всё равно машинный или перевод машинный — зрителю важно отличить от ручных субтитров автора;
 // - подписи в адресе нет: фон допишет «English (auto-generated)» из языка и флага.
 
-import { queryValueOf } from "./address-parts.ts";
-import type { SubtitleNamingAdapter } from "./contract.ts";
-import { languageOrNull } from "./language-tag.ts";
+import { queryValueOf } from "../../capabilities/subtitle-naming/address-parts.ts";
+import type { SubtitleNamingAdapter } from "../../capabilities/subtitle-naming/contract.ts";
+import { languageOrNull } from "../../capabilities/subtitle-naming/language-tag.ts";
 
 /** Корневые домены YouTube; поддомены (`www.`, `m.`, `music.`) тоже годятся. */
 const YOUTUBE_ROOT_DOMAINS: readonly string[] = ["youtube.com", "youtube-nocookie.com"];

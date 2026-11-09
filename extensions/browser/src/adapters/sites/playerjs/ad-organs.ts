@@ -7,10 +7,10 @@
 // Одно слово «Пропустити» без них рекламой не считается: оно может оказаться чем угодно на экране фильма.
 // `click()` по листу принимается (факт разведки), значит кнопка — `available`.
 
-import type { PageAdState } from "../../protocol/index.ts";
-import { adPodFromNumbers, countdownFromSeconds, normalizeText } from "./ad-text.ts";
-import type { AdElement, AdFramePlace, AdOrgans, AdPageView, PressSkipOutcome } from "./contract.ts";
-import { PLAYERJS_ORGANS } from "./selectors.ts";
+import type { PageAdState } from "../../../protocol/index.ts";
+import { adPodFromNumbers, countdownFromSeconds, normalizeText } from "../../capabilities/ad-organs/ad-text.ts";
+import type { AdElement, AdFramePlace, AdOrgans, AdPageView, PressSkipOutcome } from "../../capabilities/ad-organs/contract.ts";
+import { PLAYERJS_ORGANS } from "./ad-selectors.ts";
 
 /** Регулярное выражение из слов-данных; слова — только буквы и пробелы, но экранируем на всякий случай. */
 function alternation(words: readonly string[]): string {

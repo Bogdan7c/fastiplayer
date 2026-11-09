@@ -5,10 +5,10 @@
 // - скрытая кнопка — `unavailable`;
 // - `pressSkip` ничего не нажимает: показанная кнопка — `person_only`, нет кнопки — `no_button`.
 
-import type { PageAdState } from "../../protocol/index.ts";
-import { adPodFromCounterText, hostMatches } from "./ad-text.ts";
-import type { AdElement, AdFramePlace, AdOrgans, AdPageView, PressSkipOutcome } from "./contract.ts";
-import { YOUTUBE_ORGANS } from "./selectors.ts";
+import type { PageAdState } from "../../../protocol/index.ts";
+import { adPodFromCounterText, hostMatches } from "../../capabilities/ad-organs/ad-text.ts";
+import type { AdElement, AdFramePlace, AdOrgans, AdPageView, PressSkipOutcome } from "../../capabilities/ad-organs/contract.ts";
+import { YOUTUBE_ORGANS } from "./ad-selectors.ts";
 
 export function createYouTubeOrgans(view: AdPageView): AdOrgans {
   /** Плеер, если в нём идёт реклама. */

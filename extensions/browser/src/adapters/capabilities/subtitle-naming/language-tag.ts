@@ -3,7 +3,7 @@
 // Проверять, что это настоящий BCP 47, здесь не нужно: так фон решает сам и при неверном теге говорит
 // «язык не назван» (решение 276).
 
-import { MAX_PAGE_SUBTITLE_LANGUAGE_CHARS, MAX_PAGE_SUBTITLE_LABEL_CHARS } from "../../shared/page-subtitle-contract.ts";
+import { MAX_PAGE_SUBTITLE_LANGUAGE_CHARS, MAX_PAGE_SUBTITLE_LABEL_CHARS } from "../../../shared/page-subtitle-contract.ts";
 
 /** Язык: без пробелов по краям, 1..64 символа; иначе `null` («язык не назван»). */
 export function languageOrNull(raw: string | null): string | null {

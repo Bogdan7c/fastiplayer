@@ -1,10 +1,10 @@
 // Сборка наблюдения за рекламой на настоящих API браузера (изолированный мир, все фреймы). Логика —
-// в `ad-watch.ts` и читателях `src/adapters/ad-organs/`; здесь только переходники.
+// в `ad-watch.ts` и читателях `src/adapters/sites/*/ad-organs.ts`; здесь только переходники.
 //
 // До аренды от фона этот модуль не делает ничего: ни наблюдателей, ни таймеров, ни сообщений.
 
-import { createAllAdOrgans } from "../adapters/ad-organs/index.ts";
-import { createDomAdPageView } from "../adapters/ad-organs/dom-view.ts";
+import { createAllAdOrgans } from "../adapters/registry/isolated-world.ts";
+import { createDomAdPageView } from "../adapters/capabilities/ad-organs/dom-view.ts";
 import { parseArmAdWatchRequest, parsePressAdSkipRequest } from "../shared/ad-watch-validation.ts";
 import { browserApi } from "../shared/browser-api.ts";
 import { createAdWatch, type AdMutationWatcher } from "./ad-watch.ts";

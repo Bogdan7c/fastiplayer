@@ -21,7 +21,7 @@
 //
 // Окончательно «это субтитры» решает проверка содержимого (`sniffSubtitleDocument`), здесь только допуск.
 
-import { parseAddressParts, queryValueOf, type AddressParts } from "../../adapters/subtitle-naming/address-parts.ts";
+import { parseAddressParts, queryValueOf, type AddressParts } from "../../adapters/capabilities/subtitle-naming/address-parts.ts";
 import { MAX_PAGE_SUBTITLE_DOCUMENT_BYTES } from "../../protocol/limits.ts";
 
 /** Потолок размера документа: больше протокол не пропустит, поэтому и читать смысла нет. */

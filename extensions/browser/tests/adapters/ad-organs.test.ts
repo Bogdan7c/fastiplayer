@@ -1,10 +1,10 @@
 // Читатели органов рекламы по фикстурам DOM из фактов разведки 09d: что они говорят плееру и что нажимают.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createImaOrgans } from "../../src/adapters/ad-organs/ima.ts";
-import { createAllAdOrgans } from "../../src/adapters/ad-organs/index.ts";
-import { createPlayerJsOrgans } from "../../src/adapters/ad-organs/playerjs.ts";
-import { createYouTubeOrgans } from "../../src/adapters/ad-organs/youtube.ts";
+import { createImaOrgans } from "../../src/adapters/sites/ima/ad-organs.ts";
+import { createAllAdOrgans } from "../../src/adapters/registry/isolated-world.ts";
+import { createPlayerJsOrgans } from "../../src/adapters/sites/playerjs/ad-organs.ts";
+import { createYouTubeOrgans } from "../../src/adapters/sites/youtube/ad-organs.ts";
 import type { PageAdState } from "../../src/protocol/index.ts";
 import { parsePageAdState } from "../../src/shared/ad-watch-validation.ts";
 import { createFakeAdView, FakeNode, imaPage, OFFSCREEN_RECT, playerJsPage, youTubePage } from "./fake-ad-dom.ts";

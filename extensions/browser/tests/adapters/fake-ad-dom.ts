@@ -1,7 +1,7 @@
 // Маленькая подделка DOM для читателей рекламы: дерево узлов и взгляд `AdPageView` над ним.
 // Селекторы понимает только простые составные вида `tag#id.class.class` и `a b` не поддерживаются:
-// читатели ими и ограничены (см. src/adapters/ad-organs/selectors.ts).
-import type { AdElement, AdPageView, ElementRect } from "../../src/adapters/ad-organs/contract.ts";
+// читатели ими и ограничены (см. src/adapters/sites/*/ad-selectors.ts).
+import type { AdElement, AdPageView, ElementRect } from "../../src/adapters/capabilities/ad-organs/contract.ts";
 
 export interface FakeNodeOptions {
   readonly id?: string;

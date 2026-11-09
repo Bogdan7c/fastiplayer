@@ -5,8 +5,8 @@
 // Инвариант 1 (страница — враг): наружу из читателя выходят только числа и метки `PageAdState`.
 // Текст страницы дальше читателя не уходит.
 
-import type { PageAdState } from "../../protocol/index.ts";
-import type { PressSkipOutcome } from "../../shared/ad-watch-contract.ts";
+import type { PageAdState } from "../../../protocol/index.ts";
+import type { PressSkipOutcome } from "../../../shared/ad-watch-contract.ts";
 
 export type { PressSkipOutcome };
 

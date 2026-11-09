@@ -26,7 +26,7 @@
 // считаем «плашки нет» и идём дальше. Видео при этом продолжает играть.
 
 import type { PageAdState } from "../protocol/index.ts";
-import type { AdElement, AdFramePlace, AdOrgans, PressSkipOutcome } from "../adapters/ad-organs/index.ts";
+import type { AdElement, AdFramePlace, AdOrgans, PressSkipOutcome } from "../adapters/registry/isolated-world.ts";
 import { AD_WATCH_REPORT_KIND, type AdWatchReport } from "../shared/ad-watch-contract.ts";
 import type { RelayTimers } from "./relay.ts";
 
