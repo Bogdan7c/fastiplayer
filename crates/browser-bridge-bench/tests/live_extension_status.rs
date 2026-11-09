@@ -16,6 +16,7 @@ use browser_bridge_bench::browsers::{
 };
 use browser_bridge_bench::environment::{
     BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
+    PlayerTestVariables,
 };
 use browser_bridge_bench::observe::read_host_evidence;
 
@@ -38,6 +39,7 @@ fn popup_text_of_real_extension(
         player_rust_log: "info".to_owned(),
         work_root: repo.join("target/browser-bridge-bench/work"),
         desktop: DesktopSetup::default(),
+        player_test_variables: PlayerTestVariables::default(),
     })?;
     environment.connect_browser(kind)?;
 

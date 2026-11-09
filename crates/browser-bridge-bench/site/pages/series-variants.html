@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>series-variants</title>
+<style>body{font:14px system-ui,sans-serif;margin:16px}video{background:#000;max-width:100%}button{margin:2px}</style>
+</head>
+<body>
+<h1>series-variants</h1>
+<video id="v" controls playsinline width="480"></video>
+<!-- Корень плеера сайта с меткой стенда: его узнаёт адаптер `bench-series` экстеншена (сессия 14b). -->
+<div id="controls" data-fastiplayer-bench-series data-series-key="bench-series" data-episode-key="1"></div>
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, refsWithDub } from '../lib/bench-player.js';
+import { requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
+
+// Сериал стенда для каркаса адаптеров (сессия 14b): три серии, две озвучки, два качества.
+// - Озвучки — кнопки `[data-dub]` (адаптер жмёт их КЛИКОМ); смена — новый MediaSource с нуля, как у Ashdi.
+// - Качества и следующая серия — функции плеера `window.fastiplayerBenchSeries` (адаптер зовёт их РУКОЙ-ФУНКЦИЕЙ).
+//   Смена качества — новый MediaSource на той же секунде; следующая серия — новый MediaSource с нуля в той же озвучке.
+// - `&adapter=broken` — плеер страницы «сломан»: его функции бросают, адаптер не может описать меню.
+// Каждое новое поколение страница пишет в журнал строкой `generation …`: по ним судит стенд.
+
+/** Серии: один и тот же ассет с дорожками озвучек, ключ серии — номер. */
+const EPISODE_COUNT = 3;
+const ASSET_ID = 'h264-aac';
+const DUBS = [
+  { id: 'dub-a', label: 'Dub A' },
+  { id: 'dub-b', label: 'Dub B' },
+];
+const QUALITIES = [
+  { id: 'video-360', label: '360p' },
+  { id: 'video-720', label: '720p' },
+];
+
+await runScenario('series-variants', async (ctx) => {
+  const broken = ctx.params.raw.get('adapter') === 'broken';
+  const catalog = await loadCatalog();
+  const video = document.getElementById('v');
+  const controls = document.getElementById('controls');
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  const state = { episode: 1, dub: DUBS[0].id, quality: QUALITIES[0].id };
+  // Поколения, которые страница открыла САМА после передачи: их ждёт проверка «лишних MediaSource».
+  let pageGenerations = 0;
+
+  const currentRefs = () => refsWithDub(catalog, ASSET_ID, state.dub, state.quality);
+
+  async function openGeneration(cause, positionS) {
+    const refs = currentRefs();
+    requireMimeSupport(catalog, refs);
+    pageGenerations += 1;
+    controls.dataset.episodeKey = String(state.episode);
+    ctx.log(`generation cause=${cause} episode=${state.episode} dub=${state.dub} quality=${state.quality} from=${Math.floor(positionS)}`);
+    await player.newGeneration({ refs, positionS, autoplay: true });
+  }
+
+  // Кнопки озвучек: выбранная помечена aria-pressed — так адаптер читает выбор.
+  const dubButtons = DUBS.map((dub) => {
+    const element = Object.assign(document.createElement('button'), { textContent: dub.label });
+    element.dataset.dub = dub.id;
+    element.addEventListener('click', () => {
+      if (state.dub === dub.id) return;
+      state.dub = dub.id;
+      renderDubs();
+      void openGeneration('dub', 0);
+    });
+    controls.append(element);
+    return element;
+  });
+  function renderDubs() {
+    for (const element of dubButtons) element.setAttribute('aria-pressed', String(element.dataset.dub === state.dub));
+  }
+  renderDubs();
+
+  // Плеер страницы для руки-функции. В режиме «сломан» каждая функция бросает.
+  let brokenCallLogged = false;
+  const failIfBroken = () => {
+    if (!broken) return;
+    // Одна строка в журнал: стенд по ней знает, что адаптер ДОШЁЛ до плеера страницы и упал, а не промолчал.
+    if (!brokenCallLogged) ctx.log('broken page player was called');
+    brokenCallLogged = true;
+    throw new Error('bench page player is broken on purpose');
+  };
+  window.fastiplayerBenchSeries = {
+    qualities() {
+      failIfBroken();
+      return QUALITIES.map((quality) => ({ id: quality.id, label: quality.label, selected: quality.id === state.quality }));
+    },
+    selectQuality(id) {
+      failIfBroken();
+      if (!QUALITIES.some((quality) => quality.id === id)) return false;
+      if (id !== state.quality) {
+        state.quality = id;
+        void openGeneration('quality', video.currentTime);
+      }
+      return true;
+    },
+    hasNextEpisode() {
+      failIfBroken();
+      return state.episode < EPISODE_COUNT;
+    },
+    nextEpisode() {
+      failIfBroken();
+      if (state.episode >= EPISODE_COUNT) return false;
+      state.episode += 1;
+      void openGeneration('next', 0);
+      return true;
+    },
+  };
+
+  await player.start({ refs: currentRefs() });
+  ctx.log(`generation cause=start episode=${state.episode} dub=${state.dub} quality=${state.quality} from=0`);
+  // До передачи браузер обязан сам показать кадры: на этом стоит проба «браузер не декодирует под тенью».
+  await checkPlaying(ctx, video, 'episode-1-playing');
+  // Страница нужна только под передачей (сценарий `series`); без неё — просто играет.
+  if (!ctx.params.handoff) {
+    await player.destroy();
+    return;
+  }
+  await observeHandoff(ctx, { video, player, refs: currentRefs(), catalog }, {}, { expectedExtraGenerations: () => pageGenerations });
+  await player.destroy();
+}, { budgetMs: 120000 });
+</script>
+</body>
+</html>

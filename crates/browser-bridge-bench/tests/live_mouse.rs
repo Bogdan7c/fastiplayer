@@ -18,6 +18,7 @@ use browser_bridge_bench::compositor_windows::CompositorWindows;
 use browser_bridge_bench::desktop_input::{DesktopInput, Key, Point};
 use browser_bridge_bench::environment::{
     BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
+    PlayerTestVariables,
 };
 use browser_bridge_bench::screen_capture::{ScreenCapture, ScreenError};
 
@@ -112,6 +113,7 @@ fn real_mouse_and_keyboard_drive_the_browser(kind: BrowserKind) -> TestResult {
         player_rust_log: "info".to_owned(),
         work_root: repo.join("target/browser-bridge-bench/work"),
         desktop: DesktopSetup::pointer_stand(),
+        player_test_variables: PlayerTestVariables::default(),
     })?;
     environment.connect_browser(kind)?;
     let mut browser: Box<dyn BrowserUnderTest> = launch(

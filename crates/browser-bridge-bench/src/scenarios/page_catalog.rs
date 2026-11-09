@@ -96,6 +96,7 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("drm-probe"),
     page("drm-clearkey"),
     page("series"),
+    page("series-variants"),
     page("spa-navigation"),
     page("pip"),
     // 09c: главное видео на паузе, рядом играют баннер и превью (сценарий `capture`).

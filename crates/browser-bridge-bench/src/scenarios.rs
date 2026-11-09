@@ -34,6 +34,7 @@ mod player_commands;
 mod quality;
 mod replay;
 mod run_tweaks;
+mod series;
 mod tab_return;
 
 pub use attacks::attack_page_ids;
@@ -187,6 +188,17 @@ pub fn run_quality(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> 
 /// Идентификаторы страниц `quality` (для проверки `--page` в командной строке).
 pub fn quality_page_ids() -> Vec<&'static str> {
     quality::page_ids()
+}
+
+/// Сценарий `series` (сессия 14b): адаптер страницы «сериал» — меню вариантов, смена озвучки и
+/// качества из нашего меню, Next, сломанный адаптер.
+pub fn run_series(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    series::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `series` (для проверки `--page` в командной строке).
+pub fn series_page_ids() -> Vec<&'static str> {
+    series::page_ids()
 }
 
 /// Попап настоящего экстеншена показывает «Connected to Fastiplayer».

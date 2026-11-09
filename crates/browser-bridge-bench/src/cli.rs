@@ -8,7 +8,7 @@ use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
     attack_page_ids, auto_handoff_page_ids, capture_page_ids, end_page_ids, entries_page_ids,
     page_return_page_ids, page_subtitles_page_ids, player_command_page_ids, quality_page_ids,
-    tab_return_page_ids,
+    series_page_ids, tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -26,6 +26,7 @@ pub enum Command {
     HlsLive,
     PageSubtitles,
     Quality,
+    Series,
     Entries,
     PageReturn,
     TabReturn,
@@ -78,6 +79,7 @@ impl Command {
                 | Self::Attacks
                 | Self::PageSubtitles
                 | Self::Quality
+                | Self::Series
                 | Self::Entries
                 | Self::PageReturn
                 | Self::TabReturn
@@ -98,6 +100,7 @@ impl Command {
             Self::Attacks => filter.matches_any_of(attack_page_ids()),
             Self::PageSubtitles => filter.matches_any_of(page_subtitles_page_ids()),
             Self::Quality => filter.matches_any_of(quality_page_ids()),
+            Self::Series => filter.matches_any_of(series_page_ids()),
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
@@ -178,11 +181,19 @@ Commands:
   quality           the page's ABR switches quality inside one SourceBuffer (360p -> 720p) and the
                     player WINDOW shows the new quality (journal 'Browser quality shown'), frames
                     keep growing
+  series            the site adapter of the stand's series page: page menus reach the player, a dub
+                    and a quality chosen in our menu switch the page's streams, the player returns
+                    to the same second, Next opens the next episode in the same dub; a broken
+                    adapter leaves plain capture without a menu
   quality           the page's ABR switches quality inside one SourceBuffer (360p -> 720p) and the
                     player WINDOW shows the new quality (journal 'Browser quality shown'), frames
                     keep growing
+  series            the site adapter of the stand's series page: page menus reach the player, a dub
+                    and a quality chosen in our menu switch the page's streams, the player returns
+                    to the same second, Next opens the next episode in the same dub; a broken
+                    adapter leaves plain capture without a menu
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, page-subtitles, quality, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, page-subtitles, quality, series, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -401,6 +412,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "hls-live" => Ok(Command::HlsLive),
         "page-subtitles" => Ok(Command::PageSubtitles),
         "quality" => Ok(Command::Quality),
+        "series" => Ok(Command::Series),
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
         "tab-return" => Ok(Command::TabReturn),

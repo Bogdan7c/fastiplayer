@@ -115,4 +115,35 @@ pub struct EnvironmentOptions {
     pub work_root: PathBuf,
     /// Размер невидимого экрана и право на настоящий ввод (на `Real` не действует размер).
     pub desktop: DesktopSetup,
+    /// Тестовые переменные процесса плеера: чем сценарий двигает плеер без мыши.
+    pub player_test_variables: PlayerTestVariables,
+}
+
+/// Имя тестовой переменной плеера: выборы вариантов страницы по очереди (сессии 14a/14b,
+/// `app-egui::browser_session::window::variant_test_trigger`).
+const PLAYER_SELECT_VARIANT_VARIABLE: &str = "FASTIPLAYER_TEST_BROWSER_SELECT_VARIANT";
+
+/// Тестовые переменные процесса плеера (`FASTIPLAYER_TEST_*`). Плеер стенда — настоящий
+/// продукт; эти переменные только зовут его же намерения в нужный момент (как меню зрителя).
+/// Пусто по умолчанию: обычный прогон их не ставит.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlayerTestVariables {
+    pairs: Vec<(&'static str, String)>,
+}
+
+impl PlayerTestVariables {
+    /// Выбрать варианты страницы по очереди: `audio:1@4000,quality:1@9000` — вид, номер пункта
+    /// в меню плеера и секунда зрителя в миллисекундах, не раньше которой выбор делается.
+    pub fn with_page_variant_choices(mut self, choices: &str) -> Self {
+        self.pairs
+            .push((PLAYER_SELECT_VARIANT_VARIABLE, choices.to_owned()));
+        self
+    }
+
+    /// Пары «имя — значение» для окружения процесса плеера.
+    pub fn pairs(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.pairs
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+    }
 }

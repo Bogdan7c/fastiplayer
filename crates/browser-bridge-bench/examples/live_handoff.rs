@@ -65,6 +65,7 @@ use browser_bridge_bench::browsers::{
 use browser_bridge_bench::desktop_input::{DesktopInput, Point};
 use browser_bridge_bench::environment::{
     BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
+    PlayerTestVariables,
 };
 use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
@@ -512,6 +513,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         } else {
             DesktopSetup::default()
         },
+        player_test_variables: PlayerTestVariables::default(),
     })
     .map_err(|error| error.to_string())?;
     if (arguments.click_at.is_some() || arguments.screenshots.is_some())

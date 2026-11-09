@@ -29,7 +29,7 @@ pub use endpoint::DesktopEndpoint;
 pub use error::EnvironmentError;
 pub use options::{
     DesktopInputPolicy, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
-    ScreenSize,
+    PlayerTestVariables, ScreenSize,
 };
 pub use process::install_interrupt_cleanup;
 
@@ -275,6 +275,13 @@ impl BenchEnvironment {
             PLAYER_AUDIO_VARIABLE_NAME.into(),
             PLAYER_AUDIO_SIMULATED.into(),
         ));
+        // Тестовые переменные сценария (выборы вариантов страницы и т. п.): плеер наследует их от шины.
+        env.extend(
+            self.options
+                .player_test_variables
+                .pairs()
+                .map(|(name, value)| (name.into(), value.into())),
+        );
         env.extend(self.display_env());
         let env_removed = self.browser_command_env_removed();
         let config_path = self.run_dir.join("bus.conf");
@@ -366,6 +373,7 @@ mod tests {
             player_rust_log: "info".to_owned(),
             work_root: PathBuf::from("/nonexistent"),
             desktop: DesktopSetup::pointer_stand(),
+            player_test_variables: PlayerTestVariables::default(),
         })
         .err()
         .expect("Real + Allowed must be refused");

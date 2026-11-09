@@ -11,7 +11,7 @@ use crate::browsers::{
 };
 use crate::environment::{
     BenchEnvironment, DesktopSetup, DisplayTarget, EnvironmentError, EnvironmentOptions,
-    PlayerConfigProfile,
+    PlayerConfigProfile, PlayerTestVariables,
 };
 use crate::media::{MediaError, ensure_media};
 use crate::observe::ObserveError;
@@ -117,6 +117,7 @@ impl Stand {
         &self,
         player_config: PlayerConfigProfile,
         desktop: DesktopSetup,
+        player_test_variables: PlayerTestVariables,
     ) -> Result<BenchEnvironment, ScenarioError> {
         let environment = BenchEnvironment::create(EnvironmentOptions {
             display: self.settings.display,
@@ -125,6 +126,7 @@ impl Stand {
             player_rust_log: PLAYER_RUST_LOG.to_owned(),
             work_root: self.settings.work_root.clone(),
             desktop,
+            player_test_variables,
         })?;
         if self.settings.keep_work {
             environment.keep_work_dir();
@@ -204,7 +206,43 @@ impl Stand {
     where
         F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
     {
-        let environment = match self.create_environment_with_desktop(player_config, desktop) {
+        self.with_environment_full(player_config, desktop, PlayerTestVariables::default(), body)
+    }
+
+    /// [`Self::with_environment`] с тестовыми переменными процесса плеера (выборы вариантов
+    /// страницы сценария `series`, сессия 14b).
+    pub(crate) fn with_environment_for_player_test<F>(
+        &self,
+        player_test_variables: PlayerTestVariables,
+        body: F,
+    ) -> Verdict
+    where
+        F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
+    {
+        self.with_environment_full(
+            self.settings.player_config,
+            DesktopSetup::default(),
+            player_test_variables,
+            body,
+        )
+    }
+
+    /// Общая часть всех `with_environment*`: свежее окружение, тело, сохранение каталога при провале.
+    fn with_environment_full<F>(
+        &self,
+        player_config: PlayerConfigProfile,
+        desktop: DesktopSetup,
+        player_test_variables: PlayerTestVariables,
+        body: F,
+    ) -> Verdict
+    where
+        F: FnOnce(&BenchEnvironment) -> Result<Verdict, ScenarioError>,
+    {
+        let environment = match self.create_environment_with_desktop(
+            player_config,
+            desktop,
+            player_test_variables,
+        ) {
             Ok(environment) => environment,
             Err(error) => return Verdict::fail(error.to_string()),
         };
