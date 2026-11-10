@@ -63,7 +63,7 @@ describe("манифесты", () => {
   it("права ровно ожидаемые, без cookies и webRequest; Referer закачки — только WithHostAccess (решение 202)", async () => {
     for (const target of targets) {
       const manifest = await builtManifest(target);
-      assert.deepEqual([...manifest["permissions"]].sort(), ["contextMenus", "declarativeNetRequestWithHostAccess", "nativeMessaging", "scripting", "storage"]);
+      assert.deepEqual([...manifest["permissions"]].sort(), ["contextMenus", "declarativeNetRequestWithHostAccess", "nativeMessaging", "scripting", "storage", "webNavigation"]);
       assert.deepEqual(manifest["host_permissions"], ["<all_urls>"]);
       assert.equal(manifest["manifest_version"], 3);
       assert.equal(manifest["name"], "Fastiplayer Bridge");

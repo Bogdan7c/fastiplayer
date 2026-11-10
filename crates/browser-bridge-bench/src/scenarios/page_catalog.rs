@@ -101,6 +101,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("pip"),
     // 09c: главное видео на паузе, рядом играют баннер и превью (сценарий `capture`).
     page("banner-with-main"),
+    // 15c: ленивый iframe ниже экрана так и не грузится; опрос вкладки не должен его ждать (сценарий `capture`).
+    page("frame-never-loads"),
     // 09c, решение 202: `<video src>` на `/cdn/media/` (кука И Referer своего сайта).
     page("video-src-referer"),
     // 09c, решение 199: файл на локальном адресе под «публичным» именем (сценарий `local-address`).

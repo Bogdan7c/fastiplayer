@@ -8,7 +8,7 @@ import { parsePressSkipOutcome } from "../../shared/ad-watch-validation.ts";
 import { readLocalAddressSetting } from "../../shared/local-address-setting.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { FramePort } from "./frame-port.ts";
-import type { ExecuteInAllFrames } from "./frame-survey.ts";
+import { browserFrameInjection } from "../frame-injection/browser-frame-injection.ts";
 import { createFileReferrerRules } from "./file-referrer-rule.ts";
 import { createHandOffCommandListener } from "./hand-off-command.ts";
 import { createSurveyTabCommandListener } from "./survey-command.ts";
@@ -37,9 +37,6 @@ function createBackgroundNonce(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(BACKGROUND_NONCE_BYTES));
   return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
-
-const executeInAllFrames: ExecuteInAllFrames = (tabId, func, args) =>
-  browserApi.scripting.executeScript({ target: { tabId, allFrames: true }, func, args });
 
 function connectFrame(tabId: number, frameId: number): FramePort {
   const port = browserApi.tabs.connect(tabId, { frameId, name: HANDOFF_PORT_NAME });
@@ -118,7 +115,7 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
     adMirrorBrowser,
     variantMirrorBrowser,
     noteForDeveloper: (message) => console.debug(`[fastiplayer] ${message}`),
-    executeInAllFrames,
+    frameInjection: browserFrameInjection,
     tabModel,
     tabExists: (tabId) => browserApi.tabs.get(tabId).then(() => true, () => false),
     // Сеть фона для байтов `<video src>` (сессия 09b): права на сайты снимают CORS, куки сайта идут

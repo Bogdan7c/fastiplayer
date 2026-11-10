@@ -1,7 +1,9 @@
 // Выбор видео (пункт 9 09a), опрос фреймов и приём команды «отдать вкладку N» (решение 175).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { describeFrameVideos, surveyTabVideos, type ExecuteInAllFrames, type FrameInjectionResult } from "../../src/background/handoff/frame-survey.ts";
+import { describeFrameVideos, SURVEY_TIMEOUT_MS, surveyTabVideos } from "../../src/background/handoff/frame-survey.ts";
+import { MAX_FRAMES_PER_TAB } from "../../src/background/frame-injection/frame-injection.ts";
+import { createFakeFrameInjection, type FakeFrame } from "./frame-injection-fake.ts";
 import { createHandOffCommandListener, createHeldVideoListener, isOwnExtensionPage, type FrameSender } from "../../src/background/handoff/hand-off-command.ts";
 import { pageIdentityOf, siteDomainOf, UNKNOWN_SITE_DOMAIN } from "../../src/background/handoff/page-identity.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
@@ -354,16 +356,33 @@ describe("выбор видео: адрес плейлиста в `src` до с�
 /** Версия фона в этих тестах и ответ фрейма с нашим скриптом этой версии. */
 const SCRIPT_VERSION = "1.2.3";
 const scripted = (candidates: unknown): unknown => ({ script_version: SCRIPT_VERSION, candidates });
-const survey = (execute: ExecuteInAllFrames) => surveyTabVideos(5, execute, createFakeClock().scheduler, SCRIPT_VERSION);
 
-/** Подменить `location` внедряемой функции: в Node его нет. */
-function withLocation<Result>(protocol: string, body: () => Result): Result {
+/** Опрос вкладки 5 из этих фреймов; часы — поддельные, срок истекает только по `advance`. */
+function surveyOf(frames: readonly FakeFrame[]) {
+  const clock = createFakeClock();
+  const port = createFakeFrameInjection(() => frames);
+  return { clock, port, reply: surveyTabVideos(5, port, clock.scheduler, SCRIPT_VERSION) };
+}
+const survey = (frames: readonly FakeFrame[]) => surveyOf(frames).reply;
+
+/** Опрос, в котором кто-то молчит: ждём, пока ответившие ответят, и проматываем срок. */
+async function surveyPastDeadline(frames: readonly FakeFrame[]) {
+  const { clock, reply } = surveyOf(frames);
+  await flushPromises();
+  clock.advance(SURVEY_TIMEOUT_MS);
+  return reply;
+}
+
+/** Подменить `location` (и, если задано, `document`) внедряемой функции: в Node их нет. */
+function withLocation<Result>(protocol: string, body: () => Result, readyState?: DocumentReadyState): Result {
   const global = globalThis as Record<string, unknown>;
   global["location"] = { protocol };
+  if (readyState !== undefined) global["document"] = { readyState };
   try {
     return body();
   } finally {
     delete global["location"];
+    delete global["document"];
   }
 }
 
@@ -380,8 +399,13 @@ describe("опрос фреймов", () => {
   });
 
   it("фрейм без нашего скрипта говорит об этом явно: на веб-странице и на служебном документе по-разному", () => {
-    assert.deepEqual(withLocation("https:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME)), { script_absent: true, on_web_page: true });
-    assert.deepEqual(withLocation("about:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME)), { script_absent: true, on_web_page: false });
+    assert.deepEqual(withLocation("https:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME)), { script_absent: true, on_web_page: true, document_loading: false });
+    assert.deepEqual(withLocation("about:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME)), { script_absent: true, on_web_page: false, document_loading: false });
+  });
+
+  it("документ ещё разбирается — фрейм так и говорит (внедрение без ожидания загрузки, 15c)", () => {
+    assert.deepEqual(withLocation("https:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME), "loading"), { script_absent: true, on_web_page: true, document_loading: true });
+    assert.deepEqual(withLocation("https:", () => describeFrameVideos(VIDEO_CANDIDATES_FUNCTION_NAME), "interactive"), { script_absent: true, on_web_page: true, document_loading: false });
   });
 
   it("внедряемая функция самодостаточна: её текст работает без замыканий модуля", () => {
@@ -390,55 +414,113 @@ describe("опрос фреймов", () => {
     global["probeName"] = () => "ok";
     try {
       assert.equal(rebuilt("probeName"), "ok");
-      assert.deepEqual(withLocation("http:", () => rebuilt("noSuchProbe")), { script_absent: true, on_web_page: true });
+      assert.deepEqual(withLocation("http:", () => rebuilt("noSuchProbe")), { script_absent: true, on_web_page: true, document_loading: false });
     } finally {
       delete global["probeName"];
     }
   });
 
-  it("собирает договорные ответы фреймов, кривые и пустые отбрасывает", async () => {
-    const execute: ExecuteInAllFrames = (tabId, func, args) => {
-      assert.equal(tabId, 5);
-      assert.equal(func, describeFrameVideos);
-      assert.deepEqual(args, [VIDEO_CANDIDATES_FUNCTION_NAME]);
-      return Promise.resolve([
-        { frameId: 0, result: scripted([video(1)]) },
-        { frameId: 1, result: null },
-        { frameId: 2, result: scripted([{ ...video(2), extra: true }]) },
-        { frameId: 3, result: scripted([]) },
-        { frameId: 4 },
-      ]);
-    };
-    assert.deepEqual(await survey(execute), { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false, scriptGap: null });
+  it("каждый фрейм спрашивается отдельно той же функцией; договорные ответы собираются, кривые и пустые отбрасываются", async () => {
+    const { port, reply } = surveyOf([
+      { frameId: 0, result: scripted([video(1)]) },
+      { frameId: 1, result: null },
+      { frameId: 2, result: scripted([{ ...video(2), extra: true }]) },
+      { frameId: 3, result: scripted([]) },
+      { frameId: 4 },
+    ]);
+    assert.deepEqual(await reply, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false, scriptGap: null });
+    assert.deepEqual(
+      port.injections().map((injection) => [injection.tabId, injection.frameId, injection.args]),
+      [0, 1, 2, 3, 4].map((frameId) => [5, frameId, [VIDEO_CANDIDATES_FUNCTION_NAME]]),
+    );
   });
 
   it("Firefox вернул пустой элемент вместо фрейма: остальные фреймы вкладки опрошены", async () => {
-    const execute: ExecuteInAllFrames = () => Promise.resolve([{ frameId: 0, result: scripted([video(1)]) }, undefined]);
-    assert.deepEqual(await survey(execute), { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false, scriptGap: null });
+    assert.deepEqual(await survey([{ frameId: 0, result: scripted([video(1)]) }, { frameId: 6, refuses: true }]), {
+      kind: "surveyed",
+      frames: [{ frameId: 0, candidates: [video(1)] }],
+      truncated: false,
+      scriptGap: null,
+    });
   });
 
-  it("ни один фрейм не принял внедрение (страница Firefox): вкладка закрыта, а не сбой", async () => {
-    const execute: ExecuteInAllFrames = () => Promise.resolve([undefined]);
-    assert.equal((await survey(execute)).kind, "not_scriptable");
+  it("ни один фрейм не принял внедрение (страница Firefox, служебная страница Chromium): вкладка закрыта, а не сбой", async () => {
+    assert.equal((await survey([{ frameId: 0, refuses: true }])).kind, "not_scriptable");
+    assert.equal((await survey([{ frameId: 0, rejects: true }, { frameId: 3, rejects: true }])).kind, "not_scriptable");
   });
 
-  it("пустой ответ браузера без фреймов — вкладка без видео, а не закрытая", async () => {
-    const execute: ExecuteInAllFrames = () => Promise.resolve([]);
-    assert.deepEqual(await survey(execute), { kind: "surveyed", frames: [], truncated: false, scriptGap: null });
+  it("список фреймов не получен (вкладка закрыта): вкладка закрыта для экстеншена", async () => {
+    const port = createFakeFrameInjection(() => [], () => new Error("No tab with id: 5."));
+    const reply = await surveyTabVideos(5, port, createFakeClock().scheduler, SCRIPT_VERSION);
+    assert.deepEqual(reply, { kind: "not_scriptable", error: "Error: No tab with id: 5." });
+  });
+
+  it("пустой список фреймов — вкладка без видео, а не закрытая", async () => {
+    assert.deepEqual(await survey([]), { kind: "surveyed", frames: [], truncated: false, scriptGap: null });
+  });
+});
+
+describe("опрос: молчащий фрейм не держит вкладку (15c, живой klonua)", () => {
+  it("подфрейм замёрз — видео остальных фреймов приходят к сроку, разрыва скрипта нет", async () => {
+    const reply = await surveyPastDeadline([
+      { frameId: 0, result: scripted([]) },
+      { frameId: 6, silent: true },
+      { frameId: 7, result: scripted([video(2)]) },
+    ]);
+    assert.deepEqual(reply, { kind: "surveyed", frames: [{ frameId: 7, candidates: [video(2)] }], truncated: false, scriptGap: null });
+  });
+
+  it("ответившие раньше срока не ждут молчащего: без молчащих опрос кончается сразу, без часов", async () => {
+    const reply = await survey([{ frameId: 0, result: scripted([video(1)]) }, { frameId: 6, result: { script_absent: true, on_web_page: false, document_loading: false } }]);
+    assert.equal(reply.kind, "surveyed");
+  });
+
+  it("молчит верхний фрейм — страница не ответила, даже если подфреймы ответили", async () => {
+    const reply = await surveyPastDeadline([{ frameId: 0, silent: true }, { frameId: 7, result: scripted([video(2)]) }]);
+    assert.deepEqual(reply, { kind: "timed_out" });
+  });
+
+  it("молчат все — страница не ответила", async () => {
+    assert.deepEqual(await surveyPastDeadline([{ frameId: 0, silent: true }, { frameId: 6, silent: true }]), { kind: "timed_out" });
+  });
+
+  it("верхний отказал, подфрейм молчит, ответивших нет — страница не ответила, а не «закрыта»", async () => {
+    assert.deepEqual(await surveyPastDeadline([{ frameId: 0, refuses: true }, { frameId: 6, silent: true }]), { kind: "timed_out" });
+  });
+
+  it("фрейм ушёл между списком и внедрением — просто пропущен, вкладка не становится закрытой", async () => {
+    const frames: FakeFrame[] = [{ frameId: 0, result: scripted([video(1)]) }, { frameId: 9, result: scripted([video(2)]) }];
+    const port = createFakeFrameInjection(() => frames);
+    const pending = surveyTabVideos(5, port, createFakeClock().scheduler, SCRIPT_VERSION);
+    frames.pop(); // фрейм 9 удалён страницей, когда список уже выдан
+    assert.deepEqual(await pending, { kind: "surveyed", frames: [{ frameId: 0, candidates: [video(1)] }], truncated: false, scriptGap: null });
+  });
+
+  it("фреймов больше лимита — спрошено не больше лимита, верхний всегда, опрос помечен усечённым", async () => {
+    const many: FakeFrame[] = Array.from({ length: MAX_FRAMES_PER_TAB + 10 }, (_, index) => ({ frameId: MAX_FRAMES_PER_TAB + 10 - index - 1, result: scripted([]) }));
+    const { port, reply } = surveyOf(many);
+    const outcome = await reply;
+    assert.equal(outcome.kind === "surveyed" && outcome.truncated, true);
+    assert.equal(port.injections().length, MAX_FRAMES_PER_TAB);
+    assert.equal(port.injections()[0]?.frameId, 0, "верхний фрейм спрошен первым, хотя в списке браузера он последний");
   });
 });
 
 describe("опрос: вкладка старше скрипта (сессия 10d)", () => {
-  const gapOf = async (results: readonly FrameInjectionResult[]) => {
-    const reply = await survey(() => Promise.resolve(results));
+  const gapOf = async (frames: readonly FakeFrame[]) => {
+    const reply = await survey(frames);
     assert.equal(reply.kind, "surveyed");
     return reply.kind === "surveyed" ? reply : undefined;
   };
-  const SCRIPTLESS_WEB = { script_absent: true, on_web_page: true };
-  const SCRIPTLESS_BLANK = { script_absent: true, on_web_page: false };
+  const SCRIPTLESS_WEB = { script_absent: true, on_web_page: true, document_loading: false };
+  const SCRIPTLESS_BLANK = { script_absent: true, on_web_page: false, document_loading: false };
 
   it("скрипта нет в верхнем фрейме веб-страницы — script_missing", async () => {
     assert.equal((await gapOf([{ frameId: 0, result: SCRIPTLESS_WEB }]))?.scriptGap, "script_missing");
+  });
+
+  it("верхний документ ещё разбирается и скрипта в нём пока нет — это не разрыв (нет ложного «Reload and open», 15c)", async () => {
+    assert.equal((await gapOf([{ frameId: 0, result: { ...SCRIPTLESS_WEB, document_loading: true } }]))?.scriptGap, null);
   });
 
   it("скрипт есть, видео нет — это не «вкладка старше скрипта»", async () => {

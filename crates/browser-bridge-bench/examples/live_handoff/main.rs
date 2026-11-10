@@ -53,7 +53,9 @@
 //! рекламы это «следующая серия» адаптера. Помощник печатает строки плеера про меню, выбор и возврат секунды.
 //! `--next-after` можно повторять (15b: серия → следующая → смена озвучки → следующая). PlayerJS (15b):
 //! `--playerjs-report-every <с>` — проба всех фреймов вкладки с плеером PlayerJS (файл плейлиста, серия,
-//! качество, дорожка звука, заголовки списков) и записи памяти выбора (`playerjs_page.rs`).
+//! качество, дорожка звука, заголовки списков) и записи памяти выбора (`playerjs_page.rs`). `--frame-survey-probe once`
+//! (15c) — перед передачей опросить фреймы вкладки по одному с замером времени (`frame_survey_probe.rs`);
+//! `--scroll-to <селектор>` — до клика прокрутить страницу к элементу, как человек колесом (`page_scroll.rs`).
 //!
 //! Сайты, где видео стартует только по клику (Ashdi, Tortuga, 13b2): `--click-at <x>,<y>` — клик настоящей
 //! мышью стенда по точке невидимого экрана после паузы `--wait`, до передачи. `--screenshots <каталог>` —
@@ -63,6 +65,8 @@
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
+mod frame_survey_probe;
+mod page_scroll;
 mod playerjs_page;
 mod youtube_page;
 
@@ -84,6 +88,8 @@ use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
 use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
+use frame_survey_probe::report_frame_survey;
+use page_scroll::scroll_page_to;
 use playerjs_page::{
     PlayerJsPick, parse_playerjs_pick, pick_on_playerjs_page, report_playerjs_page,
 };
@@ -209,6 +215,10 @@ struct Arguments {
     playerjs_report_every: Option<Duration>,
     /// Выбор пунктов плейлиста PlayerJS на странице после передачи (`--playerjs-pick`), `None` — не выбирать.
     playerjs_pick: Option<PlayerJsPick>,
+    /// Перед передачей опросить фреймы вкладки по одному с замером времени (`--frame-survey-probe once`, 15c).
+    frame_survey_probe: bool,
+    /// Перед кликом прокрутить страницу к элементу по селектору (`--scroll-to`, 15c), `None` — не крутить.
+    scroll_to: Option<String>,
 }
 
 /// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
@@ -281,6 +291,8 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut playerjs_report_every = None;
     let mut playerjs_pick = None;
     let mut youtube_report_every = None;
+    let mut frame_survey_probe = false;
+    let mut scroll_to = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -346,6 +358,8 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .map_err(|error| format!("--playerjs-report-every: {error}"))?;
                 playerjs_report_every = Some(Duration::from_secs(every.max(1)));
             }
+            ("--frame-survey-probe", "once") => frame_survey_probe = true,
+            ("--scroll-to", _) => scroll_to = Some(value),
             ("--playerjs-pick", _) => playerjs_pick = Some(parse_playerjs_pick(&value)?),
             ("--next-after", _) => {
                 let after = value
@@ -394,6 +408,8 @@ fn parse_arguments() -> Result<Arguments, String> {
         playerjs_report_every,
         playerjs_pick,
         youtube_report_every,
+        frame_survey_probe,
+        scroll_to,
     })
 }
 
@@ -597,6 +613,11 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let (tab, url) = opened.ok_or("nothing to open")?;
     // Пауза до передачи: реклама в начале ролика должна успеть начаться.
     sleep(Duration::from_secs(arguments.wait_seconds));
+    let mut service_page_open = false;
+    if let Some(selector) = &arguments.scroll_to {
+        scroll_page_to(browser.as_mut(), &tab, &mut service_page_open, selector);
+        sleep(AFTER_CLICK);
+    }
     if let Some(shots) = &screenshots {
         shots.take("before-click");
     }
@@ -629,6 +650,9 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         println!("extension arrived while the tab is open");
     }
 
+    if arguments.frame_survey_probe {
+        report_frame_survey(browser.as_mut(), &tab, &mut service_page_open);
+    }
     let deadline = Instant::now() + Duration::from_secs(arguments.seconds);
     let started = match arguments.hand_off {
         HandOff::Robot => hand_off_by_robot(browser.as_mut(), &tab, url, deadline),
@@ -664,7 +688,6 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         .youtube_report_every
         .map(|every| handed_off_at + every);
     let mut quality_steps = arguments.youtube_qualities.iter().peekable();
-    let mut service_page_open = false;
     let mut pick_pending = arguments.playerjs_pick.as_ref();
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
     while started && Instant::now() < deadline {

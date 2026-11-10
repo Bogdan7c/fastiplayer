@@ -14,7 +14,8 @@ import { createEntryMenus, isEntrySettingsChange, routeMenuClick, type MenusApi 
 import { createEntryReporter, type EntryBadge, type EntryBanner, type EntryReporter } from "./entry-reporter.ts";
 import { createLateEntryCommandListener } from "./late-entry-command.ts";
 import { createLateEntry, type LateTabsApi } from "./late-entry.ts";
-import { createLateVideoReader, LATE_POSITION_TOLERANCE_S, visitFrameVideos, type ExecuteVideoVisit } from "./late-video-reader.ts";
+import { browserAnswersOfEachFrame } from "../frame-injection/browser-frame-injection.ts";
+import { createLateVideoReader, LATE_POSITION_TOLERANCE_S, LATE_VIDEO_VISIT_DEADLINE_MS, visitFrameVideos, type ExecuteVideoVisit } from "./late-video-reader.ts";
 import { createLinkEntry, type LinkTabsApi } from "./link-entry.ts";
 import { createMenuEntry, type AskRightClickedVideo } from "./menu-entry.ts";
 import { createOverlayEntryListener } from "./overlay-entry.ts";
@@ -112,8 +113,9 @@ const lateTabs: LateTabsApi = {
   },
 };
 
+// Фреймы по одному, без ожидания их загрузки и со сроком (сессия 15c): ленивый фрейм рекламы не держит поздний вход.
 const executeVideoVisit: ExecuteVideoVisit = (tabId, target) =>
-  browserApi.scripting.executeScript({ target: { tabId, allFrames: true }, func: visitFrameVideos, args: [target, LATE_POSITION_TOLERANCE_S] });
+  browserAnswersOfEachFrame(tabId, { func: visitFrameVideos, args: [target, LATE_POSITION_TOLERANCE_S] }, LATE_VIDEO_VISIT_DEADLINE_MS);
 
 /** Репортёр итога входа на настоящем браузере: плашка в верхнем фрейме и вкладочный «!». Им же пользуется режим 2 (12a). */
 export function createBrowserEntryReporter(): EntryReporter {

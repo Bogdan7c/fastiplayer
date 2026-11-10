@@ -1,6 +1,6 @@
 # Fastiplayer Bridge: site compatibility
 
-**Status: development build, not released yet** (10 November 2026). The bridge lets the page keep downloading the video while Fastiplayer decodes and shows it. It is planned in [issue #2](https://github.com/Bogdan7c/fastiplayer/issues/2) and the public plan [`user/browser-bridge/`](../../user/browser-bridge/README.md). This file lists what is proven on the reference sites of that plan. It is updated when a session proves or breaks something, and it will name the release the bridge ships in.
+**Status: development build, not released yet** (11 November 2026). The bridge lets the page keep downloading the video while Fastiplayer decodes and shows it. It is planned in [issue #2](https://github.com/Bogdan7c/fastiplayer/issues/2) and the public plan [`user/browser-bridge/`](../../user/browser-bridge/README.md). This file lists what is proven on the reference sites of that plan. It is updated when a session proves or breaks something, and it will name the release the bridge ships in.
 
 Legend:
 - **Live** — seen working on the real site, in the browsers named in brackets: **FF** = Firefox 158–159, **Cr** = Chromium 156, **CF** = Google Chrome 156 from Flatpak. The automatic runs use a fresh browser profile on an invisible desktop. Owner checks use the owner's own Firefox.
@@ -35,8 +35,8 @@ How to connect the browsers and what each status means: [README.md](README.md).
 | Twitch recording | Live (FF, CF) | — | — | Not checked | Not checked | Not checked | — |
 | Twitch clip | Live (FF, CF) | — | — | — | — | — | — |
 | **uaserials.com** (Tortuga player) | Live (FF, Cr) | Live (FF, Cr) | Live: Tortuga dubs, same episode (FF) | Live (Cr) | Live (Cr) | Skip (FF, Cr) | Live: record per series (FF, Cr) |
-| **klonua.com** (Ashdi player, series) | Live (FF); **Cr: No**, see below | Live (FF) | Live: three-step dub switch (FF) | Not checked here (same player as uakino) | Not checked | Skip (FF) | Live: record per series (FF) |
-| klonua.com (Ashdi player, film) | Live (FF); **Cr: No**, see below | — | Live (FF) | Not checked here | Not checked | Skip (FF) | Not checked |
+| **klonua.com** (Ashdi player, series) | Live (FF, Cr) | Live (FF) | Live: three-step dub switch (FF, Cr) | Not checked here (same player as uakino) | Not checked | Skip (FF, Cr) | Live: record per series (FF) |
+| klonua.com (Ashdi player, film) | Live (FF, Cr) | — | Live (FF) | Not checked here | Not checked | Skip (FF, Cr) | Not checked |
 | **uakino** (Ashdi player) | Live (FF, Cr) | — | No: the site's own tabs above the player are not PlayerJS | Live, switches in place (FF, Cr) | Not checked | Skip (Cr) | Live: record per film (FF, Cr) |
 | **kinoukr.tv** (Ashdi and Tortuga players) | Live (FF, CF) | Not checked (same players as above) | Not checked (same players) | Not checked (same players) | Live (FF, Cr) | Skip (FF, CF) | Not checked |
 | Megogo (free TV) | Live (FF) | — | — | Not checked | Not checked | Not checked | — |
@@ -66,16 +66,16 @@ How to connect the browsers and what each status means: [README.md](README.md).
 ### Sites with the PlayerJS player (Ashdi, Tortuga and others)
 - One adapter serves every site that embeds PlayerJS. On a site that is not checked it is careful: it offers qualities, the player's own audio-track list and Next only when the list items look like episodes ("Серія 5", "Episode 5"). It never treats playlist folders as dubs there.
 - **Tortuga** (uaserials, kinoukr): dubs are the player's audio tracks. A switch keeps the episode and the window returns to the same second. Seasons and episodes are chosen on the page. Next goes to the next episode and from the last episode of a season to the next season.
-- **Ashdi series** (klonua, `?multivoice`): dubs are playlist folders. A switch takes three presses (dub, the same season, the same episode). If the new dub does not have this season or episode, nothing changes: the video keeps playing and the page menu goes back. This is common, because the site opens the latest episode and other dubs usually lag behind; pick an earlier episode on the page first. The player does not yet say why nothing changed (planned in session 15c). Next stays inside the current dub and is not offered after its last episode.
+- **Ashdi series** (klonua, `?multivoice`): dubs are playlist folders. A switch takes three presses (dub, the same season, the same episode). If the new dub does not have this season or episode, nothing changes: the video keeps playing and the page menu goes back. This is common, because the site opens the latest episode and other dubs usually lag behind; pick an earlier episode on the page first. The player does not yet say why nothing changed (planned in session 15c2). Next stays inside the current dub and is not offered after its last episode.
 - **Ashdi film**: dubs are list items; the site restarts the film from 0 and shows ads again, and the window returns to the same second. A dub set again by the memory is the same switch, so the ads play again too.
 - The site's own tabs above the player (uakino "UA #1", "Trailer") are not part of the player and are not in our menus.
 - **uakino quality** switches in place, but not at once: the page first plays out what it has already downloaded, about a minute. The menu marks the new quality at once; the quality button shows what is on screen, so it keeps the old value until the new picture arrives.
 - **Memory and "continue watching".** The memory sets a dub only in the first 30 seconds of an episode. uaserials itself resumes an episode where you stopped, so on that episode the remembered dub is not set; on the next episode it is.
 - The page plays its ads again before each episode and after each dub switch. Choices in our menus are refused while an ad is on screen and can be repeated after it.
-- **Chromium on klonua: hand-off fails** with "the page did not answer" (the tab survey times out). This is older than the PlayerJS adapter and is limited to Chrome-family browsers on this site. The fix is planned right after this session (plan session 15c). Firefox works.
+- **A frame that never loads does not block the hand-off** (since plan session 15c1). klonua has a lazy YouTube trailer frame below the fold; Chromium used to wait for it forever, and the hand-off failed with "the page did not answer". Now the extension asks each frame on its own and does not wait for frames to load. A frame that stays silent can delay the start by up to 5 seconds; its video, if any, is not offered.
 
 ## How support is verified
 
 1. **Automated tests:** about 3 000 extension tests (`npm run check` in `extensions/browser`), among them the PlayerJS adapter on recorded page structures of Ashdi and Tortuga (`tests/adapters/playerjs-*.test.ts`), YouTube and Twitch adapters, and the choice memory. End-to-end bench scenarios (`scripts/browser-bridge-bench.sh`) prove that frames reach the renderer.
-2. **Live runs** on the real sites use the bench helper `live_handoff` (Chromium and Firefox, fresh profiles, invisible desktop). A page probe reads what the site's player really shows. Session reports are in `user/browser-bridge/results/` (15a, 15a2, 15b and earlier).
+2. **Live runs** on the real sites use the bench helper `live_handoff` (Chromium and Firefox, fresh profiles, invisible desktop). A page probe reads what the site's player really shows. Session reports are in `user/browser-bridge/results/` (15a, 15a2, 15b, 15c1 and earlier).
 3. **Owner checks** in the owner's own Firefox at the end of each adapter session (for 15b the owner had the agent run the script in that browser).

@@ -1,7 +1,7 @@
 // Общий фейковый мир сценариев передачи вкладки (tab-handoff, честные концы 09a2):
 // фон целиком (`createTabHandoffs`) на фейковых часах, двери плеера, сокете и порте фрейма.
 import assert from "node:assert/strict";
-import type { FrameInjectionResult } from "../../src/background/handoff/frame-survey.ts";
+import { createFakeFrameInjection, type FakeFrame } from "./frame-injection-fake.ts";
 import type { HandoffSessionEnd } from "../../src/background/handoff/handoff-session.ts";
 import { NO_LOCAL_ADDRESS_CONSENT, type LocalAddressConsent } from "../../src/background/handoff/file-address-guard.ts";
 import type { AdMirrorBrowser } from "../../src/background/handoff/ad-skip-mirror.ts";
@@ -126,12 +126,12 @@ const NO_PAGE_REOPEN: PageReopenBrowser = {
 export const WORLD_EXTENSION_VERSION = "1.2.3";
 
 /** Массив кандидатов в описании фрейма — ответ нашего скрипта этой же версии; другой ответ идёт как есть. */
-function scriptedFrameResult(frame: FrameInjectionResult): FrameInjectionResult {
+function scriptedFrameResult(frame: FakeFrame): FakeFrame {
   return Array.isArray(frame.result) ? { ...frame, result: { script_version: WORLD_EXTENSION_VERSION, candidates: frame.result } } : frame;
 }
 
 export function setup(
-  frames: readonly FrameInjectionResult[] | Promise<readonly FrameInjectionResult[]> = [{ frameId: 0, result: [PLAYING_VIDEO] }],
+  frames: readonly FakeFrame[] | Promise<readonly FakeFrame[]> = [{ frameId: 0, result: [PLAYING_VIDEO] }],
   fetchRange: RangeFetch = NO_NETWORK,
   store: TabModelStore = createMemoryTabModelStore(),
   options: WorldOptions = {},
@@ -150,7 +150,6 @@ export function setup(
   let surveyError: Error | undefined;
   let tabAlive = true;
   let tabUrl = "https://www.example.com/watch?v=1";
-  let surveyCount = 0;
   let tabExistsQuestions = 0;
   const storeFailures: unknown[] = [];
   const settingFailures: unknown[] = [];
@@ -165,6 +164,11 @@ export function setup(
   // Память выбора (14b2) на своём хранилище в памяти: тесты читают, что в неё записано.
   const choiceStorage = memoryStore();
   const choiceMemory = createChoiceMemoryStore({ store: choiceStorage.store, now: () => clock.scheduler.now() });
+  // Фреймы вкладки: промис вместо списка — «вкладка повисла» (верхний фрейм молчит до его исполнения).
+  const frameInjection = createFakeFrameInjection(
+    () => (Array.isArray(currentFrames) ? currentFrames.map(scriptedFrameResult) : Promise.resolve(currentFrames).then((listed) => listed.map(scriptedFrameResult))),
+    () => surveyError,
+  );
   const handoffs = createTabHandoffs({
     tabModel,
     choiceMemory,
@@ -176,10 +180,7 @@ export function setup(
     adMirrorBrowser: adMirrorFake.browser,
     variantMirrorBrowser: variantMirrorFake.browser,
     noteForDeveloper: (message) => void adMirrorFake.notes.push(message),
-    executeInAllFrames: () => {
-      surveyCount += 1;
-      return surveyError === undefined ? Promise.resolve(currentFrames).then((frames) => frames.map(scriptedFrameResult)) : Promise.reject(surveyError);
-    },
+    frameInjection,
     extensionVersion: WORLD_EXTENSION_VERSION,
     describeTab: () =>
       Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl, windowId: options.tabWindowId, incognito: options.incognito ?? false } : undefined),
@@ -213,9 +214,9 @@ export function setup(
     tabModel,
     store,
     storeFailures,
-    surveys: () => surveyCount,
+    surveys: () => frameInjection.listings(),
     tabExistsQuestions: () => tabExistsQuestions,
-    setFrames: (next: readonly FrameInjectionResult[]) => void (currentFrames = next),
+    setFrames: (next: readonly FakeFrame[]) => void (currentFrames = next),
     forbidSurveys: (error: Error) => void (surveyError = error),
     closeTab: () => void (tabAlive = false),
     navigateTab: (url: string) => void (tabUrl = url),

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Fastiplayer Bridge",
   "description": "Plays web page video in the Fastiplayer desktop player.",
-  "permissions": ["nativeMessaging", "contextMenus", "storage", "scripting", "declarativeNetRequestWithHostAccess"],
+  "permissions": ["nativeMessaging", "contextMenus", "storage", "scripting", "declarativeNetRequestWithHostAccess", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {

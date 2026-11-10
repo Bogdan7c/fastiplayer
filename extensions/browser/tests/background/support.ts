@@ -279,7 +279,11 @@ export function createFakeDoor(): FakeDoor {
   return door;
 }
 
-/** Дать отработать уже разрешённым промисам (микрозадачам). */
+/**
+ * Дать отработать уже разрешённым промисам (микрозадачам). 60 кругов: с сессии 15c опрос вкладки
+ * спрашивает фреймы по одному (список фреймов, внедрение в каждый, общий срок), и путь от входа по
+ * ссылке до сокета сеанса стал длиннее прежних 30 шагов.
+ */
 export async function flushPromises(): Promise<void> {
-  for (let round = 0; round < 30; round += 1) await Promise.resolve();
+  for (let round = 0; round < 60; round += 1) await Promise.resolve();
 }

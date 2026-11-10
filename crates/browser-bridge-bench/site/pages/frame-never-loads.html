@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>frame-never-loads</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}#far-below{height:12000px}</style>
+</head>
+<body>
+<h1>frame-never-loads</h1>
+
+<script type="module">
+// Сессия 15c: фрейм, документ которого так и не приходит (живой klonua, общий бэклог п. 46).
+// Ниже края экрана стоит ленивый iframe (`loading="lazy"`): браузер не начинает его загрузку, пока
+// до него не докрутят, и фрейм навсегда остаётся на начальном пустом документе без нашего скрипта.
+// Опрос «все фреймы разом» в Chromium ждал загрузки КАЖДОГО фрейма и кончался `survey_timed_out`.
+// Видео страницы обычное (MSE fMP4): передача обязана пройти и дойти до кадра в плеере.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Отступ до ленивого фрейма, CSS-пиксели: намного больше порога ленивой загрузки обоих браузеров. */
+const FAR_BELOW_ID = 'far-below';
+/** Адрес фрейма: любой настоящий файл стенда, загрузка всё равно не начнётся. */
+const LAZY_FRAME_PATH = '/site/index.html';
+
+/** Ставит ленивый iframe далеко под видео и возвращает его. */
+function mountFrameThatNeverLoads() {
+  const spacer = document.createElement('div');
+  spacer.id = FAR_BELOW_ID;
+  document.body.append(spacer);
+  const frame = document.createElement('iframe');
+  frame.loading = 'lazy';
+  frame.src = new URL(LAZY_FRAME_PATH, location.origin).href;
+  document.body.append(frame);
+  return frame;
+}
+
+/** Фрейм всё ещё на начальном пустом документе: тот же origin, поэтому адрес документа читается. */
+function stillOnInitialDocument(frame) {
+  return frame.contentWindow?.location.href === 'about:blank';
+}
+
+await runScenario('frame-never-loads', async (ctx) => {
+  const session = await startAsset(ctx, 'h264-aac');
+  const frame = mountFrameThatNeverLoads();
+  await checkPlaying(ctx, session.video, 'playing');
+  // Улика, что стенд воспроизвёл именно klonua: документ фрейма так и не пришёл.
+  ctx.check('lazy-frame-not-loaded', stillOnInitialDocument(frame), `frame document=${frame.contentWindow?.location.href}`);
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session);
+    ctx.check('lazy-frame-still-not-loaded', stillOnInitialDocument(frame), `frame document=${frame.contentWindow?.location.href}`);
+  }
+  await session.player.destroy();
+});
+</script>
+</body>
+</html>

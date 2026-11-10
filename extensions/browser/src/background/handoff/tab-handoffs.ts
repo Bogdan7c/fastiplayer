@@ -24,7 +24,8 @@ import { sameRef, type TabRefusal } from "../tab-model/tab-snapshot.ts";
 import type { LocalAddressSetting } from "../../shared/local-address-setting.ts";
 import { DEFAULT_LOCAL_ADDRESS_SETTING } from "../../shared/local-address-setting.ts";
 import { decideFileAddress, NO_LOCAL_ADDRESS_CONSENT, type FileAddressRule, type LocalAddressConsent } from "./file-address-guard.ts";
-import { surveyTabVideos, type ExecuteInAllFrames } from "./frame-survey.ts";
+import type { FrameInjectionPort } from "../frame-injection/frame-injection.ts";
+import { surveyTabVideos } from "./frame-survey.ts";
 import { refusalOf, refusalOfSessionEnd } from "./handoff-refusal.ts";
 import { HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import { startHandoffSession, type HandoffSession, type HandoffSessionDependencies, type HandoffSessionEnd } from "./handoff-session.ts";
@@ -36,7 +37,8 @@ import { chooseRequestedVideo, chooseVideo, type ChosenVideo, type RequestedVide
 const MAX_BEGIN_REQUEST_ID = 0xffff_ffff;
 
 export interface TabHandoffsDependencies extends HandoffSessionDependencies {
-  readonly executeInAllFrames: ExecuteInAllFrames;
+  /** Как спросить фреймы вкладки: по одному, без ожидания их загрузки (сессия 15c). */
+  readonly frameInjection: FrameInjectionPort;
   /** Модель вкладки: сюда пишутся итог каждого опроса и каждый отказ. Её сбой передачу не ломает. */
   readonly tabModel: TabModel;
   /** Версия экстеншена: с ней сверяется скрипт страницы при опросе (сессия 10d). */
@@ -294,7 +296,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
       kind: "refused",
       outcome: await (refusal === undefined ? refuse(tabId, entry, outcome) : refuse(tabId, entry, outcome, refusal)),
     });
-    const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler, dependencies.extensionVersion);
+    const survey = await surveyTabVideos(tabId, dependencies.frameInjection, dependencies.scheduler, dependencies.extensionVersion);
     if (entry.removed) return { kind: "refused", outcome: { kind: "failed", reason: "tab_closed" } };
     if (survey.kind === "not_scriptable") {
       // Служебная страница браузера, магазин расширений, закрытая вкладка: внедрение запрещено.
@@ -391,7 +393,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
 
   async function surveyTab(tabId: number): Promise<SurveyTabReply> {
     try {
-      const survey = await surveyTabVideos(tabId, dependencies.executeInAllFrames, dependencies.scheduler, dependencies.extensionVersion);
+      const survey = await surveyTabVideos(tabId, dependencies.frameInjection, dependencies.scheduler, dependencies.extensionVersion);
       if (survey.kind === "not_scriptable") return { kind: "unavailable", reason: "tab_not_scriptable" };
       if (survey.kind === "timed_out") return { kind: "unavailable", reason: "survey_timed_out" };
       await dependencies.tabModel.recordSurvey(tabId, survey.frames);

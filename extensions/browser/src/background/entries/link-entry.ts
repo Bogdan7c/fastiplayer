@@ -29,8 +29,8 @@ import type { SessionCloseReason } from "../../protocol/session/close-reason.ts"
 import type { EntryReporter } from "./entry-reporter.ts";
 
 /**
- * Как часто опрашиваем вкладку входа. Секунда: страница грузится секунды, а опрос — это `executeScript` во все
- * фреймы; чаще нагружает страницу, реже заставляет человека ждать лишнее.
+ * Как часто опрашиваем вкладку входа. Секунда: страница грузится секунды, а опрос — это `executeScript` в каждый
+ * фрейм; чаще нагружает страницу, реже заставляет человека ждать лишнее.
  */
 export const LINK_POLL_INTERVAL_MS = 1_000;
 

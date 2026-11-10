@@ -6,14 +6,18 @@
 
 import { browserApi } from "../../../shared/browser-api.ts";
 import { ARM_NEXT_VIDEO_ACCEPTED, ARM_NEXT_VIDEO_KIND, type ArmNextVideoRequest } from "../../../shared/handoff-contract.ts";
-import { createLateVideoReader, LATE_POSITION_TOLERANCE_S, visitFrameVideos } from "../../entries/late-video-reader.ts";
+import { createLateVideoReader, LATE_POSITION_TOLERANCE_S, LATE_VIDEO_VISIT_DEADLINE_MS, visitFrameVideos } from "../../entries/late-video-reader.ts";
+import { browserAnswersOfEachFrame } from "../../frame-injection/browser-frame-injection.ts";
 import { returnablePageOf } from "../handoff-session-dependencies.ts";
 import type { PageReopenBrowser, ReopenedTab } from "./page-reopen-browser.ts";
 import type { ReturnablePage } from "./page-return-memory.ts";
 
-/** Чтение видео вкладки тем же внедрением, что у позднего входа (сессия 10d): длина — для причины отказа. */
+/**
+ * Чтение видео вкладки тем же внедрением, что у позднего входа (сессия 10d): длина — для причины отказа.
+ * Фреймы по одному, без ожидания загрузки и со сроком (сессия 15c), как у позднего входа.
+ */
 const videoReader = createLateVideoReader((tabId, target) =>
-  browserApi.scripting.executeScript({ target: { tabId, allFrames: true }, func: visitFrameVideos, args: [target, LATE_POSITION_TOLERANCE_S] }),
+  browserAnswersOfEachFrame(tabId, { func: visitFrameVideos, args: [target, LATE_POSITION_TOLERANCE_S] }, LATE_VIDEO_VISIT_DEADLINE_MS),
 );
 
 /** Окно годится для возврата: обычное окно браузера того же вида (инкогнито или нет). */

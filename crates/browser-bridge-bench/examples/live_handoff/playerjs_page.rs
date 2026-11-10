@@ -25,6 +25,8 @@ const PLAYERJS_REPORT_SCRIPT: &str = r#"async (api) => {
   for (const tab of tabs) {
     const injections = await api.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
+      // Не ждать загрузки фреймов: ленивый фрейм рекламы klonua иначе держит ответ в Chromium вечно (15c).
+      injectImmediately: true,
       world: "MAIN",
       func: () => {
         const player = (window.pljssglobal ?? []).find((candidate) => typeof candidate?.api === "function");
@@ -65,6 +67,8 @@ const PLAYERJS_PICK_SCRIPT: &str = r#"async (api) => {
   for (const tab of tabs) {
     const injections = await api.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
+      // Не ждать загрузки фреймов (15c), как у пробы выше.
+      injectImmediately: true,
       world: "MAIN",
       args: [labels],
       func: async (wanted) => {

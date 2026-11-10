@@ -10,6 +10,12 @@
 /** Секунд на расхождение при сравнении длительностей и позиций: так задано планом, ±2 с. */
 export const LATE_POSITION_TOLERANCE_S = 2;
 
+/**
+ * Сколько ждём ответа фреймов при чтении и постановке позиции (сессия 15c). Обход видео во фрейме —
+ * миллисекунды; срок нужен только против замёрзшего фрейма, и он тот же, что у опроса вкладки (5 с).
+ */
+export const LATE_VIDEO_VISIT_DEADLINE_MS = 5_000;
+
 /** Что фон узнал об одном видео страницы. */
 export interface LateVideoFact {
   readonly position_s: number;
@@ -31,7 +37,7 @@ export interface LateFrameResult {
   readonly result?: unknown;
 }
 
-/** `scripting.executeScript` во все фреймы вкладки с функцией `visitFrameVideos`. */
+/** Внедрение `visitFrameVideos` во фреймы вкладки; ответы фреймов, которые ответили до срока. */
 export type ExecuteVideoVisit = (tabId: number, target: LateSeekTarget | null) => Promise<readonly (LateFrameResult | undefined)[]>;
 
 export interface LateVideoReader {
