@@ -1,0 +1,22 @@
+# Строки меню субтитров страницы в CC (мост, сессия 15a2, плеер, 2026-11-10)
+
+План: `user/browser-bridge/15a2-youtube-subtitles-menu.md`. Протокол НЕ менялся: `variant_menu_changed{kind: subtitles}` и `select_variant{subtitles}` есть с 1.0. Экстеншен-часть делает другой агент. Дорожки страницы 13b — `mem:subtitles/page-tracks-13b1`, варианты 14a — `mem:browser-bridge/core`.
+
+## Поток
+- Склад меню `browser_session/page_variants.rs` `PageVariantShelf` хранит и вид `Subtitles` (`PageVariantKind::Subtitles` в `app-egui/src/page_variants.rs`; `MenuStore::SkippedSubtitles` и счётчик пропусков удалены). `PageVariantFacts.subtitles` едет в окно каждый проход.
+- Выбор строки = путь выбора озвучки: `AppState::select_page_subtitle_line` (`state/subtitles/page_line_actions.rs`) → `select_page_variant` → намерение `SelectPageVariant` → `viewer_selects_page_variant` → `select_variant`. Для субтитров НЕТ `arm_position_carry` и нет `PageVariantNotice` (`PageVariantKind::selection_restarts_media()`); в рекламе отказ, как у вариантов.
+- Ожидание документа: `state/subtitles/page_line_wait.rs` `PageDocumentWait` живёт в `PageViewerChoice` (сеанс; новый склад забывает). `expect_document_if_queued` ставит его только при `Queued`. `attach_page_tracks` берёт среди новых документов подходящий (`PageDownload` + `showing` + поступление НОВЕЕ последнего, что владелец видел в момент выбора — `note_offered_arrival`) и зовёт `select_track` (`adopt_awaited_page_track`): субтитры включены, выбор зрителя на сеанс, отчёт `subtitle_choice` (его пересылает `AppState::offer_page_subtitle_shelf`, плюс `capture_user_subtitle_choices`). Замена той же дорожки (en→de→en) — новое поступление, подходит так же. Снимается: принят документ, `note_track` (другая дорожка), «выкл» (`note_visibility(Hidden)`), запрос следующей серии (`AppState::activate_page_next`), новый склад.
+- `PageSubtitleDocument.source: PageSubtitleSource {PageDownload, PageElement}` (из `origin` протокола; раньше терялся в `PageSubtitleOffer::from_message`).
+- Меню CC: `SubtitleOwner::menu_view_with_page_menu(page_menu, availability)` (`state/subtitles/page_lines.rs`) → `SubtitleMenuView.page_lines: Vec<PageSubtitleLine>` (+ `page_lines_availability`), дорожки `page_download` из `tracks` убираются (`has_tracks` остаётся «есть ли дорожки вообще»); кнопка CC видна по `has_menu_entries()`. Отметка строки = показ включён && страница выбрала && НЕ отмечена видимая дорожка списка. `AppState::subtitle_menu_view` собирает снимок из `page_variant_facts().subtitles`. UI: `subtitle_control/menu.rs` строки через общий `page_variant_row` (обрезка, серые в рекламе) перед дорожками, в той же прокрутке; действие `SubtitleControlAction::SelectPageLine(PageVariantChoice)` исполняет `AppState` (в owner — заглушка Silent).
+- Клавиша C при меню страницы БЕЗ единой дорожки (YouTube ещё ничего не скачал): `page_toggle_step` → первый шаг V (первая родная строка), `AppState::toggle_page_subtitles_without_tracks` в `state/subtitle_control_actions.rs`; с дорожками — как раньше.
+- Клавиша V при меню страницы: `next_native_line_step` — родные строки по порядку, затем «выкл», затем первая; автопереводы пропускаются. ДОГОВОР С ЭКСТЕНШЕНОМ: автоперевод опознаётся по подписи, содержащей «(auto-translated)» (без учёта регистра); родные строки идут раньше.
+
+## Ограничения
+- Нет headless `AppState`: клей `AppState` (select→ожидание, V) покрыт частями: `expect_document_if_queued`, `next_native_line_step`, `WindowMode::select_page_variant` для Subtitles, владелец до пикселей (`tests/page_gpu.rs`), сеанс (`session_media/tests/page_variants.rs`).
+- «Новая серия» снимает ожидание только через запрос Next плеера и новый сеанс моста; навигация самой страницы без нового сеанса ожидание не снимает (документ другого ролика мог бы стать выбором).
+
+## Тесты
+`state/subtitles/tests/page_lines.rs` (меню, отметки, ожидание, замена, сброс), `page_gpu.rs::after_a_line_choice_…` (пиксели), `page_lines.rs` внутренние (V), `page_line_wait.rs`, `browser_session/page_variants_tests.rs`, `session_media/tests/page_variants.rs` (один `select_variant{subtitles}`, нет возврата секунды, реклама/устаревшее), `window_mode/page_variant_menus_tests.rs`, `subtitle_control/tests/widget.rs` (кнопка без дорожек, клик, реклама), `assembly_tests.rs` (origin→source).
+
+## Стенд
+Живой прогон `live_handoff` берёт плеер из `target/release` — после правок плеера пересобирать `cargo build --release -p app-egui`, иначе старый плеер молча пропустит новое (урок 15a2: меню субтитров «не приходило» из-за сборки до правок).
