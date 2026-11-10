@@ -17,7 +17,7 @@ import type {
   VariantAdapter,
   VariantHands,
 } from "../../capabilities/variants/contract.ts";
-import { resolutionStepLabel } from "../../capabilities/variants/quality-label.ts";
+import { withResolutionStepLabels } from "../../capabilities/variants/quality-label.ts";
 import type { HandValue } from "../../../shared/adapter-hand-contract.ts";
 import { TWITCH_SITE } from "./identity.ts";
 import { TWITCH_HAND_ACTIONS, TWITCH_MARKUP } from "./markup.ts";
@@ -33,8 +33,7 @@ function qualityOption(candidate: HandValue): PageVariantOption {
   if (!isRecord(candidate)) throw new TwitchPageError("quality is not an object");
   const { id, label, selected, automatic } = candidate;
   if (typeof id !== "string" || typeof label !== "string" || typeof selected !== "boolean") throw new TwitchPageError("quality fields");
-  // Подпись — ступень («720p», а не «720p60»): одинакова на всех каналах, память выбора её найдёт.
-  return automatic === true ? { id, label, selected, automatic } : { id, label: resolutionStepLabel(label), selected };
+  return automatic === true ? { id, label, selected, automatic } : { id, label, selected };
 }
 
 export function createTwitchVariants(hands: VariantHands): VariantAdapter {
@@ -55,7 +54,8 @@ export function createTwitchVariants(hands: VariantHands): VariantAdapter {
         seriesKey: TWITCH_SITE.id,
         episodeKey,
         audio: [],
-        quality: (quality as readonly HandValue[]).map(qualityOption),
+        // Подпись — ступень («720p», а не «720p60»): одинакова на всех каналах, память выбора её найдёт.
+        quality: withResolutionStepLabels((quality as readonly HandValue[]).map(qualityOption)),
         nextEpisode: false,
       };
     },

@@ -137,6 +137,17 @@ describe("адаптер Twitch: описание", () => {
     });
   });
 
+  it("у канала и 720p60, и 720p30 — им остаются подписи сайта, двух одинаковых «720p» в меню нет", async () => {
+    const player = new FakeTwitchPlayer();
+    player.list = [
+      { name: "720p60", group: "720p60", height: 720, isDefault: false },
+      { name: "720p", group: "720p30", height: 720, isDefault: false },
+      { name: "480p", group: "480p30", height: 480, isDefault: false },
+    ];
+    const labels = (await adapterFor(playerWindow(player)).describe())?.quality.map((option) => option.label);
+    assert.deepEqual(labels, ["Auto", "720p60", "720p", "480p"]);
+  });
+
   it("годных качеств нет (плеер строится или все с мусорной группой) — меню качеств пустое, одинокого «Auto» нет", async () => {
     const player = new FakeTwitchPlayer();
     player.list = [{ name: "720p", group: "720 p60", height: 720, isDefault: false }];

@@ -23,3 +23,16 @@ describe("подпись качества ступенью разрешения"
     assert.equal(resolutionStepLabel("720px wide"), "720px wide");
   });
 });
+
+describe("подписи меню ступенями без двойников", () => {
+  it("одна ступень у двух пунктов (720p60 и 720p30 канала Twitch) — им остаются подписи сайта, остальным ступени", async () => {
+    const { distinctResolutionStepLabels } = await import("../../src/adapters/capabilities/variants/quality-label.ts");
+    assert.deepEqual(distinctResolutionStepLabels(["1080p60", "720p60", "720p30", "480p"]), ["1080p", "720p60", "720p30", "480p"]);
+  });
+
+  it("двойников нет — все ступенями; пустое меню — пустое", async () => {
+    const { distinctResolutionStepLabels } = await import("../../src/adapters/capabilities/variants/quality-label.ts");
+    assert.deepEqual(distinctResolutionStepLabels(["1080p Premium", "720p60", "Auto"]), ["1080p", "720p", "Auto"]);
+    assert.deepEqual(distinctResolutionStepLabels([]), []);
+  });
+});

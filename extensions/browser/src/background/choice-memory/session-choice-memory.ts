@@ -100,6 +100,12 @@ interface EpisodeState {
   readonly seen: Partial<Record<PageVariantKind, SeenSelection>>;
   /** Что память на этой серии уже сделала или решила не делать (в том числе потому, что выбрал зритель). */
   readonly settled: Set<AppliedPart>;
+  /**
+   * Фильм этой серии сейчас на экране: последние часы плеера после начала серии — не реклама и не «жду»
+   * нового поколения. Пока нет, страница ещё устраивается (реклама, свой язык по умолчанию, перенос выбора
+   * самим сайтом — YouTube, 15a): её смены выбора — точка отсчёта, а не выбор человека.
+   */
+  filmOnScreen: boolean;
 }
 
 const VARIANT_KINDS: readonly PageVariantKind[] = ["audio", "quality"];
@@ -157,7 +163,7 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
   }
 
   function startEpisode(key: string | null, first: boolean): void {
-    episode = { key, first, startedAt: dependencies.now(), seen: {}, settled: new Set() };
+    episode = { key, first, startedAt: dependencies.now(), seen: {}, settled: new Set(), filmOnScreen: false };
   }
 
   /** Где мы в серии для правила озвучки. Не первая серия сеанса открыта страницей с начала. */
@@ -192,6 +198,11 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       const previous = current.seen[kind];
       current.seen[kind] = selected;
       if (previous === undefined || previous.label === selected.label || pageIsSettling()) continue;
+      // Серия ещё устраивается (реклама, новое поколение не показано): так страница выбирает сама.
+      if (!current.filmOnScreen || dependencies.adOnScreen()) {
+        note(`page switched ${kind} before the episode's film was on screen: not remembered`);
+        continue;
+      }
       if (selected.automatic) {
         note(`page switched ${kind} to the site's automatic choice: not remembered`);
         continue;
@@ -285,6 +296,8 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       // озвучку, а сайт начал бы серию заново (решение 287). Время рекламы — тоже не время фильма: сбрасываем.
       if (dependencies.adOnScreen()) playerSecond = undefined;
       else if (state !== "waiting") playerSecond = Math.max(0, positionUs / 1_000_000);
+      // Те же часы говорят, идёт ли фильм серии: смены на странице до этого — не выбор человека (15a).
+      if (episode !== undefined) episode.filmOnScreen = !dependencies.adOnScreen() && state !== "waiting";
       // Секунду помним и когда память молчит (страница ушла «сиротой», 11b2): вернувшейся странице она нужна сразу.
       if (!stopped) applyRemembered();
     },

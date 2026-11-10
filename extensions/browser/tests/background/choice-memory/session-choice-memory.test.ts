@@ -112,6 +112,7 @@ describe("что записывается", () => {
   it("смена на странице не по нашей команде — выбор человека (решение 284); стартовое «по умолчанию» — нет", async () => {
     const world = harness();
     world.memory.pageDescribed(page("Dub A", "360p"));
+    world.memory.playerClock(5_000_000, "playing"); // фильм серии на экране: дальше смены — человека
     await settle();
     assert.equal(world.stored(), undefined, "первое увиденное — точка отсчёта");
     world.memory.pageDescribed(page("Dub C", "360p"));
@@ -215,12 +216,50 @@ describe("что и когда применяется", () => {
   it("зритель выбрал в этой серии сам — память не спорит", async () => {
     const world = harness({ remembered: { audio: "Dub B" } });
     world.memory.pageDescribed(page("Dub A", "360p"));
-    await settle();
-    world.memory.pageDescribed(page("Dub C", "360p"));
+    // Фильм на экране, запись хранилища ещё читается: зритель успел выбрать на странице раньше памяти.
     world.memory.playerClock(1_000_000, "playing");
+    world.memory.pageDescribed(page("Dub C", "360p"));
     await settle();
     assert.deepEqual(world.selects, []);
     assert.equal(world.stored()?.audio, "Dub C");
+  });
+
+  it("серия устраивается (15a, YouTube): смены страницы в рекламе и до показа нового поколения — не выбор, память цела и применяется", async () => {
+    const world = harness({ remembered: { audio: "Dub B" } });
+    world.memory.pageDescribed(page("Dub A", "360p", "1"));
+    world.memory.playerClock(5_000_000, "playing");
+    await settle();
+    world.selects.length = 0;
+    // Next: новая серия, страница сначала показывает своё «по умолчанию», плеер ждёт новое поколение…
+    world.memory.pageDescribed(page("Dub C", "360p", "2"));
+    world.memory.playerClock(0, "waiting");
+    // …в рекламе страница сама перескакивает на «свой» язык — это не человек.
+    world.ad.onScreen = true;
+    world.memory.pageDescribed(page("Dub A", "360p", "2"));
+    world.ad.onScreen = false;
+    world.memory.pageDescribed(page("Dub C", "360p", "2"));
+    await settle();
+    assert.equal(world.stored()?.audio, "Dub B", "запомненное не перезаписано языком страницы по умолчанию");
+    assert.ok(world.notes.some((note) => /before the episode's film was on screen: not remembered/u.test(note)));
+    // Фильм серии показан — память ставит запомненное (серия не первая: с начала).
+    world.memory.playerClock(1_000_000, "playing");
+    assert.deepEqual(world.selects.slice(-1), [`audio:${idOf("audio", "Dub B")}`]);
+  });
+
+  it("фильм серии на экране — смена на странице снова выбор человека, а реклама посреди фильма опять закрывает запись", async () => {
+    const world = harness();
+    world.memory.pageDescribed(page("Dub A", "360p"));
+    world.memory.playerClock(10_000_000, "playing");
+    world.ad.onScreen = true;
+    world.memory.playerClock(0, "playing");
+    world.memory.pageDescribed(page("Dub C", "360p"));
+    await settle();
+    assert.equal(world.stored(), undefined, "смена в рекламе не записана");
+    world.ad.onScreen = false;
+    world.memory.playerClock(11_000_000, "playing");
+    world.memory.pageDescribed(page("Dub A", "360p"));
+    await settle();
+    assert.equal(world.stored()?.audio, "Dub A", "после рекламы смена на странице — снова выбор человека");
   });
 
   it("передали в рекламе посреди серии: «0 / waiting» после рекламы — не начало серии, озвучка не трогается", async () => {

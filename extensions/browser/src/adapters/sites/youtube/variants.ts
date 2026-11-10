@@ -18,7 +18,7 @@ import type {
   VariantAdapter,
   VariantHands,
 } from "../../capabilities/variants/contract.ts";
-import { resolutionStepLabel } from "../../capabilities/variants/quality-label.ts";
+import { withResolutionStepLabels } from "../../capabilities/variants/quality-label.ts";
 import type { HandValue } from "../../../shared/adapter-hand-contract.ts";
 import { VARIANT_KEY_PATTERN, YOUTUBE_HAND_ACTIONS, YOUTUBE_VARIANT_MARKUP } from "./variant-markup.ts";
 
@@ -88,11 +88,11 @@ function qualityMenu(snapshot: PlayerSnapshot): readonly PageVariantOption[] {
   const levels = snapshot.qualities.filter((quality) => quality.level !== autoLevel && VARIANT_KEY_PATTERN.test(quality.level));
   const unique = levels.filter((quality, index) => levels.findIndex((other) => other.level === quality.level) === index);
   if (unique.length === 0) return [];
-  return [
+  // Подпись — ступень («720p», а не «720p60»): одинакова на всех роликах, память выбора её найдёт.
+  return withResolutionStepLabels([
     { id: autoLevel, label: "Auto", selected: snapshot.qualityPreference === autoLevel, automatic: true },
-    // Подпись — ступень («720p», а не «720p60»): одинакова на всех роликах, память выбора её найдёт.
-    ...unique.map((quality) => ({ id: quality.level, label: resolutionStepLabel(quality.label), selected: snapshot.qualityPreference === quality.level })),
-  ];
+    ...unique.map((quality) => ({ id: quality.level, label: quality.label, selected: snapshot.qualityPreference === quality.level })),
+  ]);
 }
 
 /** Меню озвучек: id — код языка; повтор языка — остаётся первая дорожка. */
