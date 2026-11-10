@@ -69,6 +69,8 @@ How to connect the browsers and what each status means: [README.md](README.md).
 - **Ashdi series** (klonua, `?multivoice`): dubs are playlist folders. A switch takes three presses (dub, the same season, the same episode). If the new dub does not have this season or episode, nothing changes: the video keeps playing and the page menu goes back. This is common, because the site opens the latest episode and other dubs usually lag behind; pick an earlier episode on the page first. The player does not yet say why nothing changed (planned in session 15c). Next stays inside the current dub and is not offered after its last episode.
 - **Ashdi film**: dubs are list items; the site restarts the film from 0 and shows ads again, and the window returns to the same second. A dub set again by the memory is the same switch, so the ads play again too.
 - The site's own tabs above the player (uakino "UA #1", "Trailer") are not part of the player and are not in our menus.
+- **uakino quality** switches in place, but not at once: the page first plays out what it has already downloaded, about a minute. The menu marks the new quality at once; the quality button shows what is on screen, so it keeps the old value until the new picture arrives.
+- **Memory and "continue watching".** The memory sets a dub only in the first 30 seconds of an episode. uaserials itself resumes an episode where you stopped, so on that episode the remembered dub is not set; on the next episode it is.
 - The page plays its ads again before each episode and after each dub switch. Choices in our menus are refused while an ad is on screen and can be repeated after it.
 - **Chromium on klonua: hand-off fails** with "the page did not answer" (the tab survey times out). This is older than the PlayerJS adapter and is limited to Chrome-family browsers on this site. The fix is planned right after this session (plan session 15c). Firefox works.
 
@@ -76,4 +78,4 @@ How to connect the browsers and what each status means: [README.md](README.md).
 
 1. **Automated tests:** about 3 000 extension tests (`npm run check` in `extensions/browser`), among them the PlayerJS adapter on recorded page structures of Ashdi and Tortuga (`tests/adapters/playerjs-*.test.ts`), YouTube and Twitch adapters, and the choice memory. End-to-end bench scenarios (`scripts/browser-bridge-bench.sh`) prove that frames reach the renderer.
 2. **Live runs** on the real sites use the bench helper `live_handoff` (Chromium and Firefox, fresh profiles, invisible desktop). A page probe reads what the site's player really shows. Session reports are in `user/browser-bridge/results/` (15a, 15a2, 15b and earlier).
-3. **Owner checks** in the owner's own Firefox at the end of each adapter session.
+3. **Owner checks** in the owner's own Firefox at the end of each adapter session (for 15b the owner had the agent run the script in that browser).

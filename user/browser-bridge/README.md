@@ -315,7 +315,7 @@ DRM в план не входит и не войдёт: страницы с за
 |---|---|---|---|
 | 15a | [Адаптеры YouTube и Twitch](15a-youtube-twitch-adapters.md) | DONE ([results/15a.md](results/15a.md)) | 14 |
 | 15a2 | [Субтитры YouTube в меню CC](15a2-youtube-subtitles-menu.md) | DONE ([results/15a2.md](results/15a2.md)) | 15a |
-| 15b | [PlayerJS и таблица совместимости](15b-ukrainian-site-adapters.md) | агентская часть готова ([results/15b.md](results/15b.md)), ждёт владельца | 15a2 |
+| 15b | [PlayerJS и таблица совместимости](15b-ukrainian-site-adapters.md) | агентская часть готова ([results/15b.md](results/15b.md)), сценарий владельца прогнан в его Firefox, ждёт слова владельца | 15a2 |
 | 15c | [Опрос вкладки не ждёт зависший фрейм](15c-frame-survey-hung-frame.md) | klonua в Chromium (297, бэклог п. 46), подсказка при отказе выбора (298) | 15b |
 | 16 | [Следующая серия и навигация — **веха M3**](16-next-episode-navigation.md) | Переход серии без разрыва окна, одностраничные сайты, live | 15 |
 | 16b | [Ленты коротких видео](16b-short-video-feeds.md) | Окно идёт за лентой: Instagram Reels, YouTube Shorts, TikTok (решения 226, 227) | 16 |
