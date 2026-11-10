@@ -8,11 +8,11 @@ const YOUTUBE_TIMEDTEXT = "https://www.youtube.com/api/timedtext?v=abcdefghijk&e
 
 describe("адаптер timedtext YouTube", () => {
   it("ручные субтитры: язык из lang, не авто", () => {
-    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&fmt=json3`), { language: "en", label: null, auto_generated: false });
+    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&fmt=json3`), { language: "en", label: "English", auto_generated: false });
   });
 
   it("автосубтитры: kind=asr — auto_generated", () => {
-    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&kind=asr&fmt=srv3`), { language: "en", label: null, auto_generated: true });
+    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&kind=asr&fmt=srv3`), { language: "en", label: "English (auto-generated)", auto_generated: true });
   });
 
   it("автоперевод: язык берётся из tlang, а не из lang исходной дорожки", () => {

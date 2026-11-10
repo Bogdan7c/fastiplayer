@@ -36,7 +36,7 @@ describe("хук fetch: что читается", () => {
     const url = "https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en&kind=asr&fmt=json3";
     await pageFetches(subtitlePage, { url, contentType: "application/json; charset=UTF-8", body: encode('{"wireMagic":"pb3","events":[{"tStartMs":0}]}') });
     const [stored] = subtitlePage.harness.bridge.subtitles.store.snapshot();
-    assert.deepEqual(stored?.naming, { language: "en", label: null, auto_generated: true });
+    assert.deepEqual(stored?.naming, { language: "en", label: "English (auto-generated)", auto_generated: true });
     assert.equal(stored?.formatHint, "json3");
   });
 

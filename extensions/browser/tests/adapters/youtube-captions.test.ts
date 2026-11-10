@@ -122,7 +122,7 @@ const SAMPLE_TRACKS = [
 // ------------------------------------------------------------------ тесты
 
 describe("меню субтитров YouTube: описание через обе руки", () => {
-  it("сначала родные дорожки в порядке YouTube, потом автоперевод; подписи английские; безымянный язык и мусорный код пропущены", async () => {
+  it("сначала родные дорожки в порядке YouTube, потом автоперевод; подписи английские; язык без английского названия подписан кодом, мусорный код пропущен", async () => {
     const fake = captionsPlayer({ tracks: SAMPLE_TRACKS, translations: ["de", "uk", "zh-Hans", "zz", "bad code"] });
     assert.deepEqual(await subtitleLabels(fake), [
       "English",
@@ -131,6 +131,7 @@ describe("меню субтитров YouTube: описание через об�
       "German (auto-translated)",
       "Ukrainian (auto-translated)",
       "Simplified Chinese (auto-translated)",
+      "zz (auto-translated)",
     ]);
   });
 

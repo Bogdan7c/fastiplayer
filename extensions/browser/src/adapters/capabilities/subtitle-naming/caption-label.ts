@@ -58,3 +58,13 @@ export function captionLabelOf(parts: CaptionLabelParts): string {
   const named = parts.trackName === undefined || parts.trackName === "" ? languageName : `${languageName} (${parts.trackName})`;
   return machineSuffix === undefined ? named : `${named} ${machineSuffix}`;
 }
+
+/**
+ * Подпись пункта автоперевода на язык `language` (меню субтитров сайта, решение 293): английское название
+ * языка и метка «(auto-translated)»; браузер не знает названия — вместо него сам код («aa (auto-translated)»),
+ * но метка остаётся всегда: по ней плеер отличает переводы от родных дорожек (клавиша V).
+ */
+export function translationCaptionLabel(language: string): string {
+  const languageName = englishLanguageName(language) ?? language;
+  return `${languageName} ${AUTO_TRANSLATED_SUFFIX}`;
+}
