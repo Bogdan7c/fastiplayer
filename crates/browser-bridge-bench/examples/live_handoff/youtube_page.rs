@@ -59,7 +59,11 @@ const YOUTUBE_REPORT_SCRIPT: &str = r#"async (api) => {
       const info = track && Object.values(track).find((value) => value && typeof value.name === "string" && typeof value.id === "string");
       const audio = info ? info.id.split(".")[0] + " (" + info.name + ")" : "none";
       const languages = (player.getAvailableAudioTracks?.() ?? []).map((candidate) => Object.values(candidate).find((value) => value && typeof value.id === "string" && typeof value.name === "string")?.id.split(".")[0]).filter(Boolean).join(",");
-      return "video=" + player.getVideoData().video_id + " audio=" + audio + " api_audio_sets=" + window.__fastiplayerProbeAudioSets + " languages=" + (languages || "none") + " preference=" + player.getUserPlaybackQualityPreference?.() + " on screen=" + player.getPlaybackQuality?.();
+      // Субтитры (15a2): что включено у YouTube и сколько документов timedtext он скачал (размер тела, без адресов).
+      let captionTrack = "none";
+      try { const current = player.getOption?.("captions", "track"); if (current && current.vss_id) captionTrack = current.vss_id + (current.translationLanguage ? ">" + current.translationLanguage.languageCode : ""); } catch (error) { captionTrack = "unavailable"; }
+      const timedtext = performance.getEntriesByType("resource").filter((entry) => entry.name.includes("/api/timedtext")).map((entry) => String(entry.encodedBodySize)).join(",");
+      return "video=" + player.getVideoData().video_id + " audio=" + audio + " api_audio_sets=" + window.__fastiplayerProbeAudioSets + " languages=" + (languages || "none") + " preference=" + player.getUserPlaybackQualityPreference?.() + " on screen=" + player.getPlaybackQuality?.() + " captions=" + captionTrack + " timedtext_bodies=[" + timedtext + "]";
     },
   });
   // Память выбора экстеншена (14b2): сколько сериалов запомнено и какие подписи — без отпечатков.
