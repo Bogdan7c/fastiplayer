@@ -9,6 +9,7 @@
 // (`shared/adapter-hand-contract.ts`), а один длинный ответ страницы иначе сорвал бы описание целиком.
 
 import { PAGE_FUNCTION_MISSING } from "../../capabilities/player-hand/contract.ts";
+import { optionFingerprintOf } from "../../capabilities/variants/option-fingerprint.ts";
 import { call, listFrom, nonEmptyString, read } from "./page-reading.ts";
 import { VARIANT_KEY_PATTERN, YOUTUBE_CAPTIONS_MARKUP, YOUTUBE_PLAYER_FUNCTIONS } from "./variant-markup.ts";
 
@@ -47,22 +48,13 @@ function clipped(text: string): string {
   return text.length > markup.maxFieldLength ? text.slice(0, markup.maxFieldLength) : text;
 }
 
-/** Короткий отпечаток строки (FNV-1a, 32 бита) в base36: хватает, чтобы заметить смену дорожки под тем же номером. */
-function fingerprintOf(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
-  }
-  return hash.toString(36);
-}
-
 /**
  * Id родной дорожки: `t<номер>_<отпечаток vssId>`. Номер ведёт к дорожке, отпечаток проверяет, что на этом
  * месте по-прежнему та же дорожка: между описанием и выбором YouTube мог пересобрать список (смена ролика,
  * реклама). Не совпало — выбор честно «такого нет», а не молчаливая подмена соседом.
  */
 function trackItemId(index: number, vssId: string): string {
-  return `${markup.nativeIdPrefix}${index}_${fingerprintOf(vssId)}`;
+  return `${markup.nativeIdPrefix}${index}_${optionFingerprintOf(vssId)}`;
 }
 
 /** Id пункта перевода. */
