@@ -96,7 +96,7 @@ pub(super) struct PageTrackEvidence {
 }
 
 /// Выбор зрителя за сеанс (один склад).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct PageViewerChoice {
     /// Склад, к сеансу которого относится выбор (`None` — склада ещё не видели).
     shelf: Option<PageSubtitleShelfId>,
@@ -130,9 +130,11 @@ impl PageViewerChoice {
         self.latest_seen_arrival = latest;
     }
 
-    /// Зритель выбрал строку меню страницы: ждём документ, который придёт после этого.
-    pub(super) fn expect_page_document(&mut self) {
-        self.document_wait.begin(self.latest_seen_arrival);
+    /// Зритель выбрал строку меню страницы с подписью `line_label`: ждём её документ, который
+    /// придёт после этого.
+    pub(super) fn expect_page_document(&mut self, line_label: &str) {
+        self.document_wait
+            .begin(self.latest_seen_arrival, line_label);
     }
 
     /// Снять ожидание документа строки (следующая серия, отмена).

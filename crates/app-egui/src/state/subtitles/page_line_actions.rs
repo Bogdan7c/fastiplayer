@@ -9,6 +9,8 @@
 //!   если намерение действительно ушло (отказ в рекламе, устаревшее меню ожидания не рождают).
 //! - Клавиша V при меню страницы ходит по родным строкам ([`next_native_line_step`]).
 
+use std::sync::Arc;
+
 use super::SubtitleOwner;
 use super::control_actions::ControlActionFeedback;
 use super::page_lines::{NativeLineStep, next_native_line_step, page_toggle_step};
@@ -27,8 +29,21 @@ impl AppState {
         &mut self,
         choice: PageVariantChoice,
     ) -> PageVariantSelectOutcome {
+        // Подпись строки — ключ, по которому придёт её документ (`page_line_wait`). Берём её из
+        // меню страницы, а не из снимка меню CC: снимок пуст, пока у владельца субтитров нет
+        // медиа, а выбор (тестовый или ранний) может прийти раньше (живой прогон 15a2). Строки
+        // нет в текущем меню (устаревший выбор) — окно и так откажет, ожидание тогда не ставится.
+        let line_label: Option<Arc<str>> = self
+            .page_variant_facts()
+            .subtitles
+            .as_ref()
+            .filter(|menu| menu.choice(choice.index) == Some(choice))
+            .and_then(|menu| menu.label(choice.index))
+            .map(Arc::from);
         let outcome = self.select_page_variant(choice);
-        expect_document_if_queued(outcome, &mut self.subtitles);
+        if let Some(line_label) = line_label {
+            expect_document_if_queued(outcome, &mut self.subtitles, &line_label);
+        }
         outcome
     }
 
@@ -95,8 +110,9 @@ impl AppState {
 pub(super) fn expect_document_if_queued(
     outcome: PageVariantSelectOutcome,
     owner: &mut SubtitleOwner,
+    line_label: &str,
 ) {
     if outcome == PageVariantSelectOutcome::Queued {
-        owner.expect_page_document();
+        owner.expect_page_document(line_label);
     }
 }

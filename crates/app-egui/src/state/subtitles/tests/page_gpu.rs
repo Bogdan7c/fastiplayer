@@ -147,7 +147,7 @@ fn after_a_line_choice_the_document_that_arrives_is_drawn_and_without_it_the_old
     );
 
     // Зритель выбрал строку страницы; документ второй раз (замена) показывается и рисуется.
-    owner.expect_page_document();
+    owner.expect_page_document("German");
     let before_answer = frame_at(&mut owner, &mut harness, media, 2_000);
     assert!(
         bounds_of(&before_answer, WINDOW_WIDTH, is_light).is_some(),

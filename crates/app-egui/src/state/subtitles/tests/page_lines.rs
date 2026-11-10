@@ -41,10 +41,22 @@ fn downloaded(
     page_document(
         track,
         Some(language),
-        None,
+        Some(extension_label(language)),
         display,
         cue(1, 4, text).as_bytes(),
     )
+}
+
+/// Подпись, которой экстеншен подписывает скачанный документ (`caption-label.ts`): та же, что у
+/// строки меню этого языка, — по ней ожидание узнаёт ответ на выбор строки.
+fn extension_label(language: &str) -> &'static str {
+    match language {
+        "en" => "English",
+        "de" => "German",
+        "fr" => "French",
+        "es" => "Spanish",
+        other => panic!("no test label for {other}"),
+    }
 }
 
 /// Тот же документ, но взятый из элемента `<track>`, а не скачанный страницей.
@@ -229,7 +241,7 @@ fn the_ad_availability_is_carried_to_the_lines() {
 #[test]
 fn the_document_that_follows_a_line_choice_becomes_the_viewers_choice_and_is_reported() {
     let (mut owner, mut shelf) = viewer_picked_english();
-    owner.expect_page_document();
+    owner.expect_page_document("German");
     // Пока документа нет, прежний показ не трогается.
     assert_eq!(shown_row(&owner).as_deref(), Some("English"));
     assert_eq!(displayed_texts_at(&owner, 2_000), ["HELLO"]);
@@ -245,6 +257,34 @@ fn the_document_that_follows_a_line_choice_becomes_the_viewers_choice_and_is_rep
     assert_eq!(displayed_texts_at(&owner, 2_000), ["HALLO"]);
     assert_eq!(owner.take_viewer_page_choice_report(), page_track_report(2));
     assert!(!owner.is_waiting_for_page_document(), "the wait is over");
+}
+
+#[test]
+fn a_late_document_of_another_line_does_not_answer_the_choice() {
+    // Живой прогон 15a2: документ прежнего языка дошёл до владельца уже после выбора строки
+    // (загрузки страницы обгоняют друг друга, зритель быстро жмёт V). Ответ — только документ
+    // с подписью выбранной строки.
+    let (mut owner, mut shelf) = viewer_picked_english();
+    owner.expect_page_document("German");
+
+    offer(
+        &mut owner,
+        &shelf.store(downloaded(2, "fr", SHOWING, "SALUT")),
+    );
+    assert_eq!(shown_row(&owner).as_deref(), Some("English"));
+    assert_eq!(owner.take_viewer_page_choice_report(), None);
+    assert!(
+        owner.is_waiting_for_page_document(),
+        "still waiting for German"
+    );
+
+    offer(
+        &mut owner,
+        &shelf.store(downloaded(3, "de", SHOWING, "HALLO")),
+    );
+    assert_eq!(shown_row(&owner).as_deref(), Some("German"));
+    assert_eq!(displayed_texts_at(&owner, 2_000), ["HALLO"]);
+    assert_eq!(owner.take_viewer_page_choice_report(), page_track_report(3));
 }
 
 #[test]
@@ -268,7 +308,7 @@ fn without_a_line_choice_a_showing_document_does_not_beat_the_viewers_own_pick()
 fn a_replacement_of_a_track_the_viewer_left_is_shown_when_the_line_is_chosen_again() {
     let (mut owner, mut shelf) = viewer_picked_english();
     // en -> de: документ немецкого пришёл, зритель на нём.
-    owner.expect_page_document();
+    owner.expect_page_document("German");
     offer(
         &mut owner,
         &shelf.store(downloaded(2, "de", SHOWING, "HALLO")),
@@ -285,7 +325,7 @@ fn a_replacement_of_a_track_the_viewer_left_is_shown_when_the_line_is_chosen_aga
 
     // de -> en: зритель выбрал строку английского, YouTube скачал документ заново, и он
     // заменил прежнюю дорожку на месте (тот же номер).
-    owner.expect_page_document();
+    owner.expect_page_document("English");
     offer(
         &mut owner,
         &shelf.store(downloaded(1, "en", SHOWING, "HELLO AGAIN")),
@@ -306,7 +346,7 @@ fn documents_seen_before_the_choice_never_answer_it_even_for_a_new_generation() 
     );
     assert_eq!(shown_row(&owner).as_deref(), Some("English"));
 
-    owner.expect_page_document();
+    owner.expect_page_document("English");
     // Тот же склад ещё раз и новое поколение медиа (после рекламы): всё это уже видели.
     assert_eq!(
         owner.attach_page_tracks(&shelf.view()),
@@ -325,7 +365,7 @@ fn documents_seen_before_the_choice_never_answer_it_even_for_a_new_generation() 
 #[test]
 fn only_shown_downloads_of_the_page_answer_the_choice() {
     let (mut owner, mut shelf) = viewer_picked_english();
-    owner.expect_page_document();
+    owner.expect_page_document("Spanish");
 
     offer(
         &mut owner,
@@ -354,7 +394,7 @@ fn the_wait_ends_when_the_viewer_picks_another_track_or_turns_subtitles_off() {
             &mut owner,
             &shelf.store(from_track_element(2, "fr", NOT_SHOWING, "SALUT")),
         );
-        owner.expect_page_document();
+        owner.expect_page_document("German");
         match ending {
             "another track" => click_menu_row(&mut owner, "French"),
             _ => {
@@ -381,7 +421,7 @@ fn the_wait_ends_when_the_viewer_picks_another_track_or_turns_subtitles_off() {
 #[test]
 fn a_new_session_forgets_the_wait() {
     let (mut owner, shelf) = viewer_picked_english();
-    owner.expect_page_document();
+    owner.expect_page_document("German");
     let mut next_session = shelf.of_next_session();
 
     offer(
@@ -402,7 +442,7 @@ fn waiting_does_not_change_the_menu_text_of_the_tracks() {
     // Страховка «ожидание не владеет дорожками»: список дорожек до и после выбора строки один.
     let (mut owner, _shelf) = viewer_picked_english();
     let before = menu_texts(&owner);
-    owner.expect_page_document();
+    owner.expect_page_document("German");
     assert_eq!(menu_texts(&owner), before);
 }
 
@@ -419,10 +459,10 @@ fn only_a_queued_request_makes_the_owner_wait_for_the_document() {
     ];
     for outcome in refusals {
         let mut owner = browser_owner(&SubtitlesConfig::default(), instance(1));
-        expect_document_if_queued(outcome, &mut owner);
+        expect_document_if_queued(outcome, &mut owner, "German");
         assert!(!owner.is_waiting_for_page_document(), "{outcome:?}");
     }
     let mut owner = browser_owner(&SubtitlesConfig::default(), instance(1));
-    expect_document_if_queued(PageVariantSelectOutcome::Queued, &mut owner);
+    expect_document_if_queued(PageVariantSelectOutcome::Queued, &mut owner, "German");
     assert!(owner.is_waiting_for_page_document());
 }

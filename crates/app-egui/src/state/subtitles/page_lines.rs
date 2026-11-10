@@ -129,8 +129,8 @@ impl SubtitleOwner {
 
     /// Зритель выбрал строку меню страницы и просьба ушла: ждём её документ (правила —
     /// `page_line_wait`). Показ до прихода документа не трогается.
-    pub(super) fn expect_page_document(&mut self) {
-        self.page_viewer.expect_page_document();
+    pub(super) fn expect_page_document(&mut self, line_label: &str) {
+        self.page_viewer.expect_page_document(line_label);
     }
 
     /// Снять ожидание документа строки (зритель запросил следующую серию).
