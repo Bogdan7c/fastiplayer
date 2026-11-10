@@ -45,6 +45,13 @@
 //! YouTube на вкладке просят держать уровень (`small` = 240p, `hd720`…) его же API, как ручной выбор
 //! в меню сайта: служебная страница экстеншена вызывает его в главном мире страницы.
 //!
+//! Адаптеры сайтов (15a): `--select-variant <выборы>` — выбор в меню вариантов окна по времени, как в стенде
+//! `series`: `audio:1@6000,quality:0@12000` (вид, номер пункта меню, миллисекунды позиции плеера) — тестовая
+//! переменная плеера. `--youtube-report-every <с>` — раз в столько секунд печатать, что сейчас на странице
+//! YouTube (id ролика, озвучка, качество): так видно, что выбор дошёл до страницы и память его вернула.
+//! `--next-after <с>` — через столько секунд после передачи окно жмёт Next (MPRIS), вне
+//! рекламы это «следующая серия» адаптера. Помощник печатает строки плеера про меню, выбор и возврат секунды.
+//!
 //! Сайты, где видео стартует только по клику (Ashdi, Tortuga, 13b2): `--click-at <x>,<y>` — клик настоящей
 //! мышью стенда по точке невидимого экрана после паузы `--wait`, до передачи. `--screenshots <каталог>` —
 //! снимки невидимого экрана (до клика, после клика и каждые 15 с после передачи) копируются в каталог:
@@ -52,6 +59,8 @@
 //!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
+
+mod youtube_page;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,6 +80,9 @@ use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
 use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
+use youtube_page::{
+    YoutubeQualityStep, ask_youtube_quality, parse_youtube_quality, report_youtube_page,
+};
 
 /// Строки журнала плеера, которые интересны человеку.
 const INTERESTING_LINES: &[&str] = &[
@@ -93,6 +105,11 @@ const INTERESTING_LINES: &[&str] = &[
     // Качество (13c): подпись кнопки качества сменилась, зритель попросил вкладку страницы.
     "Browser quality shown",
     "Show page requested",
+    // Адаптеры сайтов (15a): меню страницы дошло, выбор ушёл, секунда вернулась, Next.
+    "Page variant",
+    "Page navigation changed",
+    "Next episode",
+    "Position carr",
 ];
 /// Сколько окно стоит на паузе до закрытия вкладки и сколько сирота ждёт до play (`--tab-return-after`).
 const TAB_RETURN_PAUSE: Duration = Duration::from_secs(1);
@@ -175,34 +192,13 @@ struct Arguments {
     seek: Option<SeekPlan>,
     /// Смены качества плеером YouTube после передачи (`--youtube-quality`), по порядку.
     youtube_qualities: Vec<YoutubeQualityStep>,
+    /// Выборы в меню вариантов окна (`--select-variant`): значение тестовой переменной плеера как есть.
+    page_variant_choices: Option<String>,
+    /// Через сколько после передачи окно жмёт Next (`--next-after`), `None` — не жать.
+    next_after: Option<Duration>,
+    /// Как часто печатать пробу страницы YouTube (`--youtube-report-every`), `None` — не печатать.
+    youtube_report_every: Option<Duration>,
 }
-
-/// Смена качества на странице YouTube (13c): API плеера сайта, как ручной выбор в его меню.
-struct YoutubeQualityStep {
-    /// Через сколько после передачи.
-    after: Duration,
-    /// Уровень YouTube: `tiny` (144p), `small` (240p), `medium` (360p), `large` (480p), `hd720`…
-    level: String,
-}
-
-/// Функция служебной страницы: находит вкладку YouTube и в ГЛАВНОМ мире страницы просит её плеер
-/// держать уровень `__LEVEL__` (`setPlaybackQualityRange`). Возвращает строку для журнала помощника.
-const YOUTUBE_QUALITY_SCRIPT: &str = r#"async (api) => {
-  const tabs = await api.tabs.query({ url: "*://*.youtube.com/*" });
-  if (tabs.length === 0) return "no YouTube tab";
-  const [injection] = await api.scripting.executeScript({
-    target: { tabId: tabs[0].id },
-    world: "MAIN",
-    args: ["__LEVEL__"],
-    func: (level) => {
-      const player = document.getElementById("movie_player");
-      if (!player || typeof player.setPlaybackQualityRange !== "function") return "no player API";
-      player.setPlaybackQualityRange(level, level);
-      return "asked " + level + ", the page says " + player.getPlaybackQuality();
-    },
-  });
-  return String(injection && injection.result);
-}"#;
 
 /// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
 #[derive(Clone, Copy)]
@@ -269,6 +265,9 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut seek_after = None;
     let mut seek_by = None;
     let mut youtube_qualities = Vec::new();
+    let mut page_variant_choices = None;
+    let mut next_after = None;
+    let mut youtube_report_every = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -320,6 +319,20 @@ fn parse_arguments() -> Result<Arguments, String> {
                 seek_after = Some(Duration::from_secs(after));
             }
             ("--youtube-quality", _) => youtube_qualities.push(parse_youtube_quality(&value)?),
+            // Форму проверяет сам плеер при старте: неверная строка — его ошибка в журнале, а не тихий пропуск.
+            ("--select-variant", _) => page_variant_choices = Some(value),
+            ("--youtube-report-every", _) => {
+                let every: u64 = value
+                    .parse()
+                    .map_err(|error| format!("--youtube-report-every: {error}"))?;
+                youtube_report_every = Some(Duration::from_secs(every.max(1)));
+            }
+            ("--next-after", _) => {
+                let after = value
+                    .parse()
+                    .map_err(|error| format!("--next-after: {error}"))?;
+                next_after = Some(Duration::from_secs(after));
+            }
             ("--seek-by", _) => {
                 seek_by = Some(
                     value
@@ -356,48 +369,10 @@ fn parse_arguments() -> Result<Arguments, String> {
         screenshots,
         seek,
         youtube_qualities,
+        page_variant_choices,
+        next_after,
+        youtube_report_every,
     })
-}
-
-/// Шаг `--youtube-quality <с>:<уровень>`. Уровень — только буквы и цифры: он попадает в текст скрипта.
-fn parse_youtube_quality(value: &str) -> Result<YoutubeQualityStep, String> {
-    let (after, level) = value
-        .split_once(':')
-        .ok_or_else(|| format!("--youtube-quality expects <seconds>:<level>, got {value}"))?;
-    let after: u64 = after
-        .parse()
-        .map_err(|error| format!("--youtube-quality {value}: {error}"))?;
-    if level.is_empty() || !level.chars().all(|symbol| symbol.is_ascii_alphanumeric()) {
-        return Err(format!(
-            "--youtube-quality {value}: the level must be like small or hd720"
-        ));
-    }
-    Ok(YoutubeQualityStep {
-        after: Duration::from_secs(after),
-        level: level.to_owned(),
-    })
-}
-
-/// Просит плеер YouTube на вкладке сменить качество (служебная страница экстеншена открывается
-/// фоновой один раз). Итог и сбои печатаются: это помощник человека.
-fn ask_youtube_quality(
-    browser: &mut dyn BrowserUnderTest,
-    tab: &TabHandle,
-    service_page_open: &mut bool,
-    level: &str,
-) {
-    if !*service_page_open {
-        if let Err(error) = browser.open_service_page(tab) {
-            println!("youtube quality {level}: the service page did not open: {error}");
-            return;
-        }
-        *service_page_open = true;
-    }
-    let script = YOUTUBE_QUALITY_SCRIPT.replace("__LEVEL__", level);
-    match browser.run_in_service_page(&script) {
-        Ok(reply) => println!("youtube quality {level}: {reply}"),
-        Err(error) => println!("youtube quality {level}: failed: {error}"),
-    }
 }
 
 /// Снимки невидимого экрана для человека: файл снимается в каталог прогона и копируется в `--screenshots`.
@@ -513,7 +488,10 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         } else {
             DesktopSetup::default()
         },
-        player_test_variables: PlayerTestVariables::default(),
+        player_test_variables: match &arguments.page_variant_choices {
+            Some(choices) => PlayerTestVariables::default().with_page_variant_choices(choices),
+            None => PlayerTestVariables::default(),
+        },
     })
     .map_err(|error| error.to_string())?;
     if (arguments.click_at.is_some() || arguments.screenshots.is_some())
@@ -652,6 +630,10 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         .seek
         .map(|plan| (Instant::now() + plan.after, plan.by_seconds));
     let handed_off_at = Instant::now();
+    let mut next_at = arguments.next_after.map(|after| handed_off_at + after);
+    let mut next_report_at = arguments
+        .youtube_report_every
+        .map(|every| handed_off_at + every);
     let mut quality_steps = arguments.youtube_qualities.iter().peekable();
     let mut service_page_open = false;
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
@@ -678,6 +660,21 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             match control.seek_by(by_seconds * 1_000_000) {
                 Ok(()) => println!("seek by {by_seconds} s sent to the player window"),
                 Err(error) => println!("seek by {by_seconds} s failed: {error}"),
+            }
+        }
+        if let (Some(at), Some(every)) = (next_report_at, arguments.youtube_report_every)
+            && Instant::now() >= at
+        {
+            next_report_at = Some(at + every);
+            report_youtube_page(browser.as_mut(), &tab, &mut service_page_open);
+        }
+        if let Some(at) = next_at
+            && Instant::now() >= at
+        {
+            next_at = None;
+            match control.next() {
+                Ok(()) => println!("Next sent to the player window"),
+                Err(error) => println!("Next failed: {error}"),
             }
         }
         for line in read_new_lines(environment.player_log(), &mut offset) {
