@@ -79,6 +79,8 @@ pub(super) fn menu_view(
         has_tracks: !tracks.is_empty(),
         visibility,
         tracks,
+        page_lines: Vec::new(),
+        page_lines_availability: crate::page_variants::PageVariantAvailability::Selectable,
         sync_offset,
     }
 }

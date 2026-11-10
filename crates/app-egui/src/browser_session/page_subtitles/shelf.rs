@@ -130,6 +130,7 @@ mod tests {
             label: PageSubtitleLabel::NotGiven,
             format_hint: PageSubtitleFormatHint::Srt,
             display: PageSubtitleDisplay::NotShowingOnPage,
+            source: crate::page_subtitles::PageSubtitleSource::PageDownload,
             bytes: Arc::from(bytes),
         }
     }

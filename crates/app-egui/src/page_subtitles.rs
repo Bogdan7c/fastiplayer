@@ -148,6 +148,19 @@ impl PageSubtitleDisplay {
     }
 }
 
+/// Откуда экстеншен взял документ (15a2): важно меню CC, чтобы не дублировать строки.
+///
+/// Документ, который скачала сама страница (YouTube качает субтитры выбранного языка), в меню
+/// CC представляет строка меню страницы; остальные документы (элемент `<track>`, реплики
+/// `TextTrack`) строки не имеют и остаются обычными дорожками.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageSubtitleSource {
+    /// Страница сама скачала файл субтитров (протокол `page_download`).
+    PageDownload,
+    /// Элемент `<track>` или реплики `TextTrack`, собранные скриптом страницы.
+    PageElement,
+}
+
 /// Готовый документ дорожки страницы: метаданные предложения и все его байты.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PageSubtitleDocument {
@@ -161,6 +174,8 @@ pub(crate) struct PageSubtitleDocument {
     pub(crate) format_hint: PageSubtitleFormatHint,
     /// Показывалась ли дорожка на странице.
     pub(crate) display: PageSubtitleDisplay,
+    /// Откуда экстеншен взял документ.
+    pub(crate) source: PageSubtitleSource,
     /// Байты документа. `Arc`: склад, окно и задача разбора делят одну копию.
     pub(crate) bytes: Arc<[u8]>,
 }
@@ -175,6 +190,7 @@ impl fmt::Debug for PageSubtitleDocument {
             .field("label", &self.label)
             .field("format_hint", &self.format_hint)
             .field("display", &self.display)
+            .field("source", &self.source)
             .field("bytes", &self.bytes.len())
             .finish()
     }
@@ -357,6 +373,7 @@ mod tests {
             label: PageSubtitleLabel::Text("Secret page words".to_owned()),
             format_hint: PageSubtitleFormatHint::WebVtt,
             display: PageSubtitleDisplay::ShowingOnPage,
+            source: PageSubtitleSource::PageDownload,
             bytes: Arc::from(b"WEBVTT\n\n00:01.000 --> 00:02.000\nHidden cue text".as_slice()),
         })
     }

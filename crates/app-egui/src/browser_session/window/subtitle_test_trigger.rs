@@ -88,7 +88,7 @@ impl SubtitleTestTrigger {
         let Some(request) = self.pending else {
             return;
         };
-        if !app_state.subtitle_menu_view().has_tracks {
+        if !app_state.subtitle_menu_view().has_menu_entries() {
             return;
         }
         if app_state.refresh_player_snapshot().current_position < request.not_before {

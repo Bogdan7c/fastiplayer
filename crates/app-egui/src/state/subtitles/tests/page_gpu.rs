@@ -11,6 +11,7 @@ use super::page_support::*;
 use super::*;
 use crate::page_subtitles::PageSubtitleDisplay;
 use crate::state::subtitles::owner_page::PageAdPresence;
+use crate::ui::player_controls::SubtitleControlAction;
 
 /// Светлый пиксель текста: красный канал «видео» (64) и затемнённой плашки ниже порога.
 fn is_light(pixel: [u8; 4]) -> bool {
@@ -99,5 +100,68 @@ fn no_subtitle_pixels_while_an_ad_plate_is_on_screen() {
     assert!(
         bounds_of(&after_ad, WINDOW_WIDTH, is_light).is_some(),
         "the subtitles are back after the ad"
+    );
+}
+
+#[test]
+fn after_a_line_choice_the_document_that_arrives_is_drawn_and_without_it_the_old_pick_stays() {
+    let Some(mut harness) = Harness::with_size(WINDOW_WIDTH, WINDOW_HEIGHT) else {
+        eprintln!("skip: no GPU adapter for the page subtitle test");
+        return;
+    };
+    let media = instance(1);
+    let mut owner = browser_owner(&SubtitlesConfig::default(), media);
+    let mut shelf = TestShelf::new();
+    // Английский (реплика 1–4 с): зритель выбрал его сам, и страница его показывает.
+    offer(
+        &mut owner,
+        &shelf.store(page_document(
+            1,
+            Some("en"),
+            Some("English"),
+            PageSubtitleDisplay::ShowingOnPage,
+            vtt_with("HELLO").as_bytes(),
+        )),
+    );
+    owner.apply_control_action(SubtitleControlAction::SelectTrack(
+        owner.menu_view().tracks[0].id,
+    ));
+    // Немецкий отличим по времени: его реплика на 6–8 с.
+    let german_cue = "WEBVTT\n\n00:00:06.000 --> 00:00:08.000\nHALLO\n";
+    let german = |track| {
+        page_document(
+            track,
+            Some("de"),
+            Some("German"),
+            PageSubtitleDisplay::ShowingOnPage,
+            german_cue.as_bytes(),
+        )
+    };
+
+    // Документ, которого зритель не просил, прежний выбор не перебивает: на 7 с чернил нет.
+    offer(&mut owner, &shelf.store(german(2)));
+    let unrequested = frame_at(&mut owner, &mut harness, media, 7_000);
+    assert!(
+        bounds_of(&unrequested, WINDOW_WIDTH, is_light).is_none(),
+        "the viewer's own pick still wins over an unrequested document"
+    );
+
+    // Зритель выбрал строку страницы; документ второй раз (замена) показывается и рисуется.
+    owner.expect_page_document();
+    let before_answer = frame_at(&mut owner, &mut harness, media, 2_000);
+    assert!(
+        bounds_of(&before_answer, WINDOW_WIDTH, is_light).is_some(),
+        "the previous subtitles stay on screen while the page prepares the document"
+    );
+    offer(&mut owner, &shelf.store(german(2)));
+    let answered = frame_at(&mut owner, &mut harness, media, 7_000);
+    let old_cue_gone = frame_at(&mut owner, &mut harness, media, 2_000);
+    assert!(
+        bounds_of(&answered, WINDOW_WIDTH, is_light).is_some(),
+        "the document that answered the line is drawn"
+    );
+    assert!(
+        bounds_of(&old_cue_gone, WINDOW_WIDTH, is_light).is_none(),
+        "and the old track is no longer shown"
     );
 }

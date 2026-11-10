@@ -23,6 +23,7 @@ use egui::{Id, Ui};
 use subtitle_core::SubtitleTrackId;
 
 use super::ControlAction;
+use crate::page_variants::PageVariantChoice;
 use crate::state::{SubtitleMenuView, SyncNudge};
 pub(super) use layout::APPEAR_SLIDE_DISTANCE;
 pub(super) use layout::SubtitleLayoutGeometry;
@@ -58,6 +59,9 @@ pub enum SubtitleControlAction {
     ResetSync,
     /// Открыть диалог выбора файла субтитров.
     OpenLoadFileDialog,
+    /// Выбрать строку меню субтитров страницы (15a2): странице уходит просьба включить язык,
+    /// документ придёт отдельно. Применяет `AppState`: ему принадлежит связь с окном страницы.
+    SelectPageLine(PageVariantChoice),
 }
 
 /// Подготовленная на кадр раскладка и прогресс появления CC.
@@ -91,7 +95,7 @@ impl SubtitleControlFrame {
         reduced_motion: bool,
     ) -> Self {
         let mode = choose_mode(&geometry);
-        let availability = if view.has_tracks {
+        let availability = if view.has_menu_entries() {
             SubtitleControlAvailability::HasTracks
         } else {
             SubtitleControlAvailability::NoTracks

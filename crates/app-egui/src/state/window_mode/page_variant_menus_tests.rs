@@ -32,6 +32,7 @@ fn facts(audio_revision: u64) -> PageVariantFacts {
             &["Original", "Dub"],
         )),
         quality: Some(menu(PageVariantKind::Quality, 4, &["1080p", "720p"])),
+        subtitles: None,
         next_episode: NextEpisodeOffer::Offered,
     }
 }
@@ -151,4 +152,52 @@ fn during_an_ad_both_menus_mark_their_page_rows_blocked() {
         browser.page_variant_availability(),
         PageVariantAvailability::Selectable
     );
+}
+
+/// Факты с меню субтитров страницы (15a2).
+fn facts_with_subtitles(revision: u64) -> PageVariantFacts {
+    PageVariantFacts {
+        subtitles: Some(menu(
+            PageVariantKind::Subtitles,
+            revision,
+            &["English", "German (auto-translated)"],
+        )),
+        ..facts(3)
+    }
+}
+
+#[test]
+fn a_subtitle_line_pick_is_queued_for_the_session_and_a_stale_or_blocked_one_is_not() {
+    let mut browser = browser_window();
+    browser.note_page_variants(facts_with_subtitles(7));
+    let pick = browser
+        .page_variants
+        .menu(PageVariantKind::Subtitles)
+        .and_then(|menu| menu.choice(PageVariantIndex::new(1)))
+        .expect("the second subtitle line");
+
+    assert_eq!(
+        browser.select_page_variant(pick),
+        PageVariantSelectOutcome::Queued
+    );
+    assert_eq!(
+        drained_intents(&mut browser),
+        vec![ViewerTransportIntent::SelectPageVariant(pick)]
+    );
+
+    // Реклама запирает и строки субтитров, как озвучки.
+    browser.note_ad_plate(Some(ad_plate()));
+    assert_eq!(
+        browser.select_page_variant(pick),
+        PageVariantSelectOutcome::RefusedDuringAd
+    );
+    browser.note_ad_plate(None);
+
+    // Страница сменила меню: выбор по прежней ревизии устарел.
+    browser.note_page_variants(facts_with_subtitles(8));
+    assert_eq!(
+        browser.select_page_variant(pick),
+        PageVariantSelectOutcome::StaleMenu
+    );
+    assert!(drained_intents(&mut browser).is_empty());
 }

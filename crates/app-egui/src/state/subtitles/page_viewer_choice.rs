@@ -30,8 +30,10 @@
 use subtitle_core::SubtitleTrackId;
 
 use super::intents::SubtitleVisibility;
+use super::page_line_wait::PageDocumentWait;
 use crate::page_subtitles::{
-    PageSubtitlePreference, PageSubtitleShelfId, PageSubtitleTrackNumber, PageSubtitleViewerChoice,
+    PageSubtitleArrival, PageSubtitlePreference, PageSubtitleShelfId, PageSubtitleTrackNumber,
+    PageSubtitleViewerChoice, ShelvedPageSubtitle,
 };
 
 /// Что зритель сделал с видимостью субтитров в этом сеансе.
@@ -106,6 +108,10 @@ pub(super) struct PageViewerChoice {
     page_preference: PageSubtitlePreference,
     /// Итог последнего действия зрителя для памяти экстеншена (ещё не забран окном).
     report: Option<PageSubtitleViewerChoice>,
+    /// Ждём ли документ выбранной строки меню страницы (15a2, `page_line_wait`).
+    document_wait: PageDocumentWait,
+    /// Самое позднее поступление склада, которое владелец видел (точка отсчёта «новее запроса»).
+    latest_seen_arrival: Option<PageSubtitleArrival>,
 }
 
 impl PageViewerChoice {
@@ -116,6 +122,36 @@ impl PageViewerChoice {
             *self = Self::default();
         }
         self.shelf = Some(shelf);
+    }
+
+    /// Владелец увидел склад с последним поступлением `latest` (зовётся каждый проход, сразу
+    /// после [`Self::follow_shelf`]): от него отсчитывается «документ новее выбора строки».
+    pub(super) fn note_offered_arrival(&mut self, latest: Option<PageSubtitleArrival>) {
+        self.latest_seen_arrival = latest;
+    }
+
+    /// Зритель выбрал строку меню страницы: ждём документ, который придёт после этого.
+    pub(super) fn expect_page_document(&mut self) {
+        self.document_wait.begin(self.latest_seen_arrival);
+    }
+
+    /// Снять ожидание документа строки (следующая серия, отмена).
+    pub(super) fn cancel_document_wait(&mut self) {
+        self.document_wait.cancel();
+    }
+
+    /// Ждём ли документ строки меню (проверяют тесты).
+    #[cfg(test)]
+    pub(super) fn is_waiting_for_document(&self) -> bool {
+        self.document_wait.is_waiting()
+    }
+
+    /// Дорожка страницы, которой отвечает ожидание среди новых документов склада.
+    pub(super) fn track_answering_wait(
+        &self,
+        fresh: &[&ShelvedPageSubtitle],
+    ) -> Option<PageSubtitleTrackNumber> {
+        self.document_wait.answering_track(fresh)
     }
 
     /// Последнее слово страницы о субтитрах этого сеанса (приходит со снимком склада).
@@ -134,16 +170,21 @@ impl PageViewerChoice {
         self.report.take()
     }
 
-    /// Зритель включил или выключил субтитры.
+    /// Зритель включил или выключил субтитры. «Выкл» отменяет ожидание документа строки.
     pub(super) fn note_visibility(&mut self, visibility: SubtitleVisibility) {
+        if visibility == SubtitleVisibility::Hidden {
+            self.document_wait.cancel();
+        }
         self.visibility = match visibility {
             SubtitleVisibility::Shown => ViewerVisibilityChoice::TurnedOn,
             SubtitleVisibility::Hidden => ViewerVisibilityChoice::TurnedOff,
         };
     }
 
-    /// Зритель выбрал дорожку (выбор дорожки всегда включает субтитры).
+    /// Зритель выбрал дорожку (выбор дорожки всегда включает субтитры) и этим закрыл ожидание
+    /// документа строки: либо это и есть дождавшийся документ, либо зритель передумал.
     pub(super) fn note_track(&mut self, track: ViewerTrackChoice) {
+        self.document_wait.cancel();
         self.track = track;
         self.visibility = ViewerVisibilityChoice::TurnedOn;
     }

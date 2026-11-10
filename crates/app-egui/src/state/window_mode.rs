@@ -255,6 +255,19 @@ impl AppState {
         }
     }
 
+    /// «Следующее» в окне страницы: `true` — оно что-то сделало (плашка рекламы или следующая
+    /// серия). Запрос следующей серии снимает ожидание документа субтитров прежней серии.
+    fn activate_page_next(&mut self) -> bool {
+        match self.window_mode.activate_next() {
+            NextActivation::NothingToDo => false,
+            NextActivation::NextEpisodeRequested => {
+                self.cancel_page_document_wait();
+                true
+            }
+            NextActivation::AdOfferRequested => true,
+        }
+    }
+
     /// Действие транспорта очереди (`TransportControlAction`) в окне, где транспорт ведёт
     /// страница: play/pause — намерение зрителя, навигации по очереди нет.
     pub(crate) fn route_page_led_transport_action(
@@ -274,9 +287,7 @@ impl AppState {
             // «Следующее» в этом окне — кнопка плашки рекламы, если плашка её предлагает
             // (хоткей N и медиаклавиша «следующая»), вне рекламы — следующая серия страницы
             // (14a, решение 283); очереди здесь нет.
-            TransportControlAction::Next
-                if self.window_mode.activate_next() != NextActivation::NothingToDo =>
-            {
+            TransportControlAction::Next if self.activate_page_next() => {
                 PageLedTransportAction::SentToSession
             }
             TransportControlAction::Previous

@@ -457,6 +457,7 @@ fn a_finished_page_subtitle_document_is_never_dropped_from_a_full_queue() {
             label: crate::page_subtitles::PageSubtitleLabel::NotGiven,
             format_hint: crate::page_subtitles::PageSubtitleFormatHint::Srt,
             display: crate::page_subtitles::PageSubtitleDisplay::NotShowingOnPage,
+            source: crate::page_subtitles::PageSubtitleSource::PageDownload,
             bytes: std::sync::Arc::from(b"1".as_slice()),
         }),
     };

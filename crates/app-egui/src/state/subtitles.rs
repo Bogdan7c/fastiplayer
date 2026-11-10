@@ -81,6 +81,9 @@ mod owner_placement;
 mod owner_render;
 mod owner_stream;
 mod owner_web;
+mod page_line_actions;
+mod page_line_wait;
+mod page_lines;
 mod page_load_job;
 mod page_track;
 mod page_viewer_choice;
@@ -128,7 +131,7 @@ use self::job_runner::{SidecarJob, SidecarJobPoll};
 pub(crate) use self::layer_placement::PlacedLayerRect;
 use self::media_state::{DiscoveryState, MediaSubtitles};
 pub(crate) use self::menu_view::{
-    SubtitleFileOrigin, SubtitleFileProblem, SubtitleMenuTrack, SubtitleMenuView,
+    PageSubtitleLine, SubtitleFileOrigin, SubtitleFileProblem, SubtitleMenuTrack, SubtitleMenuView,
     SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason,
 };
 use self::owner_embedded::EmbeddedFeedState;

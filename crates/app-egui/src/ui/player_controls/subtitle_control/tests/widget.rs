@@ -8,8 +8,13 @@ use subtitle_core::{SubtitleSyncOffset, SubtitleTrackId};
 use super::super::layout::{SubtitleControlMode, choose_mode, layout};
 use super::super::{SubtitleControlAction, SubtitleControlFrame};
 use super::{geometry_for_window_width, menu_track, menu_view};
+use crate::page_variants::{
+    PageVariantAvailability, PageVariantChoice, PageVariantIndex, PageVariantKind,
+    PageVariantMenuRevision,
+};
 use crate::state::{
-    SubtitleMenuView, SubtitleTrackAvailability, SubtitleUnavailableReason, SubtitleVisibility,
+    PageSubtitleLine, SubtitleMenuView, SubtitleTrackAvailability, SubtitleUnavailableReason,
+    SubtitleVisibility,
 };
 use crate::ui::player_controls::ControlAction;
 use crate::ui::test_frame::{app_behavior_context, input_at, run_ui_frame};
@@ -563,4 +568,74 @@ fn menu_without_translations_has_no_submenu_entry() {
 
     assert!(scene.node_centers.contains_key("English"));
     assert!(!scene.node_centers.contains_key("Auto-translate ⏵"));
+}
+
+/// Меню из одних строк страницы (ни одной скачанной дорожки): «English» отмечена.
+fn page_lines_only_view(availability: PageVariantAvailability) -> SubtitleMenuView {
+    let line = |index: usize, label: &str, is_selected: bool| PageSubtitleLine {
+        choice: PageVariantChoice {
+            kind: PageVariantKind::Subtitles,
+            revision: PageVariantMenuRevision::new(4),
+            index: PageVariantIndex::new(index),
+        },
+        label: label.into(),
+        is_selected,
+        is_auto_translation: label.contains("auto-translated"),
+    };
+    let mut view = menu_view(
+        SubtitleVisibility::Shown,
+        Vec::new(),
+        SubtitleSyncOffset::ZERO,
+    );
+    view.page_lines = vec![
+        line(0, "English", true),
+        line(1, "German (auto-translated)", false),
+    ];
+    view.page_lines_availability = availability;
+    view
+}
+
+#[test]
+fn page_lines_show_the_cc_button_without_a_track_and_a_click_emits_the_exact_choice() {
+    let view = page_lines_only_view(PageVariantAvailability::Selectable);
+    let (_, arrow_center) = button_centers(FULL_WINDOW);
+    let mut scene = Scene::new(FULL_WINDOW);
+    scene.settle(&view);
+    assert!(
+        scene.toggled_by_label.contains_key("Subtitles"),
+        "the CC button is drawn because the page has subtitle lines"
+    );
+
+    assert!(
+        scene
+            .left_click(arrow_center.expect("full mode"), &view)
+            .is_empty()
+    );
+    scene.settle(&view);
+    assert!(scene.popup_open());
+    let actions = scene.left_click(scene.center_of("German (auto-translated)"), &view);
+
+    assert_eq!(
+        actions,
+        vec![subtitles(SubtitleControlAction::SelectPageLine(
+            view.page_lines[1].choice
+        ))]
+    );
+    scene.settle(&view);
+    assert!(!scene.popup_open(), "the menu closes after the pick");
+}
+
+#[test]
+fn during_an_ad_page_lines_are_not_clickable() {
+    let view = page_lines_only_view(PageVariantAvailability::BlockedDuringAd);
+    let (_, arrow_center) = button_centers(FULL_WINDOW);
+    let mut scene = Scene::new(FULL_WINDOW);
+    scene.settle(&view);
+    scene.left_click(arrow_center.expect("full mode"), &view);
+    scene.settle(&view);
+    assert!(scene.popup_open());
+
+    let actions = scene.left_click(scene.center_of("German (auto-translated)"), &view);
+
+    assert!(actions.is_empty(), "{actions:?}");
 }

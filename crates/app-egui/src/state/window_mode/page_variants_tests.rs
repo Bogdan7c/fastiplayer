@@ -22,6 +22,7 @@ fn facts(next_episode: NextEpisodeOffer) -> PageVariantFacts {
     PageVariantFacts {
         audio: Some(audio_menu(3)),
         quality: None,
+        subtitles: None,
         next_episode,
     }
 }

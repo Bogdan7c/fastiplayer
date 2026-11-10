@@ -34,7 +34,22 @@ impl AppState {
             self.open_subtitle_file_dialog(window);
             return;
         }
-        let feedback = self.subtitles.apply_control_action(action);
+        let feedback = match action {
+            // Строки страницы (15a2) исполняет окно страницы, а не владелец субтитров.
+            SubtitleControlAction::SelectPageLine(choice) => {
+                let _ = self.select_page_subtitle_line(choice);
+                ControlActionFeedback::Silent
+            }
+            // Есть меню страницы — V ходит по его родным строкам, как раньше ходила по дорожкам.
+            SubtitleControlAction::SelectNextTrack if self.has_page_subtitle_lines() => {
+                self.cycle_page_subtitle_line()
+            }
+            // C при меню страницы, пока YouTube ничего не скачал: включить первую строку сайта.
+            SubtitleControlAction::ToggleVisibility => self
+                .toggle_page_subtitles_without_tracks()
+                .unwrap_or_else(|| self.subtitles.apply_control_action(action)),
+            _ => self.subtitles.apply_control_action(action),
+        };
         self.capture_user_subtitle_choices();
         // Выбор зрителя — странице для памяти экстеншена (14a), только дорожка страницы или
         // «выключено»; автовыбор сюда не попадает.

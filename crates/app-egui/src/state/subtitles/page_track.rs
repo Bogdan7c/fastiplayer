@@ -18,7 +18,9 @@ use std::sync::Arc;
 use subtitle_core::SubtitleLanguage;
 
 use super::menu_view::{SubtitleFileOrigin, SubtitleTrackLabel};
-use crate::page_subtitles::{PageSubtitleDisplay, PageSubtitleDocument, PageSubtitleTrackNumber};
+use crate::page_subtitles::{
+    PageSubtitleDisplay, PageSubtitleDocument, PageSubtitleSource, PageSubtitleTrackNumber,
+};
 use crate::state::language_label_disambiguation::{LanguageNameInput, distinguish_language_names};
 
 /// Описание дорожки страницы в списке владельца.
@@ -65,6 +67,12 @@ impl PageTrackDescription {
     /// Страница показывала эту дорожку, когда её предложила.
     pub(super) fn was_showing_on_page(&self) -> bool {
         self.document.display == PageSubtitleDisplay::ShowingOnPage
+    }
+
+    /// Документ скачала сама страница: пока есть меню страницы, такую дорожку представляет
+    /// его строка, и в списке дорожек она не дублируется (15a2).
+    pub(super) fn is_page_download(&self) -> bool {
+        self.document.source == PageSubtitleSource::PageDownload
     }
 
     /// Части подписи для меню; текст собирает UI (`subtitle_message::track_text`).
@@ -177,6 +185,7 @@ mod tests {
             }),
             format_hint: PageSubtitleFormatHint::WebVtt,
             display: PageSubtitleDisplay::NotShowingOnPage,
+            source: crate::page_subtitles::PageSubtitleSource::PageDownload,
             bytes: Arc::from(b"WEBVTT".as_slice()),
         }))
     }

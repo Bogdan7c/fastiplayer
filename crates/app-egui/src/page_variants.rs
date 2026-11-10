@@ -14,14 +14,16 @@
 
 use std::sync::Arc;
 
-/// Вид меню вариантов, который показывает окно. Меню субтитров страницы плеер не берёт:
-/// субтитры приходят дорожками 13b.
+/// Вид меню вариантов, который показывает окно.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PageVariantKind {
     /// Озвучки (меню ♪).
     Audio,
     /// Качества (кнопка качества).
     Quality,
+    /// Субтитры страницы (строки меню CC, сессия 15a2). Сам документ субтитров приходит
+    /// отдельно, дорожкой 13b: меню лишь просит страницу включить язык.
+    Subtitles,
 }
 
 impl PageVariantKind {
@@ -30,6 +32,7 @@ impl PageVariantKind {
         match self {
             Self::Audio => "audio",
             Self::Quality => "quality",
+            Self::Subtitles => "subtitles",
         }
     }
 
@@ -38,6 +41,17 @@ impl PageVariantKind {
         match self {
             Self::Audio => "Audio",
             Self::Quality => "Quality",
+            Self::Subtitles => "Subtitles",
+        }
+    }
+
+    /// Рождает ли выбор пункта этого вида новое поколение медиа (и значит, нужен возврат
+    /// секунды зрителя, решение 280). Озвучка и качество переоткрывают поток; субтитры —
+    /// нет: страница просто скачивает ещё один документ, видео идёт как шло.
+    pub(crate) const fn selection_restarts_media(self) -> bool {
+        match self {
+            Self::Audio | Self::Quality => true,
+            Self::Subtitles => false,
         }
     }
 }
@@ -234,6 +248,8 @@ pub(crate) struct PageVariantFacts {
     pub(crate) audio: Option<PageVariantMenuView>,
     /// Меню качеств.
     pub(crate) quality: Option<PageVariantMenuView>,
+    /// Меню субтитров страницы: родные дорожки ролика, затем автопереводы (15a2).
+    pub(crate) subtitles: Option<PageVariantMenuView>,
     /// Можно ли предложить следующую серию.
     pub(crate) next_episode: NextEpisodeOffer,
 }
@@ -244,6 +260,7 @@ impl PageVariantFacts {
         match kind {
             PageVariantKind::Audio => self.audio.as_ref(),
             PageVariantKind::Quality => self.quality.as_ref(),
+            PageVariantKind::Subtitles => self.subtitles.as_ref(),
         }
     }
 }

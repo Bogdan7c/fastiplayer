@@ -149,7 +149,6 @@ pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use startup_context::AppStateStartupContext;
 use startup_context::{announce_renderer_selection, player_timeline_wake_bridge};
 pub(crate) use subtitles::SubmittedFrameForSubtitles;
-pub(crate) use subtitles::SubtitleMenuTrack;
 pub(crate) use subtitles::{
     AppearanceEdit, AppearanceEditFinish, AppearanceEditView, PlacedLayerRect, SubtitleRgb,
     UserSubtitleStyle,
@@ -159,6 +158,7 @@ pub(crate) use subtitles::{
     SubtitleTrackAvailability, SubtitleTrackLabel, SubtitleUnavailableReason, SubtitleVisibility,
     SyncNudge,
 };
+pub(crate) use subtitles::{PageSubtitleLine, SubtitleMenuTrack};
 pub(crate) use track_memory::{
     TrackMemoryHandle, TrackMemoryShutdownOutcome, TrackMemoryStartOutcome, start_track_memory,
     start_track_memory_in_memory_only,

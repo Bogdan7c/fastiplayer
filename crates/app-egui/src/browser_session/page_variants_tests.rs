@@ -1,4 +1,4 @@
-//! Склад вариантов страницы: замена меню, чужой вид, субтитры, ревизии, подписи.
+//! Склад вариантов страницы: замена меню, чужой вид, меню субтитров, ревизии, подписи.
 
 use browser_bridge_protocol::session::VariantOption;
 use browser_bridge_protocol::text::VariantLabel;
@@ -132,15 +132,58 @@ fn a_menu_of_one_kind_leaves_the_other_kind_untouched() {
 }
 
 #[test]
-fn subtitle_menus_are_skipped_and_counted() {
+fn subtitle_menus_are_stored_looked_up_and_independent_of_other_kinds() {
     let mut shelf = PageVariantShelf::default();
-    assert_eq!(
-        shelf.store_menu(menu(VariantKind::Subtitles, &[("en", "English")], Some(0))),
-        MenuStore::SkippedSubtitles
+    let audio = stored_revision(shelf.store_menu(menu(VariantKind::Audio, &[("a", "Orig")], None)));
+    let subtitles = stored_revision(shelf.store_menu(menu(
+        VariantKind::Subtitles,
+        &[("en", "English"), ("de", "German")],
+        Some(1),
+    )));
+    let view = shelf
+        .menu_view(PageVariantKind::Subtitles)
+        .expect("the subtitle menu is kept");
+    assert_eq!(view.option_count(), 2);
+    assert_eq!(view.selected(), Some(PageVariantIndex::new(1)));
+    assert_eq!(view.label(PageVariantIndex::new(0)), Some("English"));
+    // Выбор строки возвращает странице её собственный идентификатор.
+    let found = shelf
+        .lookup(choice(PageVariantKind::Subtitles, subtitles, 1))
+        .expect("the subtitle line is found");
+    assert_eq!(found.kind, VariantKind::Subtitles);
+    assert_eq!(found.variant_id.as_str(), "de");
+    assert_eq!(&*found.label, "German");
+    // Меню субтитров не делает устаревшим выбор по меню озвучки (и наоборот).
+    assert!(
+        shelf
+            .lookup(choice(PageVariantKind::Audio, audio, 0))
+            .is_ok()
     );
-    assert_eq!(shelf.subtitle_menus_skipped(), 1);
-    assert_eq!(shelf.menu_view(PageVariantKind::Audio), None);
-    assert_eq!(shelf.menu_view(PageVariantKind::Quality), None);
+    stored_revision(shelf.store_menu(menu(VariantKind::Subtitles, &[("fr", "French")], None)));
+    assert_eq!(
+        shelf.lookup(choice(PageVariantKind::Subtitles, subtitles, 0)),
+        Err(VariantLookupRefusal::StaleMenu)
+    );
+    assert!(
+        shelf
+            .lookup(choice(PageVariantKind::Audio, audio, 0))
+            .is_ok()
+    );
+}
+
+#[test]
+fn an_empty_subtitle_menu_and_a_new_session_remove_the_subtitle_lines() {
+    let mut shelf = PageVariantShelf::default();
+    stored_revision(shelf.store_menu(menu(VariantKind::Subtitles, &[("en", "English")], None)));
+    assert!(matches!(
+        shelf.store_menu(menu(VariantKind::Subtitles, &[], None)),
+        MenuStore::Removed(_)
+    ));
+    assert_eq!(shelf.menu_view(PageVariantKind::Subtitles), None);
+
+    stored_revision(shelf.store_menu(menu(VariantKind::Subtitles, &[("en", "English")], None)));
+    shelf.start_new_session();
+    assert_eq!(shelf.menu_view(PageVariantKind::Subtitles), None);
 }
 
 #[test]

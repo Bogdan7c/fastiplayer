@@ -52,6 +52,12 @@ impl SubtitleOwner {
                 ControlActionFeedback::Silent
             }
             SubtitleControlAction::SelectTrack(track_id) => self.select_from_menu(track_id),
+            // Строка меню страницы — просьба к странице, а не изменение наших дорожек: её
+            // исполняет `AppState` (окно страницы) до владельца. Сюда она дойти не должна.
+            SubtitleControlAction::SelectPageLine(_) => {
+                tracing::debug!("A page subtitle line action reached the subtitle owner");
+                ControlActionFeedback::Silent
+            }
             // Остальные действия имеют смысл только при наличии дорожек.
             SubtitleControlAction::ToggleVisibility
             | SubtitleControlAction::SelectNextTrack

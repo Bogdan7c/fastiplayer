@@ -23,6 +23,7 @@ use super::intents::{
 use super::media_state::MediaSubtitles;
 use super::menu_view::{SubtitleMenuTrack, SubtitleMenuView};
 use super::sync_offset::{SyncNudge, nudged_offset};
+use crate::page_variants::PageVariantAvailability;
 
 impl SubtitleOwner {
     /// Включает или выключает субтитры по воле пользователя.
@@ -252,6 +253,8 @@ impl SubtitleOwner {
             has_tracks: !media.tracks.is_empty(),
             visibility: media.visibility,
             tracks: menu_tracks(media),
+            page_lines: Vec::new(),
+            page_lines_availability: PageVariantAvailability::Selectable,
             sync_offset: media.sync_offset,
         }
     }

@@ -246,16 +246,97 @@ fn during_an_ad_the_selection_is_refused_like_a_seek() {
     assert_eq!(commands_to_page(&mut harness), vec![]);
 }
 
+/// Зритель выбирает строку `index` меню субтитров страницы.
+fn viewer_selects_subtitle_line(harness: &mut Harness, index: usize) {
+    let choice = current_choice(harness, PageVariantKind::Subtitles, index);
+    harness.media.on_viewer_transport(
+        ViewerTransportIntent::SelectPageVariant(choice),
+        Instant::now(),
+    );
+    harness.media.drive(Instant::now());
+}
+
 #[test]
-fn subtitle_menus_never_reach_the_window() {
+fn a_subtitle_menu_reaches_the_window_beside_the_other_menus() {
     let (mut harness, current, _writer) = watching_harness(ProtocolVersion::V1_7);
     harness.media.on_intake(
-        vec![menu_notice(&current, VariantKind::Subtitles, &["en"])],
+        vec![menu_notice(&current, VariantKind::Subtitles, &["en", "de"])],
         None,
     );
     let facts = harness.media.page_variant_facts();
+    let subtitles = facts
+        .menu(PageVariantKind::Subtitles)
+        .expect("the subtitle menu is kept");
+    assert_eq!(subtitles.option_count(), 2);
+    assert_eq!(subtitles.selected(), Some(PageVariantIndex::new(0)));
     assert_eq!(facts.menu(PageVariantKind::Audio), None);
     assert_eq!(facts.menu(PageVariantKind::Quality), None);
+}
+
+#[test]
+fn a_subtitle_line_pick_sends_exactly_one_select_variant_and_arms_no_carry() {
+    let (mut harness, current, _writer) = watching_harness(ProtocolVersion::V1_7);
+    harness.media.on_intake(
+        vec![menu_notice(&current, VariantKind::Subtitles, &["en", "de"])],
+        None,
+    );
+
+    let ((), logs) = with_captured_log(|| viewer_selects_subtitle_line(&mut harness, 1));
+
+    assert_eq!(
+        commands_to_page(&mut harness),
+        vec![select(VariantKind::Subtitles, "de")],
+        "exactly one select_variant for the subtitle line"
+    );
+    assert!(
+        logs.contains(&format!(
+            "{PAGE_VARIANT_SELECTED_LINE} kind=subtitles index=1"
+        )),
+        "{logs}"
+    );
+    assert_eq!(
+        harness.media.take_page_variant_notice(),
+        None,
+        "no toast about a variant change"
+    );
+    // Поколения никто не менял: ни одна последующая загрузка не должна ехать к секунде зрителя.
+    assert_no_carry_after(&mut harness, &current);
+}
+
+#[test]
+fn a_subtitle_line_pick_during_an_ad_is_refused_and_a_stale_one_sends_nothing() {
+    let (mut harness, current, _writer) = watching_harness(ProtocolVersion::V1_7);
+    harness.media.on_intake(
+        vec![
+            menu_notice(&current, VariantKind::Subtitles, &["en", "de"]),
+            ad_notice(&current, ad_showing()),
+        ],
+        None,
+    );
+    let during_ad = current_choice(&harness, PageVariantKind::Subtitles, 1);
+    assert_eq!(
+        harness
+            .media
+            .viewer_selects_page_variant(during_ad, Instant::now()),
+        PageVariantRequestOutcome::RefusedDuringAd
+    );
+
+    // Реклама ушла, меню сменилось: выбор по старому меню устарел.
+    harness.media.on_intake(
+        vec![
+            ad_notice(&current, PageAdState::None {}),
+            menu_notice(&current, VariantKind::Subtitles, &["en", "de", "fr"]),
+        ],
+        None,
+    );
+    assert_eq!(
+        harness
+            .media
+            .viewer_selects_page_variant(during_ad, Instant::now()),
+        PageVariantRequestOutcome::StaleMenu
+    );
+    harness.media.drive(Instant::now());
+    assert_eq!(commands_to_page(&mut harness), vec![]);
 }
 
 // ---- следующая серия -----------------------------------------------------------------

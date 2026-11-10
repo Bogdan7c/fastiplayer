@@ -31,6 +31,7 @@ fn document(
         label: PageSubtitleLabel::NotGiven,
         format_hint: hint,
         display: PageSubtitleDisplay::NotShowingOnPage,
+        source: crate::page_subtitles::PageSubtitleSource::PageDownload,
         bytes: Arc::from(bytes),
     }
 }

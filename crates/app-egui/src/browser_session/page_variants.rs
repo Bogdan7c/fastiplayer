@@ -14,7 +14,8 @@
 //!
 //! **Инварианты.**
 //! 1. Без меню нет пунктов; меню одного вида не трогает другой вид.
-//! 2. Меню `subtitles` пропускается со счётчиком: субтитры страницы приходят дорожками 13b.
+//! 2. Меню `subtitles` хранится как остальные (15a2): это строки меню CC. Сами документы
+//!    субтитров приходят дорожками 13b отдельно, склад о них не знает.
 //! 3. Ревизия растёт при каждой смене содержимого меню (любого вида) и не сбрасывается
 //!    новым сеансом: выбор по меню прошлой страницы не совпадёт с ревизией новой. Повтор того
 //!    же меню ревизию не меняет — иначе страница, которая шлёт меню по таймеру, делала бы
@@ -38,7 +39,7 @@ use crate::page_variants::{
 /// медиа-части. Переходник протокола переводит в него сообщение страницы.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PageVariantUpdate {
-    /// Новое меню одного вида (в том числе `subtitles` — его пропустит склад).
+    /// Новое меню одного вида (озвучки, качества или субтитров).
     Menu(VariantMenu),
     /// Есть ли на странице следующая серия.
     Navigation(NextEpisodeAvailability),
@@ -79,8 +80,6 @@ pub(crate) enum MenuStore {
     Removed(PageVariantMenuRevision),
     /// То же меню, что уже лежит (или пустое при отсутствующем): ничего не сменилось.
     Unchanged,
-    /// Меню субтитров: плеер его не берёт (инвариант 2).
-    SkippedSubtitles,
 }
 
 /// Почему по выбору зрителя странице нечего отправить.
@@ -117,11 +116,10 @@ struct StoredMenu {
 pub(crate) struct PageVariantShelf {
     audio: Option<StoredMenu>,
     quality: Option<StoredMenu>,
+    subtitles: Option<StoredMenu>,
     next_episode: NextEpisodeAvailability,
     /// Номер последней выданной ревизии (растёт за жизнь процесса, инвариант 3).
     last_revision: u64,
-    /// Сколько меню субтитров пропущено (для журнала конца и тестов).
-    subtitle_menus_skipped: u64,
 }
 
 impl Default for PageVariantShelf {
@@ -129,10 +127,10 @@ impl Default for PageVariantShelf {
         Self {
             audio: None,
             quality: None,
+            subtitles: None,
             // Инвариант 5: до первого слова страницы следующей серии нет.
             next_episode: NextEpisodeAvailability::Unavailable,
             last_revision: 0,
-            subtitle_menus_skipped: 0,
         }
     }
 }
@@ -140,10 +138,7 @@ impl Default for PageVariantShelf {
 impl PageVariantShelf {
     /// Новое меню вида `menu.kind` заменяет прежнее того же вида; другой вид не трогается.
     pub(crate) fn store_menu(&mut self, menu: VariantMenu) -> MenuStore {
-        let Some(kind) = page_variant_kind(menu.kind) else {
-            self.subtitle_menus_skipped += 1;
-            return MenuStore::SkippedSubtitles;
-        };
+        let kind = page_variant_kind(menu.kind);
         let current = self.slot(kind);
         if menu.options.is_empty() {
             if current.is_none() {
@@ -205,16 +200,12 @@ impl PageVariantShelf {
         })
     }
 
-    /// Сколько меню субтитров пропущено за жизнь склада.
-    pub(crate) const fn subtitle_menus_skipped(&self) -> u64 {
-        self.subtitle_menus_skipped
-    }
-
     /// Новый сеанс: меню и навигация прежней страницы к новой не относятся. Счётчик ревизий
     /// не сбрасывается (инвариант 3).
     pub(crate) fn start_new_session(&mut self) {
         self.audio = None;
         self.quality = None;
+        self.subtitles = None;
         self.next_episode = NextEpisodeAvailability::Unavailable;
     }
 
@@ -227,6 +218,7 @@ impl PageVariantShelf {
         match kind {
             PageVariantKind::Audio => self.audio.as_ref(),
             PageVariantKind::Quality => self.quality.as_ref(),
+            PageVariantKind::Subtitles => self.subtitles.as_ref(),
         }
     }
 
@@ -234,16 +226,17 @@ impl PageVariantShelf {
         match kind {
             PageVariantKind::Audio => &mut self.audio,
             PageVariantKind::Quality => &mut self.quality,
+            PageVariantKind::Subtitles => &mut self.subtitles,
         }
     }
 }
 
-/// Вид меню протокола → вид окна (`None` — субтитры, их плеер не берёт).
-pub(crate) const fn page_variant_kind(kind: VariantKind) -> Option<PageVariantKind> {
+/// Вид меню протокола → вид окна.
+pub(crate) const fn page_variant_kind(kind: VariantKind) -> PageVariantKind {
     match kind {
-        VariantKind::Audio => Some(PageVariantKind::Audio),
-        VariantKind::Quality => Some(PageVariantKind::Quality),
-        VariantKind::Subtitles => None,
+        VariantKind::Audio => PageVariantKind::Audio,
+        VariantKind::Quality => PageVariantKind::Quality,
+        VariantKind::Subtitles => PageVariantKind::Subtitles,
     }
 }
 

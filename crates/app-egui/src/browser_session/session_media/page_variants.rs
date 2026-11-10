@@ -8,8 +8,9 @@
 //!        ├─ реклама на экране → отказ (решения 206, 283), как перемотка
 //!        ├─ склад: последнее меню этого вида и та же ревизия → `variant_id`
 //!        ├─ странице `select_variant` (ящик «один на вид», `PageOutbound`)
-//!        ├─ возврат на секунду зрителя (`position_carry`, решение 280)
-//!        └─ окну тост «Audio: …» / «Quality: …» (одно слово за шаг)
+//!        ├─ возврат на секунду зрителя (`position_carry`, решение 280) — только озвучка и
+//!        │  качество: выбор субтитров поколения не меняет (15a2)
+//!        └─ окну тост «Audio: …» / «Quality: …» (одно слово за шаг; у субтитров тоста нет)
 //!  окно: Next ─► viewer_asks_next_episode ─► `next_episode` (только после `available`, 1.7)
 //! ```
 //!
@@ -116,11 +117,7 @@ impl SessionMedia {
                         options,
                         revision = revision.get(),
                         "Page variant menu kind={}",
-                        page_variant_kind(kind).map_or("subtitles", PageVariantKind::log_label)
-                    ),
-                    MenuStore::SkippedSubtitles => debug!(
-                        skipped = self.variants.shelf.subtitle_menus_skipped(),
-                        "Page subtitle menu skipped: page subtitles come as tracks (13b)"
+                        page_variant_kind(kind).log_label()
                     ),
                     outcome @ (MenuStore::Removed(_) | MenuStore::Unchanged) => {
                         debug!(?kind, ?outcome, "Page variant menu");
@@ -154,6 +151,7 @@ impl SessionMedia {
         PageVariantFacts {
             audio: self.variants.shelf.menu_view(PageVariantKind::Audio),
             quality: self.variants.shelf.menu_view(PageVariantKind::Quality),
+            subtitles: self.variants.shelf.menu_view(PageVariantKind::Subtitles),
             next_episode: self.next_episode_offer(),
         }
     }
@@ -203,12 +201,17 @@ impl SessionMedia {
             choice.kind.log_label(),
             choice.index.get()
         );
-        // Решение 280: новое поколение после смены встанет на секунду зрителя.
-        self.arm_position_carry(now);
-        self.variants.notice = Some(PageVariantNotice::Selected {
-            kind: choice.kind,
-            label: found.label,
-        });
+        // Субтитры поколения не меняют (страница лишь скачивает ещё один документ): ни
+        // возврата секунды, ни тоста о смене варианта, иначе взведённый возврат дождался бы
+        // чужого поколения (например, после рекламы) и сдвинул бы видео.
+        if choice.kind.selection_restarts_media() {
+            // Решение 280: новое поколение после смены встанет на секунду зрителя.
+            self.arm_position_carry(now);
+            self.variants.notice = Some(PageVariantNotice::Selected {
+                kind: choice.kind,
+                label: found.label,
+            });
+        }
         PageVariantRequestOutcome::Queued
     }
 

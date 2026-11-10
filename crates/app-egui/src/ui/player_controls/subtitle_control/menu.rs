@@ -5,7 +5,9 @@
 //! нет (подсказка объясняет причину).
 //!
 //! ```text
-//! (•) Russian (SRT, file)
+//! (•) English                (строки меню страницы, 15a2: YouTube; прокручиваются вместе
+//! ( ) English (auto-generated)   с дорожками; клик просит страницу включить язык)
+//! ( ) Russian (SRT, file)
 //! ( ) English (VTT, file)
 //! ( ) Track 3 (SRT, file)
 //!     Auto-translate ⏵        (только у web-видео с автопереводами, см. `translation_menu`)
@@ -21,13 +23,16 @@ use subtitle_core::SubtitleSyncOffset;
 
 use super::translation_menu;
 use super::{ControlAction, SubtitleControlAction};
+use crate::page_variants::PageVariantAvailability;
 use crate::state::{
-    SubtitleMenuTrack, SubtitleMenuView, SubtitleTrackAvailability, SubtitleVisibility,
+    PageSubtitleLine, SubtitleMenuTrack, SubtitleMenuView, SubtitleTrackAvailability,
+    SubtitleVisibility,
 };
 use crate::subtitle_message::{
     TrackNumber, sync_offset_menu_text, track_text, unavailable_reason_text,
 };
 use crate::ui::egui_behavior::vertical_scroll_area;
+use crate::ui::player_controls::page_variant_row::{PageVariantRowState, page_variant_row};
 
 /// Минимальная ширина меню: длинные подписи дорожек не должны прыгать от открытия к открытию.
 const MENU_MIN_WIDTH: f32 = 240.0;
@@ -46,6 +51,7 @@ pub(super) fn show(ui: &mut Ui, view: &SubtitleMenuView, actions: &mut Vec<Contr
         .id_salt("subtitle_main_tracks")
         .max_height(TRACK_LIST_MAX_HEIGHT)
         .show(ui, |ui| {
+            show_page_lines(ui, view, actions);
             for (menu_index, track) in view.tracks.iter().enumerate() {
                 if !track.label.is_auto_translation() {
                     show_track_row(ui, track, menu_index, actions);
@@ -76,6 +82,38 @@ pub(super) fn show(ui: &mut Ui, view: &SubtitleMenuView, actions: &mut Vec<Contr
             ui.close();
         }
     });
+}
+
+/// Строки меню субтитров страницы (15a2): те же, что у озвучек, — подпись страницы
+/// обрезается по ширине, во время рекламы строки неактивны. Клик закрывает меню: ответ на него
+/// (документ) придёт позже, и показ до тех пор остаётся прежним.
+fn show_page_lines(ui: &mut Ui, view: &SubtitleMenuView, actions: &mut Vec<ControlAction>) {
+    for line in &view.page_lines {
+        show_page_line(ui, line, view.page_lines_availability, actions);
+    }
+}
+
+/// Одна строка страницы: клик публикует выбор и закрывает меню.
+fn show_page_line(
+    ui: &mut Ui,
+    line: &PageSubtitleLine,
+    availability: PageVariantAvailability,
+    actions: &mut Vec<ControlAction>,
+) {
+    let row = page_variant_row(
+        ui,
+        &line.label,
+        PageVariantRowState {
+            is_selected: line.is_selected,
+            availability,
+        },
+    );
+    if row.clicked() {
+        actions.push(ControlAction::Subtitles(
+            SubtitleControlAction::SelectPageLine(line.choice),
+        ));
+        ui.close();
+    }
 }
 
 /// Одна строка дорожки: радио-кнопка с подписью. Клик по доступной закрывает всё меню,

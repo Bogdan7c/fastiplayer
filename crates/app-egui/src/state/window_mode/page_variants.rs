@@ -222,6 +222,12 @@ impl AppState {
                 ..
             }
             | PageVariantNotice::NextEpisodeRequested => self.notify_transient(text),
+            // Выбор субтитров тоста не даёт: результат виден сам (субтитры на кадре), а
+            // сессия такого слова не рождает.
+            PageVariantNotice::Selected {
+                kind: PageVariantKind::Subtitles,
+                ..
+            } => {}
         }
     }
 }

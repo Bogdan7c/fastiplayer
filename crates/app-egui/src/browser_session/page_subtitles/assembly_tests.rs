@@ -12,6 +12,7 @@ fn offer(track: u32, byte_length: u64, display: PageSubtitleDisplay) -> PageSubt
         label: PageSubtitleLabel::Text("English".to_owned()),
         format_hint: PageSubtitleFormatHint::WebVtt,
         display,
+        source: PageSubtitleSource::PageDownload,
         byte_length,
     }
 }
@@ -207,5 +208,42 @@ fn unfinished_documents_count_against_the_budget_until_they_are_dropped() {
     assert_eq!(
         assembly.offer(offer(2, 4, PageSubtitleDisplay::NotShowingOnPage)),
         OfferOutcome::Opened
+    );
+}
+
+#[test]
+fn the_origin_of_the_offer_decides_whether_the_page_downloaded_the_document() {
+    use browser_bridge_protocol::session::{
+        PageSubtitleByteLength, PageSubtitleDisplay as WireDisplay, PageSubtitleLabel as WireLabel,
+        PageSubtitleLanguage as WireLanguage, PageSubtitleOrigin, SubtitleFormatHint as WireHint,
+    };
+
+    let source_of = |origin| {
+        let offer = PageSubtitleOffer::from_message(PageSessionMessage::SubtitleTrackOffered {
+            track: PageSubtitleTrackId::new(1).expect("valid track"),
+            language: WireLanguage::Unknown {},
+            label: WireLabel::None {},
+            format_hint: WireHint::WebVtt,
+            origin,
+            page_display: WireDisplay::Showing,
+            byte_length: PageSubtitleByteLength::new(1).expect("valid length"),
+        })
+        .expect("an offer");
+        let mut assembly = PageSubtitleAssembly::default();
+        assembly.offer(offer);
+        completed(assembly.accept_chunk(chunk(1, 0, b"x"))).source
+    };
+
+    assert_eq!(
+        source_of(PageSubtitleOrigin::PageDownload),
+        PageSubtitleSource::PageDownload
+    );
+    assert_eq!(
+        source_of(PageSubtitleOrigin::TrackElement),
+        PageSubtitleSource::PageElement
+    );
+    assert_eq!(
+        source_of(PageSubtitleOrigin::TextTrackCues),
+        PageSubtitleSource::PageElement
     );
 }

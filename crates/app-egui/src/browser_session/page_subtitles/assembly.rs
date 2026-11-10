@@ -31,14 +31,15 @@ use browser_bridge_protocol::PageSessionMessage;
 use browser_bridge_protocol::limits::{MAX_PAGE_SUBTITLE_SESSION_BYTES, MAX_PAGE_SUBTITLE_TRACKS};
 use browser_bridge_protocol::session::{
     PageSubtitleDisplay as WireDisplay, PageSubtitleLabel as WireLabel,
-    PageSubtitleLanguage as WireLanguage, SubtitleFormatHint as WireFormatHint,
+    PageSubtitleLanguage as WireLanguage, PageSubtitleOrigin as WireOrigin,
+    SubtitleFormatHint as WireFormatHint,
 };
 use tracing::{debug, warn};
 
 use crate::browser_session::stream_queue::OwnedPageSubtitleChunk;
 use crate::page_subtitles::{
     PageSubtitleDisplay, PageSubtitleDocument, PageSubtitleFormatHint, PageSubtitleLabel,
-    PageSubtitleLanguage, PageSubtitleTrackNumber,
+    PageSubtitleLanguage, PageSubtitleSource, PageSubtitleTrackNumber,
 };
 
 /// Предложение дорожки: всё из `subtitle_track_offered`, что нужно плееру.
@@ -54,6 +55,8 @@ pub(crate) struct PageSubtitleOffer {
     pub(crate) format_hint: PageSubtitleFormatHint,
     /// Показывалась ли на странице.
     pub(crate) display: PageSubtitleDisplay,
+    /// Откуда экстеншен взял документ.
+    pub(crate) source: PageSubtitleSource,
     /// Сколько байт документа объявлено.
     pub(crate) byte_length: u64,
 }
@@ -61,15 +64,16 @@ pub(crate) struct PageSubtitleOffer {
 impl PageSubtitleOffer {
     /// Предложение из сообщения страницы; `None` — это не `subtitle_track_offered`.
     ///
-    /// Откуда экстеншен взял документ (`origin`), плееру не важно: формат и показ решает
-    /// содержимое и `page_display`.
+    /// Откуда экстеншен взял документ (`origin`), плеер хранит грубо — «скачала страница или
+    /// нет» (меню CC не дублирует скачанное страницей); формат и показ решает содержимое и
+    /// `page_display`.
     pub(crate) fn from_message(message: PageSessionMessage) -> Option<Self> {
         let PageSessionMessage::SubtitleTrackOffered {
             track,
             language,
             label,
             format_hint,
-            origin: _,
+            origin,
             page_display,
             byte_length,
         } = message
@@ -99,6 +103,12 @@ impl PageSubtitleOffer {
             display: match page_display {
                 WireDisplay::Showing => PageSubtitleDisplay::ShowingOnPage,
                 WireDisplay::NotShowing => PageSubtitleDisplay::NotShowingOnPage,
+            },
+            source: match origin {
+                WireOrigin::PageDownload => PageSubtitleSource::PageDownload,
+                WireOrigin::TrackElement | WireOrigin::TextTrackCues => {
+                    PageSubtitleSource::PageElement
+                }
             },
             byte_length: byte_length.as_bytes(),
         })
@@ -323,6 +333,7 @@ impl OpenDocument {
             label: self.offer.label,
             format_hint: self.offer.format_hint,
             display: self.offer.display,
+            source: self.offer.source,
             bytes: Arc::from(self.bytes),
         }
     }

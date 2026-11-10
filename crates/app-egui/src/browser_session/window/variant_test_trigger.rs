@@ -9,7 +9,8 @@
 //!
 //! Формат: `<вид>:<номер пункта>@<секунда зрителя в мс>`, например `audio:1@3500`; несколько выборов —
 //! через запятую, по очереди (`audio:1@4000,quality:1@9000`, стенд «сериал» сессии 14b): следующий
-//! ждёт, пока сделан предыдущий и плеер дошёл до его секунды.
+//! ждёт, пока сделан предыдущий и плеер дошёл до его секунды. Вид `subtitles` (сессия 15a2) зовёт
+//! намерение строки меню CC — [`AppState::select_page_subtitle_line`]: выбор странице и ожидание её документа.
 //! Пользователю не нужна и не документируется в справке (по образцу
 //! `FASTIPLAYER_TEST_BROWSER_DRAIN_STALL_MS`, `drain_override.rs`). Без переменной модуль
 //! ничего не делает.
@@ -38,7 +39,7 @@ pub(super) struct VariantTestRequest {
     not_before: Duration,
 }
 
-/// Значение переменной не в формате `<audio|quality>:<номер>@<мс>[,…]`.
+/// Значение переменной не в формате `<audio|quality|subtitles>:<номер>@<мс>[,…]`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "{TEST_BROWSER_SELECT_VARIANT_VARIABLE} must look like audio:1@3500 or audio:1@4000,quality:0@9000"
@@ -63,6 +64,7 @@ fn parse_one_request(text: &str) -> Result<VariantTestRequest, InvalidVariantTes
     let kind = match kind {
         "audio" => PageVariantKind::Audio,
         "quality" => PageVariantKind::Quality,
+        "subtitles" => PageVariantKind::Subtitles,
         _ => return Err(InvalidVariantTestRequest),
     };
     let index: usize = index.parse().map_err(|_| InvalidVariantTestRequest)?;
@@ -109,7 +111,13 @@ impl VariantTestTrigger {
             return;
         }
         self.pending.pop_front();
-        let outcome = app_state.select_page_variant(choice);
+        // Строка субтитров идёт как клик в меню CC: кроме выбора странице, взводится ожидание её документа.
+        let outcome = match request.kind {
+            PageVariantKind::Subtitles => app_state.select_page_subtitle_line(choice),
+            PageVariantKind::Audio | PageVariantKind::Quality => {
+                app_state.select_page_variant(choice)
+            }
+        };
         info!(
             kind = request.kind.log_label(),
             index = request.index.get(),
@@ -170,12 +178,22 @@ mod tests {
     }
 
     #[test]
+    fn a_subtitles_line_is_read() {
+        let requests = parse_variant_test_requests(Some(OsStr::new("subtitles:2@7000"))).unwrap();
+        assert_eq!(
+            requests.front().map(|request| request.kind),
+            Some(PageVariantKind::Subtitles)
+        );
+        assert_eq!(requests.front().map(|request| request.index.get()), Some(2));
+    }
+
+    #[test]
     fn garbage_is_reported_not_guessed() {
         for value in [
             "",
             "audio",
             "audio:1",
-            "subtitles:0@1",
+            "captions:0@1",
             "audio:x@1",
             "audio:1@-5",
             "audio:1@5,",

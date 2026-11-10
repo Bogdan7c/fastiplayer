@@ -37,6 +37,7 @@ pub(super) fn page_document(
         }),
         format_hint: PageSubtitleFormatHint::WebVtt,
         display,
+        source: crate::page_subtitles::PageSubtitleSource::PageDownload,
         bytes: Arc::from(bytes),
     }
 }

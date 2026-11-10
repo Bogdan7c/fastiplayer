@@ -36,7 +36,7 @@ use subtitle_raster::SubtitleFontLibrary;
 use tracing::{info, warn};
 
 use super::active_track::ActiveSubtitleTrack;
-use super::intents::SubtitleVisibility;
+use super::intents::{SelectTrackOutcome, SubtitleVisibility};
 use super::page_load_job::{ParsedPageTrack, format_log_label};
 use super::page_track::{PageTrackDescription, distinguish_page_track_names};
 use super::page_viewer_choice::{
@@ -160,6 +160,9 @@ impl SubtitleOwner {
     pub(super) fn attach_page_tracks(&mut self, shelf: &PageSubtitleShelfView) -> PageTracksUpdate {
         // Новый склад — новый сеанс: выбор зрителя прежнего сеанса к нему не относится.
         self.page_viewer.follow_shelf(shelf.shelf());
+        // Точка отсчёта для «документ новее выбора строки меню» (15a2).
+        self.page_viewer
+            .note_offered_arrival(shelf.latest_arrival());
         let Some(media) = self.media.as_mut() else {
             return PageTracksUpdate::Unchanged;
         };
@@ -179,6 +182,8 @@ impl SubtitleOwner {
             return PageTracksUpdate::Unchanged;
         }
         media.page_tracks.applied_preference = shelf.preference();
+        // Выбрал ли зритель строку меню, чей документ пришёл сейчас (15a2, `page_line_wait`).
+        let awaited_track = self.page_viewer.track_answering_wait(&fresh);
         fresh.sort_by_key(|entry| entry.arrival);
         media.page_tracks.shelf = Some(shelf.shelf());
         let mut page_showed_a_track = false;
@@ -231,7 +236,44 @@ impl SubtitleOwner {
         self.reselect_automatically();
         self.presenter.forget_shown_overlay();
         self.ensure_display_track_loading();
+        if let Some(number) = awaited_track {
+            self.adopt_awaited_page_track(number);
+        }
         PageTracksUpdate::Changed
+    }
+
+    /// Дождались документа выбранной строки меню: дорожка становится выбором зрителя (как
+    /// клик по ней в меню): субтитры включены, выбор живёт весь сеанс, итог уйдёт странице
+    /// `subtitle_choice`. Замена той же дорожки (en → de → en) приходит сюда так же.
+    fn adopt_awaited_page_track(&mut self, number: PageSubtitleTrackNumber) {
+        let Some(track_id) = self
+            .media
+            .as_ref()
+            .and_then(|media| media.page_tracks.track_of(number))
+        else {
+            // Документ только что приложен к этому медиа, поэтому дорожка есть; если её нет,
+            // ждать больше нечего.
+            warn!(
+                track = number.get(),
+                "The awaited page subtitle track is missing"
+            );
+            self.page_viewer.cancel_document_wait();
+            return;
+        };
+        match self.select_track(track_id) {
+            SelectTrackOutcome::Selected => info!(
+                track = number.get(),
+                "Page subtitle line document became the viewer's choice"
+            ),
+            outcome @ (SelectTrackOutcome::TrackUnavailable | SelectTrackOutcome::UnknownTrack) => {
+                warn!(
+                    track = number.get(),
+                    ?outcome,
+                    "The awaited page subtitle track could not be selected"
+                );
+                self.page_viewer.cancel_document_wait();
+            }
+        }
     }
 
     /// Зритель выбрал дорожку `track_id` текущего медиа: выбор запоминается на весь сеанс

@@ -18,6 +18,7 @@ fn ready(session: &SessionRef, track: u32, bytes: &[u8]) -> IntakeNotice {
             label: PageSubtitleLabel::NotGiven,
             format_hint: PageSubtitleFormatHint::WebVtt,
             display: PageSubtitleDisplay::ShowingOnPage,
+            source: crate::page_subtitles::PageSubtitleSource::PageDownload,
             bytes: Arc::from(bytes),
         }),
     }

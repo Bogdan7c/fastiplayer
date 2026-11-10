@@ -212,11 +212,21 @@ impl AppState {
     ) -> PageTracksUpdate {
         // Подсказка страницы (14a) действует только в окне, где транспорт ведёт страница.
         let preference = self.page_subtitle_preference_for_window(shelf.preference());
-        if preference == shelf.preference() {
-            return self.subtitles.attach_page_tracks(shelf);
+        let update = if preference == shelf.preference() {
+            self.subtitles.attach_page_tracks(shelf)
+        } else {
+            self.subtitles
+                .attach_page_tracks(&shelf.clone().with_preference(preference))
+        };
+        if update == PageTracksUpdate::Changed {
+            // Документ, которого ждали после выбора строки меню (15a2), стал выбором зрителя
+            // внутри владельца: его итог — странице (`subtitle_choice`), его след — в памяти
+            // выбора, ровно как после клика по дорожке в меню. Без выбора зрителя обе выдачи
+            // пусты.
+            self.capture_user_subtitle_choices();
+            self.forward_viewer_subtitle_choice_to_page();
         }
-        self.subtitles
-            .attach_page_tracks(&shelf.clone().with_preference(preference))
+        update
     }
 
     /// Итог последнего действия зрителя с субтитрами для памяти экстеншена (один раз).
@@ -279,7 +289,11 @@ impl AppState {
 
     /// Read-only снимок для кнопки CC и меню.
     pub(crate) fn subtitle_menu_view(&self) -> SubtitleMenuView {
-        self.subtitles.menu_view()
+        // Строки меню страницы (15a2) берутся из последних фактов окна; у обычного окна их нет.
+        self.subtitles.menu_view_with_page_menu(
+            self.page_variant_facts().subtitles.as_ref(),
+            self.page_variant_availability(),
+        )
     }
 
     /// Изменение «включено», сделанное пользователем и ещё не сохранённое в конфиг

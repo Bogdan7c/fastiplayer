@@ -59,7 +59,7 @@ pub(super) fn render(
         return;
     };
     // Пока кнопка гаснет после пропажи дорожек, клики по ней уже не принимаются.
-    let accepts_input = view.has_tracks;
+    let accepts_input = view.has_menu_entries();
     if !accepts_input {
         close_menu_popups(ui, cc_id, arrow_id);
     }
@@ -175,7 +175,7 @@ fn paint_button(
     let hover_progress = animated_bool(
         ui,
         response.id.with("hover"),
-        response.hovered() && view.has_tracks,
+        response.hovered() && view.has_menu_entries(),
         HOVER_TRANSITION_SECONDS,
     );
     let keyboard_pressed = response.has_focus()
