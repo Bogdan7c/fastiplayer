@@ -127,6 +127,15 @@ describe("PlayerJS: качество (uakino, Ashdi без плейлиста)",
     assert.equal((await adapter.describe())?.quality.find((option) => option.selected)?.label, "1080p");
   });
 
+  it("«Авто»: PlayerJS называет качество «Авто 1080p» — в меню выбран автоматический пункт, а не «1080p»", async () => {
+    const page = qualityOnlyPage({ qualities: ["480p", "720p", "1080p", "Авто"], quality: "480p" });
+    const { adapter } = adapterFor(page, "ashdi.vip");
+    assert.equal(await adapter.select("quality", optionIdOf(await adapter.describe(), "quality", "Авто")), "done");
+    assert.equal(page.api.quality, "Авто 1080p");
+    const selected = (await adapter.describe())?.quality.filter((option) => option.selected);
+    assert.deepEqual(selected?.map((option) => [option.label, option.automatic]), [["Авто", true]]);
+  });
+
   it("устаревший id (на этом месте уже другая подпись) — «такого нет», качество не тронуто", async () => {
     const page = qualityOnlyPage({ qualities: ["480p", "720p", "1080p"], quality: "480p" });
     const { adapter } = adapterFor(page, "ashdi.vip");

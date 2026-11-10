@@ -73,7 +73,9 @@ function pageWindow(address: { pathname: string; search: string }, apiState: Fak
           if (command === "quality") {
             if (parameter === undefined) return apiState.quality;
             const list = apiState.qualities as string[];
-            apiState.quality = list[Number(parameter)];
+            const chosen = list[Number(parameter)];
+            // В режиме «Авто» PlayerJS называет качество автоматом и тем, что качает: «Авто 1080p» (живой uakino).
+            apiState.quality = chosen === "Авто" ? "Авто 1080p" : chosen;
             return undefined;
           }
           return handle(command, parameter);

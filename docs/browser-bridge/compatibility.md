@@ -3,7 +3,7 @@
 **Status: development build, not released yet** (10 November 2026). The bridge lets the page keep downloading the video while Fastiplayer decodes and shows it. It is planned in [issue #2](https://github.com/Bogdan7c/fastiplayer/issues/2) and the public plan [`user/browser-bridge/`](../../user/browser-bridge/README.md). This file lists what is proven on the reference sites of that plan. It is updated when a session proves or breaks something, and it will name the release the bridge ships in.
 
 Legend:
-- **Live** — seen working on the real site, in the browsers named in brackets: **FF** = Firefox 158, **Cr** = Chromium 156, **CF** = Google Chrome 156 from Flatpak. The automatic runs use a fresh browser profile on an invisible desktop. Owner checks use the owner's own Firefox.
+- **Live** — seen working on the real site, in the browsers named in brackets: **FF** = Firefox 158–159, **Cr** = Chromium 156, **CF** = Google Chrome 156 from Flatpak. The automatic runs use a fresh browser profile on an invisible desktop. Owner checks use the owner's own Firefox.
 - **Bench** — proven on the project's local test pages (`scripts/browser-bridge-bench.sh`), with the same extension and player, but not yet on this site.
 - **Not checked** — no run on this site yet. It may work; we do not claim it.
 - **No** — the site does not offer it, or we refuse it on purpose (the reason is in the notes).
@@ -21,7 +21,7 @@ How to connect the browsers and what each status means: [README.md](README.md).
 - **Quality** — the site's qualities in the quality button menu. The button itself always shows what is on screen (all sites).
 - **CC** — subtitles the page downloads appear in the player's CC menu and are drawn in Fastiplayer's own style.
 - **Ads** — ads play in the player with a plate ("Ad 1 of 2"). **Skip** means our "Skip ›" presses the site's real skip button.
-- **Memory** — the extension remembers the chosen dub, quality and subtitles (per series, or per site where noted) and sets them again on the next episode. Private windows read the memory but never write it.
+- **Memory** — the extension remembers the chosen dub, quality and subtitles (per series, or per site where noted) and sets them again on the next episode. Private windows read the memory but never write it. "Live" in this column means the record was written on the real site; setting it again on a fresh tab is proven on the test pages (`series-memory`) and in owner checks.
 
 ## Summary
 
@@ -37,7 +37,7 @@ How to connect the browsers and what each status means: [README.md](README.md).
 | **uaserials.com** (Tortuga player) | Live (FF, Cr) | Live (FF, Cr) | Live: Tortuga dubs, same episode (FF) | Live (Cr) | Live (Cr) | Skip (FF, Cr) | Live: record per series (FF, Cr) |
 | **klonua.com** (Ashdi player, series) | Live (FF); **Cr: No**, see below | Live (FF) | Live: three-step dub switch (FF) | Not checked here (same player as uakino) | Not checked | Skip (FF) | Live: record per series (FF) |
 | klonua.com (Ashdi player, film) | Live (FF); **Cr: No**, see below | — | Live (FF) | Not checked here | Not checked | Skip (FF) | Not checked |
-| **uakino** (Ashdi player) | Live (Cr) | — | No: the site's own tabs above the player are not PlayerJS | Live, switches in place (Cr) | Not checked | Skip (Cr) | Live: record per film (Cr) |
+| **uakino** (Ashdi player) | Live (FF, Cr) | — | No: the site's own tabs above the player are not PlayerJS | Live, switches in place (FF, Cr) | Not checked | Skip (Cr) | Live: record per film (FF, Cr) |
 | **kinoukr.tv** (Ashdi and Tortuga players) | Live (FF, CF) | Not checked (same players as above) | Not checked (same players) | Not checked (same players) | Live (FF, Cr) | Skip (FF, CF) | Not checked |
 | Megogo (free TV) | Live (FF) | — | — | Not checked | Not checked | Not checked | — |
 | Takflix | Not checked (trailers are YouTube) | — | — | — | — | — | — |
@@ -66,8 +66,8 @@ How to connect the browsers and what each status means: [README.md](README.md).
 ### Sites with the PlayerJS player (Ashdi, Tortuga and others)
 - One adapter serves every site that embeds PlayerJS. On a site that is not checked it is careful: it offers qualities, the player's own audio-track list and Next only when the list items look like episodes ("Серія 5", "Episode 5"). It never treats playlist folders as dubs there.
 - **Tortuga** (uaserials, kinoukr): dubs are the player's audio tracks. A switch keeps the episode and the window returns to the same second. Seasons and episodes are chosen on the page. Next goes to the next episode and from the last episode of a season to the next season.
-- **Ashdi series** (klonua, `?multivoice`): dubs are playlist folders. A switch takes three presses (dub, the same season, the same episode). If the new dub does not have this season or episode, nothing changes: the video keeps playing and the page menu goes back. Next stays inside the current dub and is not offered after its last episode.
-- **Ashdi film**: dubs are list items; the site restarts the film from 0 and shows ads again, and the window returns to the same second.
+- **Ashdi series** (klonua, `?multivoice`): dubs are playlist folders. A switch takes three presses (dub, the same season, the same episode). If the new dub does not have this season or episode, nothing changes: the video keeps playing and the page menu goes back. This is common, because the site opens the latest episode and other dubs usually lag behind; pick an earlier episode on the page first. The player does not yet say why nothing changed (planned in session 15c). Next stays inside the current dub and is not offered after its last episode.
+- **Ashdi film**: dubs are list items; the site restarts the film from 0 and shows ads again, and the window returns to the same second. A dub set again by the memory is the same switch, so the ads play again too.
 - The site's own tabs above the player (uakino "UA #1", "Trailer") are not part of the player and are not in our menus.
 - The page plays its ads again before each episode and after each dub switch. Choices in our menus are refused while an ad is on screen and can be repeated after it.
 - **Chromium on klonua: hand-off fails** with "the page did not answer" (the tab survey times out). This is older than the PlayerJS adapter and is limited to Chrome-family browsers on this site. The fix is planned right after this session (plan session 15c). Firefox works.

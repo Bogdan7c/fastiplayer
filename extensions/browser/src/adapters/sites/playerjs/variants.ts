@@ -126,14 +126,27 @@ function dubOptionsOf(state: PageState, playing: PlayingEntries): readonly PageV
   return (reading.levels.get(roles.dubDepth) ?? []).map((entry) => dubOption(entry, playing.dub));
 }
 
+/** Пункт качества — автоматический выбор сайта («Авто»). */
+function isAutomaticQuality(label: string): boolean {
+  return PLAYERJS_AUTOMATIC_QUALITY_LABELS.includes(label.trim().toLocaleLowerCase());
+}
+
+/**
+ * Выбран ли пункт качества. В режиме «Авто» PlayerJS называет текущее качество подписью автомата и тем,
+ * что он сейчас качает («Авто 1080p», живой uakino): выбран автоматический пункт, а не «1080p».
+ */
+function isSelectedQuality(label: string, current: string | null): boolean {
+  if (current === null) return false;
+  return isAutomaticQuality(label) ? current === label || current.startsWith(`${label} `) : current === label;
+}
+
 /** Качества из `api("qualities")`; меньше двух настоящих качеств — меню нет (одиночное ничего не даёт). */
 function qualityOptionsOf(facts: PlayerFacts): readonly PageVariantOption[] {
   const qualities = facts.qualities ?? [];
   if (qualities.length < 2) return [];
   return qualities.map((label, index) => {
-    const option: PageVariantOption = { id: optionIdOf(`${QUALITY_ID_PREFIX}${index}`, label), label, selected: label === facts.quality };
-    const automatic = PLAYERJS_AUTOMATIC_QUALITY_LABELS.includes(label.trim().toLocaleLowerCase());
-    return automatic ? { ...option, automatic } : option;
+    const option: PageVariantOption = { id: optionIdOf(`${QUALITY_ID_PREFIX}${index}`, label), label, selected: isSelectedQuality(label, facts.quality) };
+    return isAutomaticQuality(label) ? { ...option, automatic: true } : option;
   });
 }
 
