@@ -36,7 +36,7 @@ How to connect the browsers and what each status means: [README.md](README.md).
 | Twitch clip | Live (FF, CF) | — | — | — | — | — | — |
 | **uaserials.com** (Tortuga player) | Live (FF, Cr) | Live (FF, Cr) | Live: Tortuga dubs, same episode (FF) | Live (Cr) | Live (Cr) | Skip (FF, Cr) | Live: record per series (FF, Cr) |
 | **klonua.com** (Ashdi player, series) | Live (FF, Cr) | Live (FF) | Live: three-step dub switch (FF, Cr) | Not checked here (same player as uakino) | Not checked | Skip (FF, Cr) | Live: record per series (FF) |
-| klonua.com (Ashdi player, film) | Live (FF, Cr) | — | Live (FF) | Not checked here | Not checked | Skip (FF, Cr) | Not checked |
+| klonua.com (Ashdi player, film) | Live (FF, Cr) | — | Live (FF, Cr) | Not checked here | Not checked | Skip (FF, Cr) | Not checked |
 | **uakino** (Ashdi player) | Live (FF, Cr) | — | No: the site's own tabs above the player are not PlayerJS | Live, switches in place (FF, Cr) | Not checked | Skip (Cr) | Live: record per film (FF, Cr) |
 | **kinoukr.tv** (Ashdi and Tortuga players) | Live (FF, CF) | Not checked (same players as above) | Not checked (same players) | Not checked (same players) | Live (FF, Cr) | Skip (FF, CF) | Not checked |
 | Megogo (free TV) | Live (FF) | — | — | Not checked | Not checked | Not checked | — |
