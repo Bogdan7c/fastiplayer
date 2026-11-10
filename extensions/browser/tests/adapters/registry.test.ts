@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createAllAdOrgans, ISOLATED_WORLD_SITES } from "../../src/adapters/registry/isolated-world.ts";
-import { PAGE_WORLD_SITES, SUBTITLE_NAMING_ADAPTERS } from "../../src/adapters/registry/page-world.ts";
+import { PAGE_WORLD_SITES, playerHandActionsOf, SUBTITLE_NAMING_ADAPTERS } from "../../src/adapters/registry/page-world.ts";
 import { describeSiteAdapter, type SiteAdapterIdentity } from "../../src/adapters/site-identity.ts";
 import { createFakeAdView, FakeNode } from "./fake-ad-dom.ts";
 
@@ -23,6 +23,16 @@ describe("реестр изолированного мира", () => {
     const ids = ISOLATED_WORLD_SITES.map((site) => site.identity.id);
     assert.equal(new Set(ids).size, ids.length);
     for (const site of ISOLATED_WORLD_SITES) assertHonestIdentity(site.identity);
+  });
+});
+
+describe("варианты сайтов (14b, 15a)", () => {
+  it("у каждого сайта с вариантами через руку-функцию есть белый список в мире страницы", () => {
+    const withVariants = ISOLATED_WORLD_SITES.filter((site) => site.createVariants !== undefined).map((site) => site.identity.id);
+    assert.deepEqual(withVariants, ["youtube", "bench-series", "twitch"]);
+    // Адаптер без белого списка получил бы на каждый вызов `no_such_action`: меню не было бы никогда.
+    for (const siteId of withVariants) assert.notEqual(playerHandActionsOf(siteId), undefined, siteId);
+    assert.equal(playerHandActionsOf("ima"), undefined, "у читателя рекламы IMA руки-функции нет");
   });
 });
 

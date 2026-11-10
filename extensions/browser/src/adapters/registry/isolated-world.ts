@@ -13,8 +13,11 @@ import { createImaOrgans } from "../sites/ima/ad-organs.ts";
 import { IMA_SITE } from "../sites/ima/identity.ts";
 import { createPlayerJsOrgans } from "../sites/playerjs/ad-organs.ts";
 import { PLAYERJS_SITE } from "../sites/playerjs/identity.ts";
+import { TWITCH_SITE } from "../sites/twitch/identity.ts";
+import { createTwitchVariants } from "../sites/twitch/variants.ts";
 import { createYouTubeOrgans } from "../sites/youtube/ad-organs.ts";
 import { YOUTUBE_SITE } from "../sites/youtube/identity.ts";
+import { createYouTubeVariants } from "../sites/youtube/variants.ts";
 
 export type {
   AdElement,
@@ -42,10 +45,12 @@ export interface SiteVariantAdapter {
 
 /** Порядок важен: при нажатии пропуска первым спрашивается первый подходящий. Порядок 09d сохранён. */
 export const ISOLATED_WORLD_SITES: readonly IsolatedWorldSiteAdapter[] = [
-  { identity: YOUTUBE_SITE, createAdOrgans: createYouTubeOrgans },
+  { identity: YOUTUBE_SITE, createAdOrgans: createYouTubeOrgans, createVariants: createYouTubeVariants },
   { identity: IMA_SITE, createAdOrgans: createImaOrgans },
   { identity: PLAYERJS_SITE, createAdOrgans: createPlayerJsOrgans },
   { identity: BENCH_SERIES_SITE, createVariants: createBenchSeriesVariants },
+  // Twitch: только варианты (качество эфира и записи, 15a); вшитая реклама кнопки пропуска не имеет.
+  { identity: TWITCH_SITE, createVariants: createTwitchVariants },
 ];
 
 /** Читатели рекламы всех сайтов для документа, который показывает `view`. */

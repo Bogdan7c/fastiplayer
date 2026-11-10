@@ -27,3 +27,14 @@ export function callPageFunction(page: object, objectName: string, functionName:
   if (typeof method !== "function") return PAGE_FUNCTION_MISSING;
   return Reflect.apply(method, target, functionArguments);
 }
+
+/**
+ * Документ страницы из её окна (MAIN-мир). Нужен действиям, чей плеер — не глобальный объект окна, а элемент
+ * разметки (YouTube) или компонент над ним (Twitch). `undefined` — у «окна» нет документа (подделка, чужой объект).
+ */
+export function pageDocumentOf(page: object): Document | undefined {
+  const candidate: unknown = Reflect.get(page, "document");
+  if (typeof candidate !== "object" || candidate === null) return undefined;
+  // Проверяем форму, а не `instanceof`: в тестах документ — подделка с тем же методом.
+  return typeof Reflect.get(candidate, "querySelectorAll") === "function" ? (candidate as Document) : undefined;
+}
