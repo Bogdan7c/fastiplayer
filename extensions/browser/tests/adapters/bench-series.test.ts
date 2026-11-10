@@ -10,7 +10,7 @@ import { BenchSeriesPageError, createBenchSeriesVariants } from "../../src/adapt
 import { createAdapterHandClient, type AdapterHandClient } from "../../src/content/adapter-hand-client.ts";
 import { createAdapterHandExecutor } from "../../src/page/adapter-hand.ts";
 import { createFakeClock, flushPromises } from "../background/support.ts";
-import { createFakeAdView, FakeNode } from "./fake-ad-dom.ts";
+import { createFakeVariantView, FakeNode } from "./fake-ad-dom.ts";
 
 /** Фикстура: устройство `series.html` стенда без личных данных — корень с меткой, ключи, кнопки озвучек. */
 function benchSeriesPage(options: { selectedDub: "dub-a" | "dub-b"; episode: string; marker?: boolean }) {
@@ -23,7 +23,7 @@ function benchSeriesPage(options: { selectedDub: "dub-a" | "dub-b"; episode: str
 }
 
 function variantView(root: FakeNode, hostname = "127.0.0.1"): VariantPageView {
-  return { ...createFakeAdView(root, { hostname }), attributeOf: (element, name) => (element as FakeNode).attributes.get(name) ?? null };
+  return createFakeVariantView(root, { hostname });
 }
 
 /** Плеер страницы в её окне: то, что видит рука-функция. Ломается по просьбе сценария. */

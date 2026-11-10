@@ -51,6 +51,9 @@
 //! YouTube (id ролика, озвучка, качество): так видно, что выбор дошёл до страницы и память его вернула.
 //! `--next-after <с>` — через столько секунд после передачи окно жмёт Next (MPRIS), вне
 //! рекламы это «следующая серия» адаптера. Помощник печатает строки плеера про меню, выбор и возврат секунды.
+//! `--next-after` можно повторять (15b: серия → следующая → смена озвучки → следующая). PlayerJS (15b):
+//! `--playerjs-report-every <с>` — проба всех фреймов вкладки с плеером PlayerJS (файл плейлиста, серия,
+//! качество, дорожка звука, заголовки списков) и записи памяти выбора (`playerjs_page.rs`).
 //!
 //! Сайты, где видео стартует только по клику (Ashdi, Tortuga, 13b2): `--click-at <x>,<y>` — клик настоящей
 //! мышью стенда по точке невидимого экрана после паузы `--wait`, до передачи. `--screenshots <каталог>` —
@@ -60,6 +63,7 @@
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
+mod playerjs_page;
 mod youtube_page;
 
 use std::fs;
@@ -80,6 +84,9 @@ use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
 use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
+use playerjs_page::{
+    PlayerJsPick, parse_playerjs_pick, pick_on_playerjs_page, report_playerjs_page,
+};
 use youtube_page::{
     YoutubeQualityStep, ask_youtube_quality, parse_youtube_quality, report_youtube_page,
 };
@@ -194,10 +201,14 @@ struct Arguments {
     youtube_qualities: Vec<YoutubeQualityStep>,
     /// Выборы в меню вариантов окна (`--select-variant`): значение тестовой переменной плеера как есть.
     page_variant_choices: Option<String>,
-    /// Через сколько после передачи окно жмёт Next (`--next-after`), `None` — не жать.
-    next_after: Option<Duration>,
+    /// Через сколько после передачи окно жмёт Next (`--next-after`, можно повторять), по порядку.
+    next_after: Vec<Duration>,
     /// Как часто печатать пробу страницы YouTube (`--youtube-report-every`), `None` — не печатать.
     youtube_report_every: Option<Duration>,
+    /// Как часто печатать пробу фреймов PlayerJS (`--playerjs-report-every`, 15b), `None` — не печатать.
+    playerjs_report_every: Option<Duration>,
+    /// Выбор пунктов плейлиста PlayerJS на странице после передачи (`--playerjs-pick`), `None` — не выбирать.
+    playerjs_pick: Option<PlayerJsPick>,
 }
 
 /// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
@@ -266,7 +277,9 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut seek_by = None;
     let mut youtube_qualities = Vec::new();
     let mut page_variant_choices = None;
-    let mut next_after = None;
+    let mut next_after = Vec::new();
+    let mut playerjs_report_every = None;
+    let mut playerjs_pick = None;
     let mut youtube_report_every = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
@@ -327,11 +340,18 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .map_err(|error| format!("--youtube-report-every: {error}"))?;
                 youtube_report_every = Some(Duration::from_secs(every.max(1)));
             }
+            ("--playerjs-report-every", _) => {
+                let every: u64 = value
+                    .parse()
+                    .map_err(|error| format!("--playerjs-report-every: {error}"))?;
+                playerjs_report_every = Some(Duration::from_secs(every.max(1)));
+            }
+            ("--playerjs-pick", _) => playerjs_pick = Some(parse_playerjs_pick(&value)?),
             ("--next-after", _) => {
                 let after = value
                     .parse()
                     .map_err(|error| format!("--next-after: {error}"))?;
-                next_after = Some(Duration::from_secs(after));
+                next_after.push(Duration::from_secs(after));
             }
             ("--seek-by", _) => {
                 seek_by = Some(
@@ -371,6 +391,8 @@ fn parse_arguments() -> Result<Arguments, String> {
         youtube_qualities,
         page_variant_choices,
         next_after,
+        playerjs_report_every,
+        playerjs_pick,
         youtube_report_every,
     })
 }
@@ -630,12 +652,20 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         .seek
         .map(|plan| (Instant::now() + plan.after, plan.by_seconds));
     let handed_off_at = Instant::now();
-    let mut next_at = arguments.next_after.map(|after| handed_off_at + after);
+    let mut next_presses = arguments
+        .next_after
+        .iter()
+        .map(|after| handed_off_at + *after)
+        .peekable();
+    let mut next_playerjs_report_at = arguments
+        .playerjs_report_every
+        .map(|every| handed_off_at + every);
     let mut next_report_at = arguments
         .youtube_report_every
         .map(|every| handed_off_at + every);
     let mut quality_steps = arguments.youtube_qualities.iter().peekable();
     let mut service_page_open = false;
+    let mut pick_pending = arguments.playerjs_pick.as_ref();
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
     while started && Instant::now() < deadline {
         if let Some(shots) = &screenshots
@@ -668,14 +698,22 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             next_report_at = Some(at + every);
             report_youtube_page(browser.as_mut(), &tab, &mut service_page_open);
         }
-        if let Some(at) = next_at
-            && Instant::now() >= at
+        if let Some(pick) =
+            pick_pending.take_if(|pick| Instant::now() >= handed_off_at + pick.after)
         {
-            next_at = None;
+            pick_on_playerjs_page(browser.as_mut(), &tab, &mut service_page_open, &pick.labels);
+        }
+        if next_presses.next_if(|at| Instant::now() >= *at).is_some() {
             match control.next() {
                 Ok(()) => println!("Next sent to the player window"),
                 Err(error) => println!("Next failed: {error}"),
             }
+        }
+        if let (Some(at), Some(every)) = (next_playerjs_report_at, arguments.playerjs_report_every)
+            && Instant::now() >= at
+        {
+            next_playerjs_report_at = Some(at + every);
+            report_playerjs_page(browser.as_mut(), &tab, &mut service_page_open);
         }
         for line in read_new_lines(environment.player_log(), &mut offset) {
             // `FASTIPLAYER_LIVE_ALL_LINES=1`: весь журнал плеера, для разбора.

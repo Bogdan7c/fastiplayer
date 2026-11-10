@@ -74,7 +74,7 @@ const YOUTUBE_REPORT_SCRIPT: &str = r#"async (api) => {
 }"#;
 
 /// Открыть служебную страницу один раз за прогон; `false` — не открылась (причина напечатана).
-fn ensure_service_page(
+pub(crate) fn ensure_service_page(
     browser: &mut dyn BrowserUnderTest,
     tab: &TabHandle,
     service_page_open: &mut bool,

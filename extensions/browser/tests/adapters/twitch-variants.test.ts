@@ -9,7 +9,7 @@ import { createTwitchVariants, TwitchPageError } from "../../src/adapters/sites/
 import { createAdapterHandClient } from "../../src/content/adapter-hand-client.ts";
 import { createAdapterHandExecutor } from "../../src/page/adapter-hand.ts";
 import { createFakeClock } from "../background/support.ts";
-import { createFakeAdView, FakeNode } from "./fake-ad-dom.ts";
+import { createFakeVariantView, FakeNode } from "./fake-ad-dom.ts";
 
 interface QualityEntry {
   name: string;
@@ -88,7 +88,7 @@ function playerWindow(player: FakeTwitchPlayer, depth = 24): object {
 function view(hostname: string, withPlayer = true): VariantPageView {
   const root = new FakeNode("html");
   if (withPlayer) root.add(new FakeNode("div", { classes: ["video-player"] }));
-  return { ...createFakeAdView(root, { hostname }), attributeOf: () => null };
+  return createFakeVariantView(root, { hostname });
 }
 
 function adapterFor(page: object, hostname = "www.twitch.tv") {

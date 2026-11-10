@@ -12,6 +12,8 @@ import type { PlayerHandActions } from "../capabilities/player-hand/contract.ts"
 import type { SiteAdapterIdentity } from "../site-identity.ts";
 import { BENCH_SERIES_SITE } from "../sites/bench-series/identity.ts";
 import { BENCH_SERIES_PLAYER_HAND } from "../sites/bench-series/player-hand.ts";
+import { PLAYERJS_SITE } from "../sites/playerjs/identity.ts";
+import { PLAYERJS_PLAYER_HAND } from "../sites/playerjs/player-hand.ts";
 import { TWITCH_SITE } from "../sites/twitch/identity.ts";
 import { TWITCH_PLAYER_HAND } from "../sites/twitch/player-hand.ts";
 import { YOUTUBE_SITE } from "../sites/youtube/identity.ts";
@@ -31,6 +33,7 @@ export const PAGE_WORLD_SITES: readonly PageWorldSiteAdapter[] = [
   { identity: YOUTUBE_SITE, subtitleNaming: youtubeTimedtextAdapter, playerHand: YOUTUBE_PLAYER_HAND },
   { identity: BENCH_SERIES_SITE, playerHand: BENCH_SERIES_PLAYER_HAND },
   { identity: TWITCH_SITE, playerHand: TWITCH_PLAYER_HAND },
+  { identity: PLAYERJS_SITE, playerHand: PLAYERJS_PLAYER_HAND },
 ];
 
 /** Белый список руки-функции сайта `siteId`; `undefined` — у сайта её нет (или сайта нет). */

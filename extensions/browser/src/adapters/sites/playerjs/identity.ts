@@ -2,4 +2,4 @@
 
 import type { SiteAdapterIdentity } from "../../site-identity.ts";
 
-export const PLAYERJS_SITE: SiteAdapterIdentity = { id: "playerjs", version: 1 };
+export const PLAYERJS_SITE: SiteAdapterIdentity = { id: "playerjs", version: 2 };

@@ -145,7 +145,7 @@ Every permission and the reason for it is listed in [`extensions/browser/manifes
 
 ### Remembered dub, quality and subtitles
 
-On sites the extension knows, Fastiplayer shows the site's dubs in the ♪ menu and its qualities in the quality button. The extension remembers what you pick for each series — in the Fastiplayer menus or on the page itself — and sets it again when the next episode starts:
+On sites the extension knows, Fastiplayer shows the site's dubs in the ♪ menu and its qualities in the quality button. Which sites these are, and what works on each, is in the [site compatibility table](compatibility.md). The extension remembers what you pick for each series — in the Fastiplayer menus or on the page itself — and sets it again when the next episode starts:
 
 - the dub is set only at the start of an episode, because on many sites changing the dub starts the episode over;
 - the quality is set at any moment, because the site keeps playing from the same second;

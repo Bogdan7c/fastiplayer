@@ -11,7 +11,7 @@ import { YouTubePageError, createYouTubeVariants } from "../../src/adapters/site
 import { createAdapterHandClient } from "../../src/content/adapter-hand-client.ts";
 import { createAdapterHandExecutor } from "../../src/page/adapter-hand.ts";
 import { createFakeClock } from "../background/support.ts";
-import { createFakeAdView, FakeNode } from "./fake-ad-dom.ts";
+import { createFakeVariantView, FakeNode } from "./fake-ad-dom.ts";
 
 // ------------------------------------------------------------------ подделка плеера YouTube
 
@@ -93,7 +93,7 @@ function watchDom(next: { href?: string; disabled?: boolean; rendered?: boolean 
 }
 
 function variantView(root: FakeNode, hostname = "www.youtube.com"): VariantPageView {
-  return { ...createFakeAdView(root, { hostname }), attributeOf: (element, name) => (element as FakeNode).attributes.get(name) ?? null };
+  return createFakeVariantView(root, { hostname });
 }
 
 function adapterFor(root: FakeNode, page: object, hostname = "www.youtube.com", actions: PlayerHandActions = YOUTUBE_PLAYER_HAND) {

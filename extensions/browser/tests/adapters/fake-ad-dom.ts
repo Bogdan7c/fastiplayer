@@ -2,6 +2,7 @@
 // Селекторы понимает только простые составные вида `tag#id.class.class[attribute]`, `a b` не поддерживаются:
 // читатели ими и ограничены (см. src/adapters/sites/*/ad-selectors.ts).
 import type { AdElement, AdPageView, ElementRect } from "../../src/adapters/capabilities/ad-organs/contract.ts";
+import type { VariantPageView } from "../../src/adapters/capabilities/variants/contract.ts";
 
 export interface FakeNodeOptions {
   readonly id?: string;
@@ -24,8 +25,12 @@ export class FakeNode implements AdElement {
   rect: ElementRect;
   rendered: boolean;
   readonly attributes: Map<string, string>;
-  /** Сколько раз по узлу кликнули. */
+  /** Сколько раз по узлу кликнули (`click()`). */
   clicks = 0;
+  /** Сколько раз узел «нажали как человек» (`pressLikePerson`, 15b). */
+  presses = 0;
+  /** Что сделать, когда узел нажали как человек: подделка страницы так отвечает на нажатие. */
+  onPress: (() => void) | undefined;
 
   constructor(tag: string, options: FakeNodeOptions = {}) {
     this.tag = tag;
@@ -99,6 +104,19 @@ export function createFakeAdView(root: FakeNode, options: FakeViewOptions = {}):
     isRendered: (element) => (element as FakeNode).isRenderedWithAncestors(),
     rectOf: (element) => (element as FakeNode).rect,
     viewportSize: () => options.viewport ?? { width: 1280, height: 720 },
+  };
+}
+
+/** Взгляд адаптеров вариантов на дерево `root`: атрибуты узлов и «нажатие как человек» (счётчик и отклик страницы). */
+export function createFakeVariantView(root: FakeNode, options: FakeViewOptions = {}): VariantPageView {
+  return {
+    ...createFakeAdView(root, options),
+    attributeOf: (element, name) => (element as FakeNode).attributes.get(name) ?? null,
+    pressLikePerson(element): void {
+      const node = element as FakeNode;
+      node.presses += 1;
+      node.onPress?.();
+    },
   };
 }
 

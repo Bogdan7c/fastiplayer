@@ -13,6 +13,7 @@ import { createImaOrgans } from "../sites/ima/ad-organs.ts";
 import { IMA_SITE } from "../sites/ima/identity.ts";
 import { createPlayerJsOrgans } from "../sites/playerjs/ad-organs.ts";
 import { PLAYERJS_SITE } from "../sites/playerjs/identity.ts";
+import { createPlayerJsVariants } from "../sites/playerjs/variants.ts";
 import { TWITCH_SITE } from "../sites/twitch/identity.ts";
 import { createTwitchVariants } from "../sites/twitch/variants.ts";
 import { createYouTubeOrgans } from "../sites/youtube/ad-organs.ts";
@@ -47,7 +48,8 @@ export interface SiteVariantAdapter {
 export const ISOLATED_WORLD_SITES: readonly IsolatedWorldSiteAdapter[] = [
   { identity: YOUTUBE_SITE, createAdOrgans: createYouTubeOrgans, createVariants: createYouTubeVariants },
   { identity: IMA_SITE, createAdOrgans: createImaOrgans },
-  { identity: PLAYERJS_SITE, createAdOrgans: createPlayerJsOrgans },
+  // PlayerJS (15b): реклама и варианты на любом сайте с этим плеером (решение 290), осторожно на незнакомых (296).
+  { identity: PLAYERJS_SITE, createAdOrgans: createPlayerJsOrgans, createVariants: (hands) => createPlayerJsVariants(hands) },
   { identity: BENCH_SERIES_SITE, createVariants: createBenchSeriesVariants },
   // Twitch: только варианты (качество эфира и записи, 15a); вшитая реклама кнопки пропуска не имеет.
   { identity: TWITCH_SITE, createVariants: createTwitchVariants },

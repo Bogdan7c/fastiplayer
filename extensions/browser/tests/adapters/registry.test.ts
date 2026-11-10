@@ -26,10 +26,10 @@ describe("реестр изолированного мира", () => {
   });
 });
 
-describe("варианты сайтов (14b, 15a)", () => {
+describe("варианты сайтов (14b, 15a, 15b)", () => {
   it("у каждого сайта с вариантами через руку-функцию есть белый список в мире страницы", () => {
     const withVariants = ISOLATED_WORLD_SITES.filter((site) => site.createVariants !== undefined).map((site) => site.identity.id);
-    assert.deepEqual(withVariants, ["youtube", "bench-series", "twitch"]);
+    assert.deepEqual(withVariants, ["youtube", "playerjs", "bench-series", "twitch"]);
     // Адаптер без белого списка получил бы на каждый вызов `no_such_action`: меню не было бы никогда.
     for (const siteId of withVariants) assert.notEqual(playerHandActionsOf(siteId), undefined, siteId);
     assert.equal(playerHandActionsOf("ima"), undefined, "у читателя рекламы IMA руки-функции нет");

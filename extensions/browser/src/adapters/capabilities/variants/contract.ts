@@ -67,10 +67,17 @@ export interface PageVariantDescription {
  */
 export type VariantActionOutcome = "done" | "no_such_variant" | "person_only" | "failed";
 
-/** Взгляд на DOM для вариантов: тот же, что у читателей рекламы, плюс чтение атрибута. */
+/** Взгляд на DOM для вариантов: тот же, что у читателей рекламы, плюс чтение атрибута и «нажатие как человек». */
 export interface VariantPageView extends AdPageView {
   /** Значение атрибута элемента; `null` — атрибута нет. */
   attributeOf(element: AdElement, name: string): string | null;
+  /**
+   * Нажать элемент так, как его нажимает мышь человека: цепочка событий нажатия и отпускания над серединой
+   * элемента, потом `click` (сессия 15b). Нужна сайтам, которые слушают `mousedown`/`pointerdown`, а не
+   * `click()`: пункт плейлиста PlayerJS на голый `click()` не отвечает (разведка 15b). Сайту, который верит
+   * только настоящей мыши (YouTube, решение 207), это не поможет: события всё равно синтетические.
+   */
+  pressLikePerson(element: AdElement): void;
 }
 
 /** Итог вызова руки-функции: ответ MAIN-мира или `no_answer` — он не ответил в срок (или порта нет). */

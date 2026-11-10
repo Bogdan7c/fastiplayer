@@ -12,7 +12,7 @@ import { createYouTubeVariants } from "../../src/adapters/sites/youtube/variants
 import { createAdapterHandClient } from "../../src/content/adapter-hand-client.ts";
 import { createAdapterHandExecutor } from "../../src/page/adapter-hand.ts";
 import { createFakeClock } from "../background/support.ts";
-import { createFakeAdView, FakeNode } from "./fake-ad-dom.ts";
+import { createFakeVariantView, FakeNode } from "./fake-ad-dom.ts";
 
 // ------------------------------------------------------------------ подделка плеера с субтитрами
 
@@ -95,7 +95,7 @@ function adapterFor(page: object, actions: PlayerHandActions = YOUTUBE_PLAYER_HA
     timers: clock.scheduler,
     now: clock.scheduler.now,
   });
-  const view: VariantPageView = { ...createFakeAdView(root, { hostname: "www.youtube.com" }), attributeOf: (element, name) => (element as FakeNode).attributes.get(name) ?? null };
+  const view: VariantPageView = createFakeVariantView(root, { hostname: "www.youtube.com" });
   return createYouTubeVariants({ dom: view, player: client.handFor(YOUTUBE_SITE.id) });
 }
 
