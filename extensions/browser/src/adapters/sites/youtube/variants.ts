@@ -4,7 +4,8 @@
 // рукой-функцией (MAIN-мир, `player-hand.ts`). Рука DOM читает только кнопку «следующее видео».
 //
 // Описание строгое: ответ руки не той формы — исключение `YouTubePageError`, описание срывается целиком
-// (полменю хуже, чем «меню нет»). Пункт, который нельзя показать (ключ вне алфавита протокола, повтор
+// (полменю хуже, чем «меню нет»). Единственное исключение — субтитры (15a2): они независимая добавка, и их
+// неразборчивый ответ даёт пустое меню субтитров, а рабочие озвучки и качества не страдают. Пункт, который нельзя показать (ключ вне алфавита протокола, повтор
 // языка), молча пропускается: это не сбой формы, а данные сайта, которые мы не умеем выразить.
 
 import { hostMatches } from "../../capabilities/ad-organs/ad-text.ts";
@@ -18,12 +19,30 @@ import type {
   VariantAdapter,
   VariantHands,
 } from "../../capabilities/variants/contract.ts";
+import { captionLabelOf, englishLanguageName } from "../../capabilities/subtitle-naming/caption-label.ts";
 import { withResolutionStepLabels } from "../../capabilities/variants/quality-label.ts";
 import type { HandValue } from "../../../shared/adapter-hand-contract.ts";
-import { VARIANT_KEY_PATTERN, YOUTUBE_HAND_ACTIONS, YOUTUBE_VARIANT_MARKUP } from "./variant-markup.ts";
+import { VARIANT_KEY_PATTERN, YOUTUBE_CAPTIONS_MARKUP, YOUTUBE_HAND_ACTIONS, YOUTUBE_VARIANT_MARKUP } from "./variant-markup.ts";
 
 /** Рука-функция дала ответ не той формы: описание срывается целиком. */
 export class YouTubePageError extends Error {}
+
+/** Родная дорожка субтитров, как её отдаёт рука (`captions-hand.ts`). */
+interface CaptionTrackSnapshot {
+  readonly id: string;
+  readonly language: string;
+  readonly kind: string;
+  readonly vssId: string;
+  readonly name: string;
+  readonly translatable: boolean;
+}
+
+/** Субтитры плеера: дорожки ролика, коды автоперевода и текущий выбор страницы. */
+interface CaptionsSnapshot {
+  readonly tracks: readonly CaptionTrackSnapshot[];
+  readonly translations: readonly string[];
+  readonly current: { readonly vssId: string; readonly translation: string | null } | null;
+}
 
 /** Проверенное описание плеера, как его отдаёт `describe_player`. */
 interface PlayerSnapshot {
@@ -32,6 +51,8 @@ interface PlayerSnapshot {
   readonly qualities: readonly { readonly level: string; readonly label: string }[];
   readonly qualityPreference: string | null;
   readonly audio: readonly { readonly language: string; readonly label: string; readonly selected: boolean }[];
+  /** `undefined` — рука не прислала субтитры или прислала мусор: меню субтитров пусто, остальное живо. */
+  readonly captions: CaptionsSnapshot | undefined;
 }
 
 type Fields = Readonly<Record<string, HandValue>>;
@@ -68,8 +89,46 @@ function snapshotFrom(value: HandValue): PlayerSnapshot {
     if (typeof language !== "string" || typeof label !== "string" || typeof selected !== "boolean") throw new YouTubePageError("audio fields");
     return { language, label, selected };
   });
+  const captions = captionsSnapshotFrom(fields.captions);
   // Эфир (`live`) отдельного поля в описании не требует: качества есть, озвучек нет — это уже в списках.
-  return { videoId, shorts, qualities, qualityPreference, audio };
+  return { videoId, shorts, qualities, qualityPreference, audio, captions };
+}
+
+/** Разбор одной дорожки субтитров; не та форма — `YouTubePageError`. */
+function captionTrackFrom(entry: HandValue): CaptionTrackSnapshot {
+  const { id, language, kind, vssId, name, translatable } = fieldsOf(entry, "caption track");
+  if (typeof id !== "string" || typeof language !== "string" || typeof kind !== "string") throw new YouTubePageError("caption track fields");
+  if (typeof vssId !== "string" || typeof name !== "string" || typeof translatable !== "boolean") throw new YouTubePageError("caption track fields");
+  return { id, language, kind, vssId, name, translatable };
+}
+
+/**
+ * Строгий разбор субтитров. Любое несоответствие формы — `undefined` (меню субтитров пусто): субтитры
+ * необязательны, и мусор в них не должен отнимать у зрителя рабочие меню озвучек и качеств.
+ */
+function captionsSnapshotFrom(value: HandValue | undefined): CaptionsSnapshot | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const fields = fieldsOf(value, "captions");
+    const tracks = listOf(fields.tracks, "caption tracks").map(captionTrackFrom);
+    const translations = listOf(fields.translations, "caption translations").map((code) => {
+      if (typeof code !== "string") throw new YouTubePageError("caption translation code");
+      return code;
+    });
+    const rawCurrent = fields.current;
+    if (rawCurrent === undefined) throw new YouTubePageError("caption current");
+    let current: CaptionsSnapshot["current"] = null;
+    if (rawCurrent !== null) {
+      const { vssId, translation } = fieldsOf(rawCurrent, "caption current");
+      if (typeof vssId !== "string" || (translation !== null && typeof translation !== "string")) throw new YouTubePageError("caption current fields");
+      current = { vssId, translation };
+    }
+    return { tracks, translations, current };
+  } catch (error) {
+    // Не та форма субтитров - ожидаемое дело чужой страницы; любая другая ошибка - наш баг, глушить нельзя.
+    if (error instanceof YouTubePageError) return undefined;
+    throw error;
+  }
 }
 
 /** Исход действия руки-функции, которое отвечает `true` («сделано») или `false` («такого нет»). */
@@ -103,6 +162,51 @@ function audioMenu(snapshot: PlayerSnapshot): readonly PageVariantOption[] {
     .map((track) => ({ id: track.language, label: track.label, selected: track.selected }));
 }
 
+/** Подпись родной дорожки; нет английского названия языка — название YouTube, а нет и его — сам код. */
+function nativeCaptionLabel(track: CaptionTrackSnapshot, withTrackName: boolean): string {
+  const label = captionLabelOf({
+    language: track.language,
+    autoGenerated: track.kind === YOUTUBE_CAPTIONS_MARKUP.autoGeneratedKind,
+    autoTranslated: false,
+    ...(withTrackName && track.name !== "" ? { trackName: track.name } : {}),
+  });
+  if (label !== "") return label;
+  return track.name !== "" ? track.name : track.language;
+}
+
+/**
+ * Меню субтитров: сначала родные дорожки в порядке YouTube, потом автоперевод на языки сайта; всего не больше
+ * `maxMenuOptions` (режутся переводы). Родные дорожки с одинаковой подписью (два «English») различаются
+ * названием YouTube в скобках. Перевод предлагаем, только если есть что переводить, и только на языки, у
+ * которых есть английское название: безымянный язык зритель не отличит, а память не найдёт по подписи.
+ */
+function subtitlesMenu(snapshot: PlayerSnapshot): readonly PageVariantOption[] {
+  const captions = snapshot.captions;
+  if (captions === undefined) return [];
+  const { current } = captions;
+  const usable = captions.tracks.filter((track) => VARIANT_KEY_PATTERN.test(track.id));
+  const baseLabels = usable.map((track) => nativeCaptionLabel(track, false));
+  const natives = usable.map((track, index): PageVariantOption => {
+    const isAmbiguous = baseLabels.filter((label) => label === baseLabels[index]).length > 1;
+    return {
+      id: track.id,
+      label: isAmbiguous ? nativeCaptionLabel(track, true) : (baseLabels[index] ?? ""),
+      selected: current !== null && current.translation === null && current.vssId === track.vssId,
+    };
+  });
+  const canTranslate = captions.tracks.some((track) => track.translatable);
+  const translations = canTranslate
+    ? captions.translations
+        .filter((code) => englishLanguageName(code) !== undefined && VARIANT_KEY_PATTERN.test(`${YOUTUBE_CAPTIONS_MARKUP.translationIdPrefix}${code}`))
+        .map((code): PageVariantOption => ({
+          id: `${YOUTUBE_CAPTIONS_MARKUP.translationIdPrefix}${code}`,
+          label: captionLabelOf({ language: code, autoGenerated: false, autoTranslated: true }),
+          selected: current !== null && current.translation === code,
+        }))
+    : [];
+  return [...natives, ...translations].slice(0, YOUTUBE_CAPTIONS_MARKUP.maxMenuOptions);
+}
+
 export function createYouTubeVariants(hands: VariantHands): VariantAdapter {
   const { dom, player } = hands;
   const markup = YOUTUBE_VARIANT_MARKUP;
@@ -129,6 +233,7 @@ export function createYouTubeVariants(hands: VariantHands): VariantAdapter {
         episodeKey: snapshot.videoId,
         audio: audioMenu(snapshot),
         quality: qualityMenu(snapshot),
+        subtitles: subtitlesMenu(snapshot),
         // Ленты Shorts — отдельная сессия (16b): «следующего» там не предлагаем.
         nextEpisode: !snapshot.shorts && nextButtonOffersVideo(),
       };
@@ -136,7 +241,11 @@ export function createYouTubeVariants(hands: VariantHands): VariantAdapter {
     async select(kind: PageVariantKind, id: string): Promise<VariantActionOutcome> {
       // Ключ проверяем до обращения к странице: мусор ничего не вызывает.
       if (!VARIANT_KEY_PATTERN.test(id)) return "no_such_variant";
-      const action = kind === "audio" ? YOUTUBE_HAND_ACTIONS.selectAudio : YOUTUBE_HAND_ACTIONS.selectQuality;
+      const action = {
+        audio: YOUTUBE_HAND_ACTIONS.selectAudio,
+        quality: YOUTUBE_HAND_ACTIONS.selectQuality,
+        subtitles: YOUTUBE_HAND_ACTIONS.selectCaptions,
+      }[kind];
       return actionOutcome(await player.call(action, id));
     },
     async next(): Promise<VariantActionOutcome> {

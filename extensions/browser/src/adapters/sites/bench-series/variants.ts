@@ -92,6 +92,7 @@ export function createBenchSeriesVariants(hands: VariantHands): VariantAdapter {
         episodeKey: dom.attributeOf(where, markup.episodeKeyAttribute),
         audio,
         quality,
+        subtitles: [], // стенд не предлагает язык субтитров: документ приходит дорожкой (13b)
         nextEpisode,
       };
     },

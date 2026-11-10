@@ -16,8 +16,8 @@ describe("адаптер timedtext YouTube", () => {
   });
 
   it("автоперевод: язык берётся из tlang, а не из lang исходной дорожки", () => {
-    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&tlang=de&fmt=json3`), { language: "de", label: null, auto_generated: false });
-    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&kind=asr&tlang=pt-BR`), { language: "pt-BR", label: null, auto_generated: true });
+    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&tlang=de&fmt=json3`), { language: "de", label: "German (auto-translated)", auto_generated: false });
+    assert.deepEqual(nameSubtitleDocumentByAddress(`${YOUTUBE_TIMEDTEXT}&kind=asr&tlang=pt-BR`), { language: "pt-BR", label: "Brazilian Portuguese (auto-translated)", auto_generated: true });
   });
 
   it("хосты youtube-nocookie.com, www. и m. узнаются; чужой хост и чужой путь — нет", () => {

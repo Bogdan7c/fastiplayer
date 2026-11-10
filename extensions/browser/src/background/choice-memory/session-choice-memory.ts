@@ -24,7 +24,7 @@ import type { PageVariantKind, VariantActionOutcome } from "../../shared/variant
 import type { DescribedVariantPage, RememberedSelectOutcome, VariantMirrorObserver, VariantSelectionOrigin } from "../handoff/variant-mirror.ts";
 import type { ChoiceMemoryStore } from "./choice-memory-store.ts";
 import { createPageTrackCatalog, type OfferedPageTrack } from "./page-track-catalog.ts";
-import { planRememberedVariant, selectionOf, type EpisodeTiming, type SeenSelection } from "./remembered-choice-plan.ts";
+import { planRememberedVariant, selectionOf, type EpisodeTiming, type RememberableVariantKind, type SeenSelection } from "./remembered-choice-plan.ts";
 import { browserSha256, seriesFingerprintOf, type Sha256Digest } from "./series-fingerprint.ts";
 
 /** Числа поведения памяти. Не настройки человека: это допуски того, как ведут себя страницы и плеер. */
@@ -57,7 +57,7 @@ export interface SessionChoiceMemoryDependencies {
   /** Идёт ли сейчас ролик, принятый за рекламу. */
   readonly adOnScreen: () => boolean;
   /** Выбрать пункт на странице через ворота зеркала вариантов. */
-  readonly selectOnPage: (kind: PageVariantKind, variantId: string) => RememberedSelectOutcome;
+  readonly selectOnPage: (kind: RememberableVariantKind, variantId: string) => RememberedSelectOutcome;
   /** Подсказать плееру запомненные субтитры. */
   readonly sendSubtitlePreference: (choice: SubtitleChoice) => SubtitlePreferenceDelivery;
   /** Часы фона (мс). */
@@ -80,7 +80,7 @@ export interface SessionChoiceMemory extends VariantMirrorObserver {
 }
 
 /** Что память применяет за серию; каждое — один раз. */
-type AppliedPart = PageVariantKind | "subtitles";
+type AppliedPart = RememberableVariantKind | "subtitles";
 
 interface SeriesState {
   readonly seriesKey: string;
@@ -97,7 +97,7 @@ interface EpisodeState {
   readonly first: boolean;
   readonly startedAt: number;
   /** Последний увиденный выбор страницы по видам; первое увиденное — точка отсчёта, а не выбор человека. */
-  readonly seen: Partial<Record<PageVariantKind, SeenSelection>>;
+  readonly seen: Partial<Record<RememberableVariantKind, SeenSelection>>;
   /** Что память на этой серии уже сделала или решила не делать (в том числе потому, что выбрал зритель). */
   readonly settled: Set<AppliedPart>;
   /**
@@ -108,7 +108,8 @@ interface EpisodeState {
   filmOnScreen: boolean;
 }
 
-const VARIANT_KINDS: readonly PageVariantKind[] = ["audio", "quality"];
+/** Виды, которые память наблюдает и применяет как варианты; субтитры страницы (15a2) — не они. */
+const VARIANT_KINDS: readonly RememberableVariantKind[] = ["audio", "quality"];
 
 export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDependencies): SessionChoiceMemory {
   const { store, note } = dependencies;
@@ -286,6 +287,9 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       commandsInFlight = Math.max(0, commandsInFlight - 1);
       settledAt = dependencies.now();
       if (stopped || origin !== "viewer" || outcome !== "done") return;
+      // Выбор языка субтитров страницы (15a2) в память не пишется как вариант: когда документ придёт дорожкой,
+      // запомнит его `viewerSubtitleChoice` (по языку и подписи, 14b2).
+      if (kind === "subtitles") return;
       // Зритель выбрал в нашем меню: память на этой серии этот вид больше не трогает.
       episode?.settled.add(kind);
       rememberChoice({ [kind]: label }, `${kind} chosen in the player`);

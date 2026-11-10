@@ -23,6 +23,7 @@ const SERIES: PageVariantDescription = {
     { id: "video-360", label: "360p", selected: true },
     { id: "video-720", label: "720p", selected: false },
   ],
+  subtitles: [],
   nextEpisode: true,
 };
 
@@ -161,6 +162,45 @@ describe("меню на проводе", () => {
     world.handoffs.variantWatchReport(TAB, 7, report({ ...SERIES, audio: [{ id: "seven", label: "Seven", selected: true }] }));
     world.handoffs.variantWatchReport(TAB, 5, report({ ...SERIES, audio: [{ id: "five", label: "Five", selected: true }] }));
     assert.deepEqual(labelsOf(menus(world).filter((menu) => menu.kind === "audio").at(-1)), ["Five:selected"]);
+  });
+});
+
+const WITH_SUBTITLES: PageVariantDescription = {
+  ...SERIES,
+  subtitles: [
+    { id: "t0_abc", label: "English", selected: false },
+    { id: "x-de", label: "German (auto-translated)", selected: false },
+  ],
+};
+
+describe("субтитры страницы (15a2)", () => {
+  it("меню субтитров уходит плееру третьим меню; без субтитров его нет", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    assert.equal(menus(world).some((menu) => menu.kind === "subtitles"), false, "пустое меню субтитров не шлётся");
+    world.handoffs.variantWatchReport(TAB, 0, report(WITH_SUBTITLES));
+    assert.deepEqual(labelsOf(menus(world).find((menu) => menu.kind === "subtitles")), ["English:available", "German (auto-translated):available"]);
+  });
+
+  it("select_variant субтитров доходит до фрейма меню с ключом пункта и не отвергается как «дорожки страницы»", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(WITH_SUBTITLES));
+    world.sockets.last().receive({ type: "select_variant", kind: "subtitles", variant_id: "x-de" });
+    await flushPromises();
+    assert.deepEqual(world.variantMirror.commands, [{ tabId: TAB, frameId: 0, command: { kind: "select", variant_kind: "subtitles", variant_id: "x-de" } }]);
+    assert.ok(world.adMirror.notes.every((note) => !/subtitles are page tracks|ignored/u.test(note)));
+  });
+
+  it("выбор пункта, которого нет в меню субтитров, ничего не нажимает", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(WITH_SUBTITLES));
+    world.sockets.last().receive({ type: "select_variant", kind: "subtitles", variant_id: "x-fr" });
+    await flushPromises();
+    assert.deepEqual(world.variantMirror.commands, []);
+    assert.ok(world.adMirror.notes.some((note) => /no such subtitles option/u.test(note)));
   });
 });
 

@@ -11,6 +11,7 @@ const describeWith = (audio: readonly PageVariantOption[], nextEpisode = false):
   episodeKey: null,
   audio,
   quality: [],
+  subtitles: [],
   nextEpisode,
 });
 

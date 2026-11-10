@@ -6,7 +6,7 @@
 // До `videoStarted` и после `stop` фон и страница молчат (решение 198).
 //
 // Что уходит плееру:
-// - `variant_menu_changed` (протокол 1.0) — меню озвучек и качеств, только при изменении; пустое меню —
+// - `variant_menu_changed` (протокол 1.0) — меню озвучек, качеств и субтитров страницы (15a2), только при изменении; пустое меню —
 //   «пунктов больше нет», уходит, только если раньше было непустое;
 // - `page_navigation` (протокол 1.7) — «есть ли следующая серия», только при изменении и только плееру ≥ 1.7.
 //   До первого слова плеер считает «нет», поэтому первое «нет» не шлётся.
@@ -57,7 +57,7 @@ export interface DescribedVariantPage {
   readonly seriesKey: string | null;
   /** Ключ серии; `null` — неизвестен. */
   readonly episodeKey: string | null;
-  readonly menus: Pick<NormalizedVariantMenus, "audio" | "quality" | "automatic">;
+  readonly menus: Pick<NormalizedVariantMenus, "audio" | "quality" | "subtitles" | "automatic">;
 }
 
 /** Кто попросил выбрать пункт: зритель в нашем меню или память выбора. */
@@ -119,7 +119,7 @@ interface SentState {
 }
 
 const EMPTY_KEY = "";
-const PAGE_VARIANT_KINDS: readonly PageVariantKind[] = ["audio", "quality"];
+const PAGE_VARIANT_KINDS: readonly PageVariantKind[] = ["audio", "quality", "subtitles"];
 
 export function createSessionVariantMirror(dependencies: SessionVariantMirrorDependencies): SessionVariantMirror {
   const { browser, currentTabId } = dependencies;
@@ -128,9 +128,9 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
   const notedAdapters = new Set<string>();
   let running = false;
   const sent: SentState = {
-    menuKey: { audio: EMPTY_KEY, quality: EMPTY_KEY },
+    menuKey: { audio: EMPTY_KEY, quality: EMPTY_KEY, subtitles: EMPTY_KEY },
     menuFrame: {},
-    menus: { audio: { kind: "audio", options: [] }, quality: { kind: "quality", options: [] } },
+    menus: { audio: { kind: "audio", options: [] }, quality: { kind: "quality", options: [] }, subtitles: { kind: "subtitles", options: [] } },
     nextEpisode: "unavailable",
     nextEpisodeFrame: undefined,
   };

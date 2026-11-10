@@ -39,6 +39,7 @@ function page(dub: (typeof DUBS)[number], quality: (typeof QUALITIES)[number], e
     episodeKey,
     audio: DUBS.map((label, index) => ({ id: `dub-${index}`, label, selected: label === dub })),
     quality: QUALITIES.map((label, index) => ({ id: `q-${index}`, label, selected: label === quality, ...(index === 0 ? { automatic: true } : {}) })),
+    subtitles: [],
     nextEpisode: true,
   });
   return { seriesKey, episodeKey, menus };
@@ -160,6 +161,57 @@ describe("что записывается", () => {
     await settle();
     assert.equal(noSeries.storage.state.writes + noSite.storage.state.writes, 0);
     assert.ok(noSeries.notes.some((note) => /no series/u.test(note)));
+  });
+});
+
+describe("субтитры страницы (15a2) не варианты памяти", () => {
+  /** Страница с меню субтитров: выбран `selectedLabel` (или никто). */
+  function pageWithSubtitles(selectedLabel: string | undefined): DescribedVariantPage {
+    const base = page("Dub A", "360p");
+    const menus = normalizeVariantMenus({
+      seriesKey: SERIES,
+      episodeKey: "1",
+      audio: DUBS.map((label, index) => ({ id: `dub-${index}`, label, selected: label === "Dub A" })),
+      quality: QUALITIES.map((label, index) => ({ id: `q-${index}`, label, selected: label === "360p" })),
+      subtitles: ["English", "German (auto-translated)"].map((label, index) => ({ id: `s-${index}`, label, selected: label === selectedLabel })),
+      nextEpisode: true,
+    });
+    return { ...base, menus };
+  }
+
+  it("смена выбранных субтитров на странице и выбор в нашем меню субтитров ничего не пишут в хранилище", async () => {
+    const world = harness();
+    world.memory.pageDescribed(pageWithSubtitles(undefined));
+    world.memory.playerClock(5_000_000, "playing");
+    world.memory.pageDescribed(pageWithSubtitles("English"));
+    world.memory.pageDescribed(pageWithSubtitles("German (auto-translated)"));
+    world.memory.selectionStarted("subtitles", "viewer");
+    world.memory.selectionFinished("subtitles", "viewer", "done", "English");
+    await settle();
+    assert.equal(world.stored(), undefined, "ни audio, ни quality, ни subtitles не записаны как вариант");
+  });
+
+  it("запомненные субтитры не выбираются как вариант: память применяет их только подсказкой плееру (14b2)", async () => {
+    const world = harness({ remembered: { subtitles: { kind: "track", language: "en", label: "English" } } });
+    world.memory.pageDescribed(pageWithSubtitles(undefined));
+    world.memory.playerClock(1_000_000, "playing");
+    await settle();
+    assert.deepEqual(world.selects.filter((select) => select.startsWith("subtitles")), [], "меню субтитров страницы память не нажимает");
+    // Прежний путь жив: пришла дорожка с языком - подсказка плееру.
+    world.memory.subtitleTrackOffered({ track: 3, language: "en", label: "English" });
+    await settle();
+    assert.equal(world.preferences.length, 1);
+  });
+
+  it("выбор зрителя в меню субтитров не мешает записи выбора озвучки в той же серии", async () => {
+    const world = harness();
+    world.memory.pageDescribed(pageWithSubtitles(undefined));
+    world.memory.selectionStarted("subtitles", "viewer");
+    world.memory.selectionFinished("subtitles", "viewer", "done", "English");
+    world.memory.selectionStarted("audio", "viewer");
+    world.memory.selectionFinished("audio", "viewer", "done", "Dub B");
+    await settle();
+    assert.deepEqual(world.stored(), { audio: "Dub B", used_at: 100_000 });
   });
 });
 

@@ -31,6 +31,7 @@ function episode(episodeKey: string, dub: "dub-a" | "dub-b"): PageVariantDescrip
       { id: "video-360", label: "360p", selected: true },
       { id: "video-720", label: "720p", selected: false },
     ],
+    subtitles: [],
     nextEpisode: true,
   };
 }

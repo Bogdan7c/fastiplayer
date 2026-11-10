@@ -19,6 +19,7 @@ const DUB_A: PageVariantDescription = {
     { id: "dub-b", label: "Dub B", selected: false },
   ],
   quality: [],
+  subtitles: [],
   nextEpisode: false,
 };
 const DUB_B: PageVariantDescription = { ...DUB_A, audio: [{ ...DUB_A.audio[0]!, selected: false }, { ...DUB_A.audio[1]!, selected: true }] };

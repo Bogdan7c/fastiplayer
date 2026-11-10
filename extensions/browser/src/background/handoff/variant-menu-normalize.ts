@@ -18,10 +18,11 @@ import {
 } from "../../protocol/index.ts";
 import type { PageVariantDescription, PageVariantKind, PageVariantOption } from "../../shared/variant-watch-contract.ts";
 
-/** Меню обоих видов и «есть ли следующая серия» — то, что уходит плееру. */
+/** Меню трёх видов и «есть ли следующая серия» — то, что уходит плееру. */
 export interface NormalizedVariantMenus {
   readonly audio: VariantMenu;
   readonly quality: VariantMenu;
+  readonly subtitles: VariantMenu;
   readonly nextEpisode: NextEpisodeAvailability;
   /** id оставленных пунктов, которые адаптер пометил как автоматический выбор сайта. Только для фона. */
   readonly automatic: Readonly<Record<PageVariantKind, ReadonlySet<string>>>;
@@ -55,10 +56,12 @@ function normalizeMenu(kind: PageVariantKind, options: readonly PageVariantOptio
 export function normalizeVariantMenus(description: PageVariantDescription | null): NormalizedVariantMenus {
   const audio = normalizeMenu("audio", description?.audio ?? []);
   const quality = normalizeMenu("quality", description?.quality ?? []);
+  const subtitles = normalizeMenu("subtitles", description?.subtitles ?? []);
   return {
     audio: audio.menu,
     quality: quality.menu,
+    subtitles: subtitles.menu,
     nextEpisode: description?.nextEpisode === true ? "available" : "unavailable",
-    automatic: { audio: audio.automatic, quality: quality.automatic },
+    automatic: { audio: audio.automatic, quality: quality.automatic, subtitles: subtitles.automatic },
   };
 }

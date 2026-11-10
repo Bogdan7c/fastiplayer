@@ -106,6 +106,7 @@ describe("адаптер стенда «сериал»: описание чер�
         { id: "video-360", label: "360p", selected: true },
         { id: "video-720", label: "720p", selected: false },
       ],
+      subtitles: [],
       nextEpisode: true,
     });
     // Рука-функция дошла до плеера страницы (через исполнитель MAIN-мира), а не придумала ответ.

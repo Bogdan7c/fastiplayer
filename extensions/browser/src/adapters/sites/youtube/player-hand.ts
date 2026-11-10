@@ -1,10 +1,9 @@
-// Белый список руки-функции YouTube (MAIN-мир): четыре действия над активным плеером и ничего больше.
+// Белый список руки-функции YouTube (MAIN-мир): пять действий над активным плеером и ничего больше.
 //
 // Все функции плеера читаем по имени и зовём с `this` = элемент плеера. Любое из действий может бросить
 // (плеер YouTube чужой) — это ловит исполнитель (`src/page/adapter-hand.ts`) и отвечает `failed`.
 
 import {
-  callPageFunction,
   PAGE_FUNCTION_MISSING,
   pageDocumentOf,
   type PlayerHandActions,
@@ -15,24 +14,11 @@ import {
   YOUTUBE_PLAYER_FUNCTIONS,
   YOUTUBE_VARIANT_MARKUP,
 } from "./variant-markup.ts";
+import { describeCaptions, selectCaptions } from "./captions-hand.ts";
+import { call, listFrom, nonEmptyString, read } from "./page-reading.ts";
 
 const functions = YOUTUBE_PLAYER_FUNCTIONS;
 const markup = YOUTUBE_VARIANT_MARKUP;
-
-/** Читает `объект[имя]` как есть; не объект — `undefined`. */
-function read(target: unknown, name: string): unknown {
-  return typeof target === "object" && target !== null ? Reflect.get(target, name) : undefined;
-}
-
-/** Зовёт функцию объекта, если она есть; иначе `PAGE_FUNCTION_MISSING`. */
-function call(player: object, name: string, ...args: readonly unknown[]): unknown {
-  return callPageFunction({ player }, "player", name, ...args);
-}
-
-/** Строка непустая? */
-function nonEmptyString(candidate: unknown): candidate is string {
-  return typeof candidate === "string" && candidate !== "";
-}
 
 /**
  * Активный плеер: среди всех `.html5-video-player` первый, у которого `getVideoData().video_id` — непустая
@@ -54,11 +40,6 @@ function isShortsPage(page: object, player: object): boolean {
   if (read(player, "id") === markup.shortsPlayerId) return true;
   const path = read(read(page, "location"), "pathname");
   return typeof path === "string" && path.startsWith(markup.shortsPathPrefix);
-}
-
-/** Список из ответа функции плеера; не список (или функции нет) — пустой список. */
-function listFrom(value: unknown): readonly unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 /**
@@ -113,6 +94,7 @@ function describePlayer(page: object): unknown {
     qualities: playableQualities(player),
     qualityPreference: typeof preference === "string" ? preference : null,
     audio,
+    captions: describeCaptions(player),
   };
 }
 
@@ -154,4 +136,8 @@ export const YOUTUBE_PLAYER_HAND: PlayerHandActions = {
   [YOUTUBE_HAND_ACTIONS.selectQuality]: (page, argument) => selectQuality(page, argument),
   [YOUTUBE_HAND_ACTIONS.selectAudio]: (page, argument) => selectAudio(page, argument),
   [YOUTUBE_HAND_ACTIONS.nextVideo]: (page) => nextVideo(page),
+  [YOUTUBE_HAND_ACTIONS.selectCaptions]: (page, argument) => {
+    const player = findActivePlayer(page);
+    return player === undefined ? PAGE_FUNCTION_MISSING : selectCaptions(player, argument);
+  },
 };

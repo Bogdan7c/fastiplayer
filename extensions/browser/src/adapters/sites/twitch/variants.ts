@@ -56,6 +56,7 @@ export function createTwitchVariants(hands: VariantHands): VariantAdapter {
         audio: [],
         // Подпись — ступень («720p», а не «720p60»): одинакова на всех каналах, память выбора её найдёт.
         quality: withResolutionStepLabels((quality as readonly HandValue[]).map(qualityOption)),
+        subtitles: [], // у Twitch нет меню субтитров страницы
         nextEpisode: false,
       };
     },

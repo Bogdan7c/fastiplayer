@@ -64,14 +64,15 @@ function parseOptions(value: unknown): readonly PageVariantOption[] | undefined 
 
 /** Описание меню страницы по форме. */
 export function parsePageVariantDescription(value: unknown): PageVariantDescription | undefined {
-  const record = exactRecord(value, ["seriesKey", "episodeKey", "audio", "quality", "nextEpisode"]);
+  const record = exactRecord(value, ["seriesKey", "episodeKey", "audio", "quality", "subtitles", "nextEpisode"]);
   if (record === undefined) return undefined;
   const { seriesKey, episodeKey, nextEpisode } = record;
   if (!isKeyOrNull(seriesKey) || !isKeyOrNull(episodeKey) || typeof nextEpisode !== "boolean") return undefined;
   const audio = parseOptions(record["audio"]);
   const quality = parseOptions(record["quality"]);
-  if (audio === undefined || quality === undefined) return undefined;
-  return { seriesKey, episodeKey, audio, quality, nextEpisode };
+  const subtitles = parseOptions(record["subtitles"]);
+  if (audio === undefined || quality === undefined || subtitles === undefined) return undefined;
+  return { seriesKey, episodeKey, audio, quality, subtitles, nextEpisode };
 }
 
 /** Донесение фрейма (разбирает фон). */
@@ -99,7 +100,7 @@ function parseCommand(value: unknown): VariantCommand | undefined {
   const record = exactRecord(value, ["kind", "variant_kind", "variant_id"]);
   if (record === undefined || record["kind"] !== "select") return undefined;
   const { variant_kind: variantKind, variant_id: variantId } = record;
-  if ((variantKind !== "audio" && variantKind !== "quality") || !isBoundedString(variantId, 1, MAX_REPORTED_VARIANT_ID_LENGTH)) return undefined;
+  if ((variantKind !== "audio" && variantKind !== "quality" && variantKind !== "subtitles") || !isBoundedString(variantId, 1, MAX_REPORTED_VARIANT_ID_LENGTH)) return undefined;
   return { kind: "select", variant_kind: variantKind, variant_id: variantId };
 }
 

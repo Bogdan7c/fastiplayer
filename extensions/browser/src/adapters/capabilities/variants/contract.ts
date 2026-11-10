@@ -16,8 +16,12 @@
 import type { AdapterHandOutcome } from "../../../shared/adapter-hand-contract.ts";
 import type { AdElement, AdFramePlace, AdPageView } from "../ad-organs/contract.ts";
 
-/** Вид варианта, который адаптер показывает в нашем меню. Субтитры приходят дорожками (13b), не вариантами. */
-export type PageVariantKind = "audio" | "quality";
+/**
+ * Вид варианта, который адаптер показывает в нашем меню. Субтитры (15a2) — меню страницы, которое просит
+ * сайт включить язык; сам документ субтитров приходит дорожкой (13b), и память выбора ведёт их своим путём
+ * (14b2), а не как вариант.
+ */
+export type PageVariantKind = "audio" | "quality" | "subtitles";
 
 /** Пункт меню сайта: непрозрачный ключ адаптера, подпись страницы и «выбран ли сейчас». */
 export interface PageVariantOption {
@@ -48,6 +52,8 @@ export interface PageVariantDescription {
   readonly episodeKey: string | null;
   readonly audio: readonly PageVariantOption[];
   readonly quality: readonly PageVariantOption[];
+  /** Языки субтитров, которые сайт умеет включить сам (15a2); у сайтов без такого меню — пустой список. */
+  readonly subtitles: readonly PageVariantOption[];
   /** Есть ли следующая серия, которую сайт откроет по `next()`. */
   readonly nextEpisode: boolean;
 }

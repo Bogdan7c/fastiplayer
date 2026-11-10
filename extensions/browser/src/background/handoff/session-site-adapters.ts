@@ -130,8 +130,7 @@ export function createSessionSiteAdapters(dependencies: SessionSiteAdaptersDepen
         case "skip_ad":
           return adMirror.skipAd();
         case "select_variant":
-          // Субтитры приходят дорожками 13b, меню субтитров мы не шлём: такой выбор — не наш.
-          if (command.variantKind === "subtitles") return dependencies.note("select_variant ignored: subtitles are page tracks");
+          // Все три вида (в том числе субтитры страницы, 15a2) идут тем же путём: во фрейм меню этого вида.
           return variantMirror.selectVariant(command.variantKind, command.variantId);
         case "next_episode":
           return variantMirror.nextEpisode();

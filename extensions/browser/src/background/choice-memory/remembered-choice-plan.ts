@@ -12,6 +12,12 @@
 import type { VariantMenu } from "../../protocol/index.ts";
 import type { PageVariantKind } from "../../shared/variant-watch-contract.ts";
 
+/**
+ * Виды вариантов, которые память ведёт как варианты: озвучка и качество. Субтитры страницы (15a2) сюда не
+ * входят: их память идёт прежним путём 14b2 (`subtitle_choice` → `subtitle_preference` по языку и подписи).
+ */
+export type RememberableVariantKind = Exclude<PageVariantKind, "subtitles">;
+
 /** Выбранный сейчас пункт страницы (из меню, уже отправленного плееру). */
 export interface SeenSelection {
   readonly id: string;
@@ -33,7 +39,7 @@ export type EpisodeTiming =
 export type VariantSwitchRule = "episode_start_only" | "any_time";
 
 /** Озвучка сбрасывает позицию на многих сайтах, качество — нет (решение 287). */
-export const VARIANT_SWITCH_RULES: Readonly<Record<PageVariantKind, VariantSwitchRule>> = {
+export const VARIANT_SWITCH_RULES: Readonly<Record<RememberableVariantKind, VariantSwitchRule>> = {
   audio: "episode_start_only",
   quality: "any_time",
 };
@@ -49,7 +55,7 @@ export type RememberedVariantStep =
   | { readonly kind: "wait" };
 
 export interface RememberedVariantFacts {
-  readonly variantKind: PageVariantKind;
+  readonly variantKind: RememberableVariantKind;
   /** Запомненная подпись; `undefined` — этот вид ещё не выбирали. */
   readonly rememberedLabel: string | undefined;
   /** Выбранный сейчас пункт; `undefined` — страница ещё не показала выбор этого вида. */

@@ -133,6 +133,7 @@ describe("адаптер Twitch: описание", () => {
         { id: "720p60", label: "720p", selected: true },
         { id: "480p30", label: "480p", selected: false },
       ],
+      subtitles: [],
       nextEpisode: false,
     });
   });

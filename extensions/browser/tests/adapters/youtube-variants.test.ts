@@ -145,6 +145,7 @@ describe("адаптер вариантов YouTube: описание через
         { id: "hd1080", label: "1080p", selected: false },
         { id: "small", label: "240p", selected: false },
       ],
+      subtitles: [],
       nextEpisode: true,
     });
   });
