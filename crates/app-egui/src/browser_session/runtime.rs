@@ -342,7 +342,15 @@ fn earliest(first: Option<Instant>, second: Option<Instant>) -> Option<Instant> 
 
 fn log_lifecycle_event(event: &SessionLifecycleEvent) {
     match event {
-        SessionLifecycleEvent::Attached { .. } => info!("Browser session attached"),
+        // Общая версия протокола — в журнал: живая проверка сверяет по ней, что стороны
+        // договорились о новой версии, а не работают по запасным правилам старой (урок 15c2).
+        SessionLifecycleEvent::Attached {
+            agreed_protocol, ..
+        } => info!(
+            protocol_major = agreed_protocol.major,
+            protocol_minor = agreed_protocol.minor,
+            "Browser session attached"
+        ),
         SessionLifecycleEvent::ConnectionLost { .. } => {
             info!("Browser session connection lost; waiting for the extension to come back");
         }
