@@ -31,11 +31,12 @@ const newerIn18 = (side: string): string[] =>
     .filter(([, version]) => version === "1.8")
     .map(([type]) => type);
 
-test("в 1.8 ровно одно новое сообщение страницы; экстеншен реализует именно 1.8", () => {
+test("в 1.8 ровно одно новое сообщение страницы; экстеншен реализует 1.8 или новее", () => {
   assert.deepEqual(newerIn18("page_session"), ["variant_outcome"]);
   assert.deepEqual(newerIn18("player_session"), []);
   assert.deepEqual(pageSessionIntroducedIn("variant_outcome"), PROTOCOL_VERSION_1_8);
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_8);
+  // С 1.9 экстеншен говорит на более новой версии, а 1.8 в неё входит.
+  assert.equal(versionIncludes(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_8), true);
 });
 
 test("variant_outcome пишется ровно задокументированным JSON и читается обратно: выбор и Next, все исходы", () => {

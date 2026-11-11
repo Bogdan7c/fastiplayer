@@ -24,7 +24,9 @@
     "subtitle_track_offered": "1.5",
     "page_navigation": "1.7",
     "subtitle_preference": "1.7",
-    "variant_outcome": "1.8"
+    "variant_outcome": "1.8",
+    "awaiting_next_episode": "1.9",
+    "page_title_changed": "1.9"
   },
   "player_session": {
     "attached": "1.0",

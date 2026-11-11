@@ -114,7 +114,8 @@ fn protocol_1_8_adds_exactly_the_variant_outcome_message() {
         assert_eq!(message.introduced_in(), ProtocolVersion::V1_8);
         assert_eq!(message.required_version(), ProtocolVersion::V1_8);
     }
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::V1_8);
+    // С 1.9 crate говорит на более новой версии, а 1.8 в неё входит.
+    assert!(CURRENT_PROTOCOL_VERSION.includes(ProtocolVersion::V1_8));
 }
 
 #[test]

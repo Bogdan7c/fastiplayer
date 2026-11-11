@@ -47,6 +47,7 @@ MAX_PAGE_SUBTITLE_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_PAGE_SUBTITLE_TRACKS = 64
 MAX_SUBTITLE_LABEL_BYTES = 256
 MAX_SUBTITLE_LANGUAGE_TAG_BYTES = 35
+MAX_PAGE_TITLE_BYTES = 1024
 # Адрес-заглушка номерка ресурса HLS (crate::resource_address), независимо от Rust.
 RESOURCE_ADDRESS_PREFIX = "https://resource.fastiplayer-bridge.invalid/"
 
@@ -1659,6 +1660,8 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         "page_navigation": "1.7",
         "subtitle_preference": "1.7",
         "variant_outcome": "1.8",
+        "awaiting_next_episode": "1.9",
+        "page_title_changed": "1.9",
     },
     "player_session": {
         **{
@@ -1998,6 +2001,49 @@ def write_variant_outcome_messages(manifest: Manifest) -> None:
         manifest.invalid(f"{invalid}{name}.json", "page_session", compact_json(message), kind)
 
 
+def write_episode_change_messages(manifest: Manifest) -> None:
+    """Сообщения протокола 1.9 (сессия 16a): смена серии на той же странице.
+
+    `awaiting_next_episode {patience_ms}` — срок ожидания нового источника, любое `u32`
+    миллисекунд (отрицательное и больше `u32` — `number_out_of_range`, дробное и строка —
+    `wrong_value_type`). `page_title_changed {title}` — те же правила, что у `title` в
+    `open_session`: до 1024 байт UTF-8, без управляющих символов и переворота направления,
+    ПУСТОЙ ДОПУСТИМ (страница без `<title>`). Форма строгая: лишнее поле — `unknown_field`.
+    """
+    valid = "session/valid/page-"
+    invalid = "session/invalid/page-"
+    title_at_limit = "ї" * (MAX_PAGE_TITLE_BYTES // 2)  # «ї» — 2 байта UTF-8: ровно 1024 байта
+    for name, message in [
+        ("awaiting-next-episode-60s", page_message("awaiting_next_episode", patience_ms=60_000)),
+        ("awaiting-next-episode-zero", page_message("awaiting_next_episode", patience_ms=0)),
+        ("awaiting-next-episode-u32-max", page_message("awaiting_next_episode", patience_ms=U32_MAX)),
+        ("title-changed-episode", page_message("page_title_changed", title="Шрек 2 — серія 4 🎬")),
+        ("title-changed-rtl", page_message("page_title_changed", title="بث مباشر — שידור חי")),
+        ("title-changed-untitled", page_message("page_title_changed", title="")),
+        ("title-changed-at-limit", page_message("page_title_changed", title=title_at_limit)),
+    ]:
+        manifest.valid(f"{valid}{name}.json", "page_session", message)
+
+    for name, message, kind in [
+        ("awaiting-next-episode-unknown-field", page_message("awaiting_next_episode", patience_ms=60_000, title="x"), "unknown_field"),
+        ("awaiting-next-episode-missing-patience", page_message("awaiting_next_episode"), "missing_field"),
+        ("awaiting-next-episode-patience-as-string", page_message("awaiting_next_episode", patience_ms="60000"), "wrong_value_type"),
+        ("awaiting-next-episode-patience-as-null", page_message("awaiting_next_episode", patience_ms=None), "wrong_value_type"),
+        ("awaiting-next-episode-patience-fractional", page_message("awaiting_next_episode", patience_ms=1.5), "wrong_value_type"),
+        ("awaiting-next-episode-patience-negative", page_message("awaiting_next_episode", patience_ms=-1), "number_out_of_range"),
+        ("awaiting-next-episode-patience-beyond-u32", page_message("awaiting_next_episode", patience_ms=U32_MAX + 1), "number_out_of_range"),
+        ("title-changed-unknown-field", page_message("page_title_changed", title="Серія 4", domain="example.com"), "unknown_field"),
+        ("title-changed-missing-title", page_message("page_title_changed"), "missing_field"),
+        ("title-changed-title-as-number", page_message("page_title_changed", title=4), "wrong_value_type"),
+        ("title-changed-title-as-null", page_message("page_title_changed", title=None), "wrong_value_type"),
+        ("title-changed-too-long", page_message("page_title_changed", title=title_at_limit + "x"), "text_too_long"),
+        ("title-changed-with-bidi-override", page_message("page_title_changed", title="movie\u202e4pm.exe"), "text_forbidden_character"),
+        ("title-changed-with-nul", page_message("page_title_changed", title="a\u0000b"), "text_forbidden_character"),
+        ("title-changed-with-newline", page_message("page_title_changed", title="Серія 4\nОзвучка"), "text_forbidden_character"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", "page_session", compact_json(message), kind)
+
+
 def gate_text(message: dict[str, Any]) -> dict[str, str]:
     """Шаг случая сторожа: текстовая рамка — ровно байты сообщения на проводе."""
     return {"text": compact_json(message).decode("utf-8")}
@@ -2118,6 +2164,7 @@ def main() -> None:
     write_page_subtitle_messages(manifest)
     write_variant_protocol_messages(manifest)
     write_variant_outcome_messages(manifest)
+    write_episode_change_messages(manifest)
     write_page_subtitle_gate_cases()
     write_streams(manifest)
     write_resource_addresses()

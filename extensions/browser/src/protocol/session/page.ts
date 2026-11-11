@@ -17,7 +17,7 @@ import {
   sourceBufferIndexCodec,
   streamGenerationCodec,
 } from "../stream.ts";
-import { mimeTypeCodec, sessionKeyCodec, sessionTokenCodec } from "../text.ts";
+import { mimeTypeCodec, pageTitleCodec, sessionKeyCodec, sessionTokenCodec } from "../text.ts";
 import {
   type ByteCount,
   type MediaDuration,
@@ -30,6 +30,7 @@ import {
   mediaTimeOffsetCodec,
   playbackRateCodec,
 } from "../time.ts";
+import { nextEpisodePatienceCodec } from "./episode-change.ts";
 import { type NextEpisodeAvailability, nextEpisodeAvailabilityCodec } from "./page-navigation.ts";
 import { type PageReopenFailure, PAGE_REOPEN_FAILURES } from "./page-reopen.ts";
 import { type PageAdState, pageAdStateCodec, validatePageAdState } from "./ad-state.ts";
@@ -154,7 +155,14 @@ export type PageSessionMessage =
   /** Протокол 1.7 (сессия 14a): запомненный экстеншеном выбор субтитров для этой серии. Вне поколений. */
   | { readonly type: "subtitle_preference"; readonly choice: SubtitleChoice }
   /** Протокол 1.8 (сессия 15c2): чем кончился выбор зрителя на странице. Вне поколений (`variant-outcome.ts`). */
-  | { readonly type: "variant_outcome"; readonly request: VariantRequest; readonly outcome: VariantOutcome };
+  | { readonly type: "variant_outcome"; readonly request: VariantRequest; readonly outcome: VariantOutcome }
+  /**
+   * Протокол 1.9 (сессия 16a): серия доиграла, источник снят, экстеншен ждёт новый не дольше
+   * `patience_ms` миллисекунд. Вне поколений (`episode-change.ts`).
+   */
+  | { readonly type: "awaiting_next_episode"; readonly patience_ms: number }
+  /** Протокол 1.9 (сессия 16a): заголовок вкладки сменился; правило то же, что у `open_session`. Вне поколений. */
+  | { readonly type: "page_title_changed"; readonly title: string };
 
 const removalEndCodec: Codec<RemovalEnd> = taggedUnion<RemovalEnd, "kind">("kind", {
   at: { time_us: mediaTimeCodec },
@@ -236,6 +244,8 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   page_navigation: { next_episode: nextEpisodeAvailabilityCodec },
   subtitle_preference: { choice: subtitleChoiceCodec },
   variant_outcome: { request: variantRequestCodec, outcome: variantOutcomeCodec },
+  awaiting_next_episode: { patience_ms: nextEpisodePatienceCodec },
+  page_title_changed: { title: pageTitleCodec },
 });
 
 /** Проверки между полями: удаляемый промежуток непуст, меню корректно. */

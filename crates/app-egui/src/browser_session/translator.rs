@@ -425,6 +425,10 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             | PageSessionMessage::VariantOutcome { .. }) => {
                 self.forward_page_variants(&session, variants, out);
             }
+            // 16a P-A1: слова 1.9 о смене серии на той же странице пока не обрабатываются —
+            // считаются пропущенными (без текста страницы в журнале); обработчик — в новом модуле.
+            PageSessionMessage::AwaitingNextEpisode { .. }
+            | PageSessionMessage::PageTitleChanged { .. } => self.counters.note_ignored_message(),
             // `attach` до приёмников не доходит (его съедает сервер).
             PageSessionMessage::Attach { .. } => self.counters.note_ignored_message(),
         }

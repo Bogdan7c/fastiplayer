@@ -31,12 +31,12 @@ use browser_bridge_protocol::limits::{
     MAX_RANGE_FETCH_BYTES, MAX_RESOURCE_FETCH_BYTES, MIN_PLAYBACK_RATE_PERMILLE,
 };
 use browser_bridge_protocol::session::{
-    BufferIntake, ClockSequence, ClockState, NextEpisodeAvailability, PagePlaybackRequest,
-    PageReopenFailure, PageSubtitleByteLength, PageSubtitleDisplay, PageSubtitleLabel,
-    PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, RangeFetchFailure,
-    RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause, StreamRejection,
-    SubtitleChoice, SubtitleFormatHint, TabGoneReason, VariantKind, VariantMenu, VariantOption,
-    VariantOutcome, VariantRequest, VariantSelection,
+    BufferIntake, ClockSequence, ClockState, NextEpisodeAvailability, NextEpisodePatience,
+    PagePlaybackRequest, PageReopenFailure, PageSubtitleByteLength, PageSubtitleDisplay,
+    PageSubtitleLabel, PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId,
+    RangeFetchFailure, RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause,
+    StreamRejection, SubtitleChoice, SubtitleFormatHint, TabGoneReason, VariantKind, VariantMenu,
+    VariantOption, VariantOutcome, VariantRequest, VariantSelection,
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
@@ -315,7 +315,7 @@ fn variant_request(generator: &mut Generator) -> VariantRequest {
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
-    match generator.below(23) {
+    match generator.below(25) {
         0 => PageSessionMessage::Attach {
             session_key: session_key(generator),
             token: session_token(generator),
@@ -447,6 +447,14 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
                 VariantOutcome::PersonOnly,
                 VariantOutcome::Failed,
             ]),
+        },
+        // Протокол 1.9: ожидание следующей серии — любой срок из диапазона `u32`.
+        22 => PageSessionMessage::AwaitingNextEpisode {
+            patience_ms: NextEpisodePatience::from_millis(generator.next_u64() as u32),
+        },
+        // Протокол 1.9: новый заголовок вкладки — те же правила, что у `open_session`.
+        23 => PageSessionMessage::PageTitleChanged {
+            title: page_title(generator),
         },
         _ => PageSessionMessage::PageReopenFailed {
             reason: *generator.pick(&[

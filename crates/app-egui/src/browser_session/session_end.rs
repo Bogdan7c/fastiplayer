@@ -152,6 +152,9 @@ impl SessionEndView {
     const fn of_page_named_reason(named: SessionCloseReason) -> Option<Self> {
         match named {
             SessionCloseReason::PageTookVideoBack => Some(Self::PageTookVideoBack),
+            // 16a P-A1: 4011 (протокол 1.9) пока говорит как 4009 — своей надписи
+            // «The page didn't start the next episode» ещё нет; заменить на собственный вид.
+            SessionCloseReason::NextEpisodeNotStarted => Some(Self::PageTookVideoBack),
             SessionCloseReason::ProtocolViolation => Some(Self::PageStreamError),
             SessionCloseReason::ViewerReturnedToPage => None,
             SessionCloseReason::PlayerClosed
@@ -307,6 +310,7 @@ mod tests {
             SessionCloseReason::AlreadyAttached,
             SessionCloseReason::PageTookVideoBack,
             SessionCloseReason::ViewerReturnedToPage,
+            SessionCloseReason::NextEpisodeNotStarted,
         ]
         .into_iter()
         .map(SessionEndReason::ClosedByPlayer)
@@ -334,6 +338,9 @@ mod tests {
             },
             SessionEndReason::ClosedByPage {
                 code: Some(SessionCloseReason::ViewerReturnedToPage.close_code()),
+            },
+            SessionEndReason::ClosedByPage {
+                code: Some(SessionCloseReason::NextEpisodeNotStarted.close_code()),
             },
             // Чужой прикладной код: не наш, ничего не значит.
             SessionEndReason::ClosedByPage { code: Some(4999) },
@@ -400,9 +407,13 @@ mod tests {
         let page_stream_error = SessionEndReason::ClosedByPage {
             code: Some(SessionCloseReason::ProtocolViolation.close_code()),
         };
+        // 16a P-A1: 4011 пока ожидается тем же видом, что 4009; поменять вместе с видом.
+        let next_episode_not_started = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::NextEpisodeNotStarted.close_code()),
+        };
         if reason == SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation) {
             Some(SessionEndView::StreamError)
-        } else if reason == page_took_video_back {
+        } else if reason == page_took_video_back || reason == next_episode_not_started {
             Some(SessionEndView::PageTookVideoBack)
         } else if reason == page_stream_error {
             Some(SessionEndView::PageStreamError)

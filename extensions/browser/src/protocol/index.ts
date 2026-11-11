@@ -129,6 +129,13 @@ export type {
 } from "./session/page-subtitles.ts";
 export { subtitleChoiceCodec } from "./session/page-subtitles.ts";
 export type { VariantOutcome, VariantRequest } from "./session/variant-outcome.ts";
+export type { PageTitleChangedMessage } from "./session/episode-change.ts";
+export {
+  NEXT_EPISODE_NOT_STARTED_INTRODUCED_IN,
+  closeReasonForUnstartedNextEpisode,
+  nextEpisodePatienceCodec,
+  pageTitleChangedMessage,
+} from "./session/episode-change.ts";
 export { VARIANT_OUTCOMES, variantOutcomeCodec, variantRequestCodec } from "./session/variant-outcome.ts";
 export type { NextEpisodeAvailability } from "./session/page-navigation.ts";
 export { NEXT_EPISODE_AVAILABILITIES } from "./session/page-navigation.ts";
@@ -170,6 +177,7 @@ export {
   PROTOCOL_VERSION_1_6,
   PROTOCOL_VERSION_1_7,
   PROTOCOL_VERSION_1_8,
+  PROTOCOL_VERSION_1_9,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";

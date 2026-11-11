@@ -15,8 +15,8 @@
 //!    [`SessionCloseReason`];
 //! 3. дальше обе стороны говорят свободно, пока одна не закроет соединение.
 //!
-//! Коды закрытия — [`SessionCloseReason`] (4000–4010). Почти все — слова плеера; страница
-//! (экстеншен) закрывает связь осмысленным кодом в трёх случаях:
+//! Коды закрытия — [`SessionCloseReason`] (4000–4011). Почти все — слова плеера; страница
+//! (экстеншен) закрывает связь осмысленным кодом в четырёх случаях:
 //! - 4003 `protocol_violation` — сбой на её стороне (поток битый, тень не встала);
 //!   плеер показывает «Stream error — video returned to the page» (решение 132);
 //! - 4009 `page_took_video_back` — страница честно забрала видео, вкладка на месте;
@@ -26,10 +26,16 @@
 //! - 4010 `viewer_returned_to_page` — зритель нажал «Return» на заглушке страницы
 //!   (сессия 11a, решение 236): видео играет на странице дальше, плеер молча и сразу
 //!   закрывает окно — без доигрывания, сообщения и прощания, как на 1000.
+//! - 4011 `next_episode_not_started` — серия доиграла, страница сняла источник, а новый не
+//!   пришёл за срок ожидания (протокол 1.9, сессия 16a, решение 307): плеер коротко пишет
+//!   «The page didn't start the next episode» и закрывает окно без досмотра.
 //!
 //! Коды закрытия не версионируются (4009 и 4010 добавлены без новой `minor`): плеер,
 //! не знающий кода, видит чужой 4xxx и кончает сеанс молча — для 4010 это и есть
-//! правильное поведение.
+//! правильное поведение. Для 4011 молчание было бы потерей объяснения, поэтому экстеншен
+//! шлёт его только при общей версии не ниже 1.9
+//! ([`NEXT_EPISODE_NOT_STARTED_INTRODUCED_IN`]), а со старым плеером закрывает прежним 4009.
+//! Договор — [`episode_change`].
 //!
 //! Протокол 1.4 (решения 240–241) добавил «возврат вкладки»: страница-источник ушла, но связь
 //! остаётся открытой (`page_left`), зритель нажимает play (`reopen_page`), экстеншен открывает
@@ -43,6 +49,7 @@
 //! молча.
 
 pub mod ad_state;
+pub mod episode_change;
 pub mod live_window;
 pub mod page;
 pub mod page_navigation;
@@ -55,6 +62,10 @@ pub mod variants;
 pub use ad_state::{
     AdCountdownSeconds, AdPod, AdPodNumber, AdSkip, MAX_AD_COUNTDOWN_SECONDS, MAX_ADS_IN_POD,
     PageAdState,
+};
+pub use episode_change::{
+    AWAITING_NEXT_EPISODE_INTRODUCED_IN, NEXT_EPISODE_NOT_STARTED_INTRODUCED_IN,
+    NextEpisodePatience, PAGE_TITLE_CHANGED_INTRODUCED_IN,
 };
 pub use live_window::LiveSeekable;
 pub use page::{
@@ -112,11 +123,17 @@ pub enum SessionCloseReason {
     /// `return_to_page` (видео уже у страницы). Коды не версионируются: старый плеер видит
     /// незнакомый 4xxx и тоже кончает сеанс молча.
     ViewerReturnedToPage,
+    /// Серия доиграла, страница сняла источник, а нового не поставила за срок ожидания
+    /// (протокол 1.9, сессия 16a, решения 303, 307): ждали после `awaiting_next_episode`.
+    /// Закрывает экстеншен. Плеер не доигрывает (досматривать нечего — серия кончилась),
+    /// коротко пишет «The page didn't start the next episode» и закрывает окно. Со старым
+    /// плеером (общая версия ниже 1.9) экстеншен вместо этого кода шлёт 4009.
+    NextEpisodeNotStarted,
 }
 
 impl SessionCloseReason {
     /// Все причины — для обратного перевода кода.
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::PlayerClosed,
         Self::ReplacedByAnotherTab,
         Self::TabGone,
@@ -128,6 +145,7 @@ impl SessionCloseReason {
         Self::AlreadyAttached,
         Self::PageTookVideoBack,
         Self::ViewerReturnedToPage,
+        Self::NextEpisodeNotStarted,
     ];
 
     /// Код закрытия WebSocket.
@@ -145,6 +163,7 @@ impl SessionCloseReason {
             Self::AlreadyAttached => 4008,
             Self::PageTookVideoBack => 4009,
             Self::ViewerReturnedToPage => 4010,
+            Self::NextEpisodeNotStarted => 4011,
         }
     }
 
@@ -194,7 +213,18 @@ mod tests {
             SessionCloseReason::from_close_code(4010),
             Some(SessionCloseReason::ViewerReturnedToPage)
         );
+    }
+
+    #[test]
+    fn the_next_episode_not_started_is_4011_both_ways() {
+        // Сессия 16a (решение 307): код закреплён числом — его же зеркалит экстеншен
+        // (`SESSION_CLOSE_CODES.next_episode_not_started` в `close-reason.ts`).
+        assert_eq!(SessionCloseReason::NextEpisodeNotStarted.close_code(), 4011);
+        assert_eq!(
+            SessionCloseReason::from_close_code(4011),
+            Some(SessionCloseReason::NextEpisodeNotStarted)
+        );
         // Следующий код ещё ничей.
-        assert_eq!(SessionCloseReason::from_close_code(4011), None);
+        assert_eq!(SessionCloseReason::from_close_code(4012), None);
     }
 }

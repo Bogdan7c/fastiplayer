@@ -774,6 +774,7 @@ fn the_end_of_an_instance_is_announced_after_its_data_notices() {
     );
 }
 
+mod episode_change;
 mod file_source;
 mod hls_source;
 mod log_privacy;

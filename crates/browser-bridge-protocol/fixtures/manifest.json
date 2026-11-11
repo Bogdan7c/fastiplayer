@@ -2811,6 +2811,175 @@
         "result": "error",
         "kind": "unknown_field"
       }
+    },
+    {
+      "file": "session/valid/page-awaiting-next-episode-60s.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-awaiting-next-episode-zero.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-awaiting-next-episode-u32-max.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-title-changed-episode.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-title-changed-rtl.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-title-changed-untitled.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/page-title-changed-at-limit.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-unknown-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-missing-patience.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-patience-as-string.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-patience-as-null.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-patience-fractional.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-patience-negative.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-awaiting-next-episode-patience-beyond-u32.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-unknown-field.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-missing-title.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-title-as-number.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-title-as-null.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-too-long.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_too_long"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-with-bidi-override.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-with-nul.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
+    },
+    {
+      "file": "session/invalid/page-title-changed-with-newline.json",
+      "schema": "page_session",
+      "expect": {
+        "result": "error",
+        "kind": "text_forbidden_character"
+      }
     }
   ],
   "streams": [

@@ -10,6 +10,9 @@ use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::resource::{ResourceFetchOutcome, ResourceHandle};
 use crate::session::ad_state::PageAdState;
+use crate::session::episode_change::{
+    AWAITING_NEXT_EPISODE_INTRODUCED_IN, NextEpisodePatience, PAGE_TITLE_CHANGED_INTRODUCED_IN,
+};
 use crate::session::page_navigation::{NextEpisodeAvailability, PAGE_NAVIGATION_INTRODUCED_IN};
 use crate::session::page_reopen::PageReopenFailure;
 use crate::session::page_subtitles::{
@@ -23,7 +26,7 @@ use crate::session::variant_outcome::{
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
-use crate::text::{MimeType, SessionKey, SessionToken};
+use crate::text::{MimeType, PageTitle, SessionKey, SessionToken};
 use crate::time::{ByteOffset, MediaDuration, MediaTime, MediaTimeOffset, PlaybackRate};
 use crate::version::ProtocolVersion;
 
@@ -403,6 +406,19 @@ pub enum PageSessionMessage {
         /// Что сделала страница.
         outcome: VariantOutcome,
     },
+    /// Серия у нас доиграла, страница сняла источник, экстеншен ждёт новый (протокол 1.9,
+    /// сессия 16a): окно держит последний кадр с надписью ожидания. Вне поколений; договор —
+    /// `crate::session::episode_change`.
+    AwaitingNextEpisode {
+        /// Сколько экстеншен ещё ждёт, прежде чем закрыть связь кодом 4011.
+        patience_ms: NextEpisodePatience,
+    },
+    /// Заголовок вкладки сменился (протокол 1.9, сессия 16a): те же правила, что у заголовка
+    /// в `open_session`. Вне поколений, последнее слово главнее.
+    PageTitleChanged {
+        /// Новый заголовок (может быть пустым).
+        title: PageTitle,
+    },
 }
 
 impl PageSessionMessage {
@@ -424,6 +440,8 @@ impl PageSessionMessage {
             | Self::PageNavigation { .. }
             | Self::SubtitlePreference { .. }
             | Self::VariantOutcome { .. }
+            | Self::AwaitingNextEpisode { .. }
+            | Self::PageTitleChanged { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
             | Self::FileSourceAdded { generation }
@@ -475,6 +493,8 @@ impl PageSessionMessage {
             Self::PageNavigation { .. } => PAGE_NAVIGATION_INTRODUCED_IN,
             Self::SubtitlePreference { .. } => SUBTITLE_CHOICE_INTRODUCED_IN,
             Self::VariantOutcome { .. } => VARIANT_OUTCOME_INTRODUCED_IN,
+            Self::AwaitingNextEpisode { .. } => AWAITING_NEXT_EPISODE_INTRODUCED_IN,
+            Self::PageTitleChanged { .. } => PAGE_TITLE_CHANGED_INTRODUCED_IN,
             Self::Attach { .. }
             | Self::GenerationStarted { .. }
             | Self::FileSourceAdded { .. }
@@ -541,6 +561,8 @@ impl ProtocolMessage for PageSessionMessage {
         "page_navigation",
         "subtitle_preference",
         "variant_outcome",
+        "awaiting_next_episode",
+        "page_title_changed",
     ];
 
     fn validate(&self) -> Result<(), ValueViolation> {

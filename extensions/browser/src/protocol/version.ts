@@ -27,6 +27,10 @@
 // не менялись. Договор - `session/page-navigation.ts` и `session/page-subtitles.ts`.
 // 1.8 (сессия 15c2, решение 301) - исход выбора на странице: страница -> плеер `variant_outcome` (чем кончился
 // выбор зрителя: готово, у озвучки нет серии, только человеком, сбой). Договор - `session/variant-outcome.ts`.
+// 1.9 (сессия 16a, решения 303, 306-308) - смена серии на той же странице: страница -> плеер
+// `awaiting_next_episode` (ждём новый источник после конца серии) и `page_title_changed` (заголовок вкладки
+// сменился), код закрытия 4011 `next_episode_not_started` (новый источник не пришёл за срок; со старым плеером -
+// прежний 4009). Договор - `session/episode-change.ts`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -64,8 +68,11 @@ export const PROTOCOL_VERSION_1_7: ProtocolVersion = Object.freeze({ major: 1, m
 /** Исход выбора на странице: `variant_outcome` (сессия 15c2, решение 301). */
 export const PROTOCOL_VERSION_1_8: ProtocolVersion = Object.freeze({ major: 1, minor: 8 });
 
+/** Смена серии на той же странице: `awaiting_next_episode`, `page_title_changed`, код 4011 (сессия 16a). */
+export const PROTOCOL_VERSION_1_9: ProtocolVersion = Object.freeze({ major: 1, minor: 9 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_8;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_9;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

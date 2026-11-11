@@ -1,6 +1,6 @@
 // Причины закрытия WebSocket-сеанса и их коды. Зеркало SessionCloseReason (session/mod.rs).
 //
-// Закрывает соединение плеер (или экстеншен) прикладным кодом 4000-4999 (заняты 4000-4010); по коду
+// Закрывает соединение плеер (или экстеншен) прикладным кодом 4000-4999 (заняты 4000-4011); по коду
 // экстеншен понимает, чинить ли связь, показывать ли сообщение или молча уйти.
 
 export type SessionCloseReason =
@@ -20,7 +20,14 @@ export type SessionCloseReason =
    * странице дальше, плеер молча закрывает окно. Закрывает экстеншен. Коды закрытия не
    * версионируются: старый плеер видит чужой 4xxx и тоже молча закрывается, как на 1000.
    */
-  | "viewer_returned_to_page";
+  | "viewer_returned_to_page"
+  /**
+   * Серия доиграла, страница сняла источник, а новый не поставила за срок ожидания (протокол 1.9,
+   * сессия 16a, решение 307): плеер пишет «The page didn't start the next episode» и закрывает окно без
+   * досмотра. Закрывает экстеншен, и только при общей версии не ниже 1.9; со старым плеером - прежним
+   * `page_took_video_back` (`closeReasonForUnstartedNextEpisode` в `episode-change.ts`).
+   */
+  | "next_episode_not_started";
 
 /** Код закрытия каждой причины (стабильные значения протокола 1.x). */
 export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> = {
@@ -35,6 +42,7 @@ export const SESSION_CLOSE_CODES: Readonly<Record<SessionCloseReason, number>> =
   already_attached: 4008,
   page_took_video_back: 4009,
   viewer_returned_to_page: 4010,
+  next_episode_not_started: 4011,
 };
 
 /** Код закрытия для причины. */
