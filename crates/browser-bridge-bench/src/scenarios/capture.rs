@@ -674,6 +674,8 @@ mod tests {
             );
             assert!(seen.insert(page.id), "{} listed twice", page.id);
         }
-        assert_eq!(CAPTURE_PAGES.len(), 26);
+        // Число закреплено нарочно: пропавшая из таблицы страница — провал, а не тишина.
+        // 27-я — `frame-never-loads` (15c1).
+        assert_eq!(CAPTURE_PAGES.len(), 27);
     }
 }
