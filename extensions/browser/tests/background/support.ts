@@ -6,7 +6,8 @@ import type { FramePort } from "../../src/background/handoff/frame-port.ts";
 import type { SessionDoor } from "../../src/background/handoff/handoff-session.ts";
 import type { SessionWebSocket } from "../../src/background/handoff/session-socket.ts";
 import type { PageCommand } from "../../src/shared/handoff-contract.ts";
-import { CURRENT_PROTOCOL_VERSION, decodeDataFrame, decodePageSession, type GrantOutcome, type PageSessionMessage, type ProtocolVersion } from "../../src/protocol/index.ts";
+import { createCurrentVideoGeneration, type CurrentVideoGeneration } from "../../src/background/handoff/current-video-generation.ts";
+import { CURRENT_PROTOCOL_VERSION, decodeDataFrame, decodePageSession, type GrantOutcome, type PageSessionMessage, type ProtocolVersion, type StreamGeneration } from "../../src/protocol/index.ts";
 
 // ------------------------------------------------------------------ время
 
@@ -286,4 +287,14 @@ export function createFakeDoor(): FakeDoor {
  */
 export async function flushPromises(): Promise<void> {
   for (let round = 0; round < 60; round += 1) await Promise.resolve();
+}
+
+// ------------------------------------------------------------------ поколения для переводчика
+
+/**
+ * Поколения сеанса для `translatePlayerMessage` в тестах: последнее объявленное — `latest`, видео одно (граница
+ * не поставлена). Настоящий владелец (`current-video-generation.ts`), общая версия — текущая.
+ */
+export function generationsAt(latest: StreamGeneration | undefined): CurrentVideoGeneration {
+  return createCurrentVideoGeneration({ numbering: { latestGeneration: () => latest }, agreedProtocol: () => CURRENT_PROTOCOL_VERSION });
 }

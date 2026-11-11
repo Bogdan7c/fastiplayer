@@ -34,5 +34,5 @@ export async function describeAndBegin(isolated: IsolatedSide, media: "media_sou
 
 /** Часы плеера — тень и сторожа живут на этих тиках. */
 export function playerClock(isolated: IsolatedSide, positionUs = 1_000_000): void {
-  isolated.send({ kind: "shadow", command: { kind: "clock", position_us: positionUs, state: "playing", rate: 1000 } });
+  isolated.send({ kind: "shadow", command: { kind: "clock", position_us: positionUs, state: "playing", rate: 1000, relation: "this_video" } });
 }

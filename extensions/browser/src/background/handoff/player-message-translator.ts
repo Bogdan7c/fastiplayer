@@ -2,7 +2,8 @@
 // Чистая функция: решения о сокете, очереди и тени принимает владелец сеанса по её ответу.
 
 import type { HandoffEndPosition, HandoffEndResume, ShadowCommand } from "../../shared/handoff-contract.ts";
-import type { BufferIntake, PlayerSessionMessage, StreamGeneration } from "../../protocol/index.ts";
+import type { BufferIntake, PlayerSessionMessage } from "../../protocol/index.ts";
+import type { CurrentVideoGeneration } from "./current-video-generation.ts";
 import type { ResourceFetchRequest } from "./hls/resource-fetcher.ts";
 import type { RangeRequest } from "./range-fetcher.ts";
 import type { SiteAdapterCommand } from "./session-site-adapters.ts";
@@ -36,19 +37,27 @@ export type PlayerAction =
   | { readonly kind: "ignore" };
 
 /**
- * Что делать с сообщением плеера.
- * `latestGeneration` — последнее открытое поколение сеанса: отказ СТАРОГО поколения (хвост рекламы)
- * сеанс не рвёт — плеер уже бросил его и играет новое.
+ * Что переводчик спрашивает о поколениях сеанса (владелец — `current-video-generation.ts`):
+ * - последнее открытое поколение: отказ и окно эфира СТАРОГО поколения (хвост рекламы) сеанс не трогают;
+ * - к какому видео относится тик часов (16a2): пометка уходит тени вместе с тиком.
  */
-export function translatePlayerMessage(message: PlayerSessionMessage, latestGeneration: StreamGeneration | undefined): PlayerAction {
+export type PlayerMessageGenerations = Pick<CurrentVideoGeneration, "latestGeneration" | "clockRelationOf">;
+
+/** Что делать с сообщением плеера. */
+export function translatePlayerMessage(message: PlayerSessionMessage, generations: PlayerMessageGenerations): PlayerAction {
+  const latestGeneration = generations.latestGeneration();
   switch (message.type) {
     case "attached":
       return { kind: "attached" };
     case "buffer_state":
       return { kind: "buffer_intake", intake: message.intake };
     case "clock":
-      // `seq` нужен только плееру для порядка; тень получает позицию, состояние и скорость.
-      return { kind: "shadow", command: { kind: "clock", position_us: message.position_us, state: message.state, rate: message.rate } };
+      // `seq` нужен только плееру для порядка; тень получает позицию, состояние, скорость и пометку «чьи это
+      // часы» (16a2). Сам номер поколения тени не нужен: она во времени страницы и поколений не знает.
+      return {
+        kind: "shadow",
+        command: { kind: "clock", position_us: message.position_us, state: message.state, rate: message.rate, relation: generations.clockRelationOf(message.generation) },
+      };
     case "play":
       return { kind: "shadow", command: { kind: "play" } };
     case "pause":

@@ -8,7 +8,7 @@ import { translatePlayerMessage } from "../../src/background/handoff/player-mess
 import { HELD_VIDEO_REPORT_KIND, type HeldVideoReport, type PageEvent, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { deliverStream, PLAYING_VIDEO, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
 import { BROWSER_WINDOW, createFakePageReopenBrowser, REOPENED_TAB } from "./page-return/fake-page-reopen.ts";
-import { flushPromises } from "./support.ts";
+import { flushPromises, generationsAt } from "./support.ts";
 
 const TAB_URL = "https://www.example.com/watch?v=1";
 /** Окно, в котором браузер нашёл вкладку: отличается от окна возврата, чтобы не спутать. */
@@ -151,7 +151,7 @@ describe("show_page: чужие фазы и переезд страницы", ()
 
 describe("перевод show_page", () => {
   it("сообщение плеера становится действием show_page в любом поколении", () => {
-    assert.deepEqual(translatePlayerMessage({ type: "show_page" }, undefined), { kind: "show_page" });
-    assert.deepEqual(translatePlayerMessage({ type: "show_page" }, 3), { kind: "show_page" });
+    assert.deepEqual(translatePlayerMessage({ type: "show_page" }, generationsAt(undefined)), { kind: "show_page" });
+    assert.deepEqual(translatePlayerMessage({ type: "show_page" }, generationsAt(3)), { kind: "show_page" });
   });
 });

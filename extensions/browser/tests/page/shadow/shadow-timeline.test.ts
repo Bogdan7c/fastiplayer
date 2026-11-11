@@ -10,6 +10,7 @@ import {
   type PageSeekRange,
   type TimelineSignal,
 } from "../../../src/page/shadow/shadow-timeline.ts";
+import type { ClockRelation } from "../../../src/shared/handoff-contract.ts";
 
 const SECOND_US = 1_000_000;
 
@@ -32,7 +33,13 @@ function createTimeline(options: { paused?: boolean; positionUs?: number; durati
   return { timeline, signals, eventTypes, clear: () => void (signals.length = 0) };
 }
 
-const clock = (positionUs: number, state: "playing" | "paused" | "waiting" | "ended", rate = 1000) => ({ position_us: positionUs, state, rate });
+/** Тик часов; пометка по умолчанию — `unknown` (сторона 1.9): прежние правила тени. */
+const clock = (positionUs: number, state: "playing" | "paused" | "waiting" | "ended", rate = 1000, relation: ClockRelation = "unknown") => ({
+  position_us: positionUs,
+  state,
+  rate,
+  relation,
+});
 
 describe("модель тени: часы", () => {
   it("между тиками позиция интерполируется со скоростью часов и замирает после MAX_EXTRAPOLATION_MS", () => {
@@ -298,5 +305,146 @@ describe("модель тени: окно перемотки страницы (1
     const { timeline } = createTimeline({ durationUs: undefined, pageSeekRange: () => window });
     timeline.onClock(clock(35 * SECOND_US, "ended"), 0);
     assert.equal(timeline.play("page", 100).restartedAtUs, 20 * SECOND_US);
+  });
+});
+
+describe("модель тени: переезд на другой элемент, часы старого поколения (16a2)", () => {
+  /** Фильм вернулся на страницу на паузе на 11,1 с; баннер в плеере доиграл до 12,0 с. */
+  const FILM_START_US = 11_100_000;
+  const BANNER_END_US = 12 * SECOND_US;
+
+  it("чужой ended у цели (в пределах допуска ±1 с) не делает новое видео доигравшим", () => {
+    const { timeline, eventTypes, clear } = createTimeline({ paused: true, positionUs: FILM_START_US, durationUs: 60 * SECOND_US });
+    timeline.awaitPlayerOnNewSource(0);
+    timeline.play("page", 0);
+    clear();
+    // Плеер ещё показывает доигравший баннер: его конец пришёл в тень фильма.
+    timeline.onClock(clock(BANNER_END_US, "ended"), 250);
+    timeline.onClock(clock(BANNER_END_US, "ended"), 500);
+    assert.equal(timeline.ended, false, "конец баннера — не конец фильма");
+    assert.equal(timeline.paused, false, "play() страницы не отменён чужим концом");
+    assert.ok(!eventTypes().includes("ended"), JSON.stringify(eventTypes()));
+    // Плеер встал на фильм: тик у цели подтверждает новый источник, фильм играет.
+    timeline.onClock(clock(FILM_START_US, "playing"), 750);
+    assert.equal(timeline.positionUs(750), FILM_START_US);
+    assert.equal(timeline.paused, false);
+  });
+
+  it("waiting старого поколения далеко от цели не открывает дорогу его следующему тику", () => {
+    const { timeline } = createTimeline({ paused: true, positionUs: FILM_START_US, durationUs: 60 * SECOND_US });
+    timeline.awaitPlayerOnNewSource(0);
+    timeline.play("page", 0);
+    // Старое поколение перезапустилось с нуля: сначала посадка (waiting), затем игра. Фон пометил оба тика
+    // как часы прошлого видео (протокол 1.10).
+    timeline.onClock(clock(0, "waiting", 1000, "previous_video"), 250);
+    timeline.onClock(clock(100_000, "playing", 1000, "previous_video"), 500);
+    assert.equal(timeline.positionUs(500), FILM_START_US, "позиция фильма не прыгает к началу баннера");
+    // Плеер встал на фильм: первый же его тик у цели подтверждает новый источник.
+    timeline.onClock(clock(FILM_START_US + 250_000, "playing", 1000, "this_video"), 750);
+    assert.equal(timeline.positionUs(750), FILM_START_US + 250_000);
+  });
+
+  it("сторона 1.9 (без номера): waiting у нового источника по-прежнему признаёт его — эфир начинается не с нуля", () => {
+    // Запасное правило 16a2 трогает только чужой `ended`; признание тиком ожидания (09a2) нужно живым потокам.
+    const { timeline } = createTimeline({ paused: true, positionUs: FILM_START_US, durationUs: undefined });
+    timeline.awaitPlayerOnNewSource(0);
+    timeline.onClock(clock(0, "waiting"), 250);
+    timeline.onClock(clock(3600 * SECOND_US, "playing"), 500);
+    assert.equal(timeline.positionUs(500), 3600 * SECOND_US);
+  });
+
+  it("сторона 1.9: чужой ended не подтверждает удержание и после признания тиком ожидания", () => {
+    const { timeline, eventTypes, clear } = createTimeline({ paused: true, positionUs: FILM_START_US, durationUs: 60 * SECOND_US });
+    timeline.awaitPlayerOnNewSource(0);
+    timeline.play("page", 0);
+    clear();
+    timeline.onClock(clock(0, "waiting"), 250);
+    timeline.onClock(clock(BANNER_END_US, "ended"), 500);
+    assert.equal(timeline.ended, false);
+    assert.equal(timeline.paused, false);
+    assert.ok(!eventTypes().includes("ended"), JSON.stringify(eventTypes()));
+    assert.equal(timeline.positionUs(500), FILM_START_US);
+  });
+});
+
+describe("модель тени: часы прошлого видео с номером поколения (16a2)", () => {
+  /** Как на стенде: фильм вернулся на страницу на паузе на 11,1 с; баннер в плеере доиграл до 12,0 с. */
+  const FILM_START_US = 11_100_000;
+  const BANNER_END_US = 12 * SECOND_US;
+
+  /** Тень фильма встала на новый элемент, страница сразу позвала `play()`. */
+  function filmAwaitingPlayer() {
+    const created = createTimeline({ paused: true, positionUs: FILM_START_US, durationUs: 60 * SECOND_US });
+    created.timeline.awaitPlayerOnNewSource(0);
+    created.timeline.play("page", 0);
+    created.clear();
+    return created;
+  }
+
+  it("ended прошлого видео у цели (±1 с) не кончает фильм и не отменяет play(); фильм играет на своих часах", () => {
+    const { timeline, eventTypes } = filmAwaitingPlayer();
+    timeline.onClock(clock(BANNER_END_US, "ended", 1000, "previous_video"), 250);
+    timeline.onClock(clock(BANNER_END_US, "ended", 1000, "previous_video"), 500);
+    assert.equal(timeline.ended, false, "конец баннера — не конец фильма");
+    assert.equal(timeline.paused, false, "play() страницы не отменён");
+    assert.equal(timeline.positionUs(500), FILM_START_US, "позиция фильма не сдвинута часами баннера");
+    assert.ok(!eventTypes().includes("ended") && !eventTypes().includes("pause"), JSON.stringify(eventTypes()));
+    // Плеер показал фильм: тики его поколения двигают тень.
+    timeline.onClock(clock(FILM_START_US, "playing", 1000, "this_video"), 750);
+    timeline.onClock(clock(FILM_START_US + 250_000, "playing", 1000, "this_video"), 1_000);
+    assert.equal(timeline.positionUs(1_000), FILM_START_US + 250_000);
+    assert.equal(timeline.paused, false);
+    assert.equal(timeline.ended, false);
+    // Фильм идёт: тень снова выпускает `timeupdate` (интерполяция с его часов), а `ended` так и не было.
+    assert.deepEqual(eventTypes(), ["timeupdate", "timeupdate"]);
+    assert.equal(timeline.positionUs(1_200), FILM_START_US + 450_000);
+  });
+
+  it("тики прошлого видео не подтверждают удержание и по страховке времени", () => {
+    const { timeline } = filmAwaitingPlayer();
+    timeline.onClock(clock(BANNER_END_US + 5 * SECOND_US, "playing", 1000, "previous_video"), SOURCE_RESET_GIVE_UP_MS + 1_000);
+    timeline.onClock(clock(BANNER_END_US + 6 * SECOND_US, "paused", 1000, "previous_video"), SOURCE_RESET_GIVE_UP_MS * 3);
+    assert.equal(timeline.positionUs(SOURCE_RESET_GIVE_UP_MS * 3), FILM_START_US);
+  });
+
+  it("часы нового поколения (this_video): «0 / жду» до page_seek не снимает удержание, а признаёт новый источник", () => {
+    const { timeline } = filmAwaitingPlayer();
+    timeline.onClock(clock(0, "waiting", 1000, "this_video"), 250);
+    assert.equal(timeline.positionUs(250), FILM_START_US, "сам тик ожидания далеко от цели не подтверждает");
+    timeline.onClock(clock(FILM_START_US + 100_000, "playing", 1000, "this_video"), 500);
+    assert.equal(timeline.positionUs(500), FILM_START_US + 100_000);
+  });
+
+  it("без удержания позиция прошлого поколения принимается (смена качества), а его ended — нет", () => {
+    const { timeline, eventTypes, clear } = createTimeline({ positionUs: 30 * SECOND_US, durationUs: 60 * SECOND_US });
+    timeline.onClock(clock(30 * SECOND_US, "playing", 1000, "this_video"), 0);
+    clear();
+    timeline.onClock(clock(31 * SECOND_US, "playing", 1000, "previous_video"), 1_000);
+    assert.equal(timeline.positionUs(1_000), 31 * SECOND_US, "то же место того же фильма");
+    timeline.onClock(clock(60 * SECOND_US, "ended", 1000, "previous_video"), 1_250);
+    assert.equal(timeline.ended, false);
+    assert.equal(timeline.paused, false);
+    assert.ok(!eventTypes().includes("ended") && !eventTypes().includes("pause"), JSON.stringify(eventTypes()));
+    assert.equal(timeline.positionUs(5_000), 60 * SECOND_US, "часы прошлого поколения стоят: позиция не убегает");
+  });
+
+  it("настоящий конец текущего видео (this_video) — ended, как раньше", () => {
+    const { timeline, eventTypes, clear } = createTimeline({ positionUs: 59 * SECOND_US, durationUs: 60 * SECOND_US });
+    timeline.onClock(clock(59 * SECOND_US, "playing", 1000, "this_video"), 0);
+    clear();
+    timeline.onClock(clock(60 * SECOND_US, "ended", 1000, "this_video"), 1_000);
+    assert.equal(timeline.ended, true);
+    assert.equal(timeline.paused, true);
+    assert.deepEqual(eventTypes().slice(-3), ["timeupdate", "pause", "ended"]);
+  });
+
+  it("перемотку страницы тик прошлого поколения у цели подтверждает, но его ended фильм не кончает", () => {
+    const { timeline } = createTimeline({ positionUs: 10 * SECOND_US, durationUs: 60 * SECOND_US });
+    timeline.onClock(clock(10 * SECOND_US, "playing", 1000, "this_video"), 0);
+    timeline.pageSeek(40 * SECOND_US, 100);
+    timeline.onClock(clock(40 * SECOND_US, "ended", 1000, "previous_video"), 350);
+    assert.equal(timeline.seeking, false, "перемотка подтверждена тем же местом фильма");
+    assert.equal(timeline.positionUs(350), 40 * SECOND_US);
+    assert.equal(timeline.ended, false);
   });
 });

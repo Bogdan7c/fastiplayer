@@ -84,6 +84,7 @@ import { createPageSubtitleRelay } from "./page-subtitles/page-subtitle-relay.ts
 import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
+import { createCurrentVideoGeneration } from "./current-video-generation.ts";
 import type { ChosenVideo } from "./video-choice.ts";
 import { createVideoRelocation, type NextVideoWait } from "./video-relocation.ts";
 import { createSessionEpisodeChange } from "./episode-change/session-episode-change.ts";
@@ -104,6 +105,8 @@ export function startHandoffSession(
   const beginTimer = createTimerSlot(dependencies.scheduler);
   const endTimer = createTimerSlot(dependencies.scheduler);
   const numbering: StreamNumbering = createStreamNumbering();
+  // Поколение текущего видео (16a2): один владелец пометки «чьи это часы» для тени, переезда и памяти выбора.
+  const videoGeneration = createCurrentVideoGeneration({ numbering, agreedProtocol: () => agreedProtocol });
   // Слушает пульс тени только в фазе `active`; в `ending` у нас свой предел ответа (endTimer).
   const silenceWatch = createShadowSilenceWatch(dependencies.scheduler, () => endForSilentShadow());
   const relocation = createVideoRelocation({
@@ -553,6 +556,7 @@ export function startHandoffSession(
     phase = "active";
     shownRef = incomingRef;
     silenceWatch.start();
+    videoGeneration.videoStarted();
     relocation.videoStarted(incomingVideo);
     episodeChange.videoBegan();
     siteAdapters.videoStarted();
@@ -640,10 +644,12 @@ export function startHandoffSession(
   // ---------------------------------------------------------------- плеер → страница
 
   function handlePlayerMessage(message: PlayerSessionMessage): void {
-    // Секунда плеера нужна возврату страницы во всех фазах (11b2): в сироте часы — единственная новость.
+    // Секунда плеера нужна возврату страницы во всех фазах (11b2): в сироте часы — единственная новость. Часы прошлого
+    // видео (16a2) тоже: пока вернувшаяся страница встаёт, плеер играет прежнее поколение — тот самый фильм.
     if (message.type === "clock") pageReturn.notePlayerSecond(message.position_us);
-    // Память выбора решает по часам, у начала ли серия (14b2); в сироте её слушатели и так молчат.
-    if (message.type === "clock") siteAdapters.playerClock(message.position_us, message.state);
+    // Память выбора решает по часам, у начала ли серия (14b2); в сироте её слушатели и так молчат. Часы прошлого
+    // видео (16a2) — секунда чужого ролика: конец рекламы на 12 с не значит «серия уже на 12-й секунде».
+    if (message.type === "clock" && videoGeneration.clockRelationOf(message.generation) !== "previous_video") siteAdapters.playerClock(message.position_us, message.state);
     if (phase === "page_away") {
       if (message.type === "reopen_page") pageReturn.reopenRequested();
       if (message.type === "show_page") dependencies.noteForDeveloper("show_page ignored: the page is away");
@@ -651,11 +657,11 @@ export function startHandoffSession(
     }
     // До старта тени и после её снятия командовать некем.
     if (phase !== "active" && phase !== "between_videos" && phase !== "moving") return;
-    const action = translatePlayerMessage(message, numbering.latestGeneration());
+    const action = translatePlayerMessage(message, videoGeneration);
     switch (action.kind) {
       case "shadow":
         // Пока тень встаёт в вернувшейся вкладке, часы старого видео переезду не указ (он остановлен).
-        if (action.command.kind === "clock" && !pageReturn.isReturning()) relocation.noteClockState(action.command.state);
+        if (action.command.kind === "clock" && !pageReturn.isReturning()) relocation.noteClockState(action.command);
         // Между роликами часы некому показывать: тени нет.
         if (phase === "active") commandPage({ kind: "shadow", command: action.command });
         return;

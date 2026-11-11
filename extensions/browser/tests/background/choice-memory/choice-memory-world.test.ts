@@ -12,9 +12,9 @@ import { PROTOCOL_VERSION_1_6, type PageSessionMessage } from "../../../src/prot
 import { REMEMBERED_CHOICES_KEY, type ChoiceMemoryReply, type RememberedChoices } from "../../../src/shared/choice-memory-contract.ts";
 import { VARIANT_WATCH_REPORT_KIND, type PageVariantDescription } from "../../../src/shared/variant-watch-contract.ts";
 import { memoryStore } from "../auto-handoff-lists-fake-dom.ts";
-import { setup, startHandoff, TAB, type World, type WorldOptions } from "../handoff-world.ts";
+import { MP4, setup, startHandoff, TAB, type World, type WorldOptions } from "../handoff-world.ts";
 import { documentEvent } from "../page-subtitles/subtitle-support.ts";
-import { flushPromises, grantFor } from "../support.ts";
+import { flushPromises, generationsAt, grantFor } from "../support.ts";
 
 // Вкладка мира — https://www.example.com/…, сериал — ключ адаптера стенда.
 const FINGERPRINT = await seriesFingerprintOf("example.com", "bench-series");
@@ -117,7 +117,7 @@ describe("запись через весь фон", () => {
   });
 
   it("переводчик: subtitle_choice — выбор для памяти, странице не уходит", () => {
-    assert.deepEqual(translatePlayerMessage({ type: "subtitle_choice", choice: { kind: "off" } }, undefined), {
+    assert.deepEqual(translatePlayerMessage({ type: "subtitle_choice", choice: { kind: "off" } }, generationsAt(undefined)), {
       kind: "site_adapter",
       command: { kind: "subtitle_choice", choice: { kind: "off" } },
     });
@@ -147,6 +147,25 @@ describe("применение через весь фон", () => {
     assert.deepEqual(
       world.variantMirror.commands.map((entry) => entry.command),
       [{ kind: "select", variant_kind: "quality", variant_id: "video-720" }],
+    );
+  });
+
+  it("часы прошлого поколения (16a2) — не секунда новой серии: озвучка нажата у её начала", async () => {
+    const world = await started({}, { audio: "Dub B" });
+    const port = world.framePorts.last();
+    // Серия 1 и серия 2 — два MediaSource того же элемента: поколения 1 и 2 (протокол 1.10, номер в часах).
+    port.deliver({ kind: "mse", event: { kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: MP4 } });
+    port.deliver({ kind: "mse", event: { kind: "source_buffer_added", media_source: "ms-2", source_buffer: 0, mime_type: MP4 } });
+    // Плеер ещё показывает конец серии 1 (20-я минута), страница уже описала серию 2.
+    world.sockets.last().receive({ ...clockAt(20 * 60), generation: 1 });
+    world.handoffs.variantWatchReport(TAB, 0, report(episode("2", "dub-a")));
+    await settle();
+    assert.equal(world.variantMirror.commands.length, 0, "секунда серии 2 ещё неизвестна — ждать");
+    world.sockets.last().receive({ ...clockAt(1), generation: 2 });
+    await eventually(() => world.variantMirror.commands.length > 0, "команда памяти странице");
+    assert.deepEqual(
+      world.variantMirror.commands.map((entry) => entry.command),
+      [{ kind: "select", variant_kind: "audio", variant_id: "dub-b" }],
     );
   });
 

@@ -5,13 +5,14 @@
 // превращаться в исключение на странице. Мусор (лишние поля, не те типы, числа вне диапазона)
 // молча отбрасывается: `null`.
 
-import type {
-  DescribeCandidatesQuery,
-  HandoffEndPosition,
-  HandoffEndResume,
-  NextVideoCommand,
-  PageCommand,
-  ShadowCommand,
+import {
+  CLOCK_RELATIONS,
+  type DescribeCandidatesQuery,
+  type HandoffEndPosition,
+  type HandoffEndResume,
+  type NextVideoCommand,
+  type PageCommand,
+  type ShadowCommand,
 } from "../shared/handoff-contract.ts";
 import { MAX_JSON_SAFE_INTEGER, MAX_PLAYBACK_RATE_PERMILLE, MIN_PLAYBACK_RATE_PERMILLE } from "../protocol/limits.ts";
 import type { ClockState, ResumeState } from "../protocol/session/player.ts";
@@ -72,11 +73,12 @@ function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value
 function parseShadowCommand(candidate: unknown): ShadowCommand | null {
   switch (kindOf(candidate)) {
     case "clock": {
-      const fields = exactObject(candidate, ["kind", "position_us", "state", "rate"]);
+      // Пометка `relation` (16a2) обязательна: без неё тень не отличит часы прошлого видео от своих.
+      const fields = exactObject(candidate, ["kind", "position_us", "state", "rate", "relation"]);
       if (fields === null) return null;
-      const { position_us: position, state, rate } = fields;
-      if (!isMediaTime(position) || !isOneOf(state, CLOCK_STATES) || !isPlaybackRate(rate)) return null;
-      return { kind: "clock", position_us: position, state, rate };
+      const { position_us: position, state, rate, relation } = fields;
+      if (!isMediaTime(position) || !isOneOf(state, CLOCK_STATES) || !isPlaybackRate(rate) || !isOneOf(relation, CLOCK_RELATIONS)) return null;
+      return { kind: "clock", position_us: position, state, rate, relation };
     }
     case "play":
       return exactObject(candidate, ["kind"]) === null ? null : { kind: "play" };

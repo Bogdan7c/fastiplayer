@@ -18,7 +18,7 @@ import { AD_WATCH_REPORT_KIND } from "../../src/shared/ad-watch-contract.ts";
 import type { VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { PLAYING_VIDEO, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
-import { createFakeClock, flushPromises } from "./support.ts";
+import { createFakeClock, flushPromises, generationsAt } from "./support.ts";
 
 const NO_ORGANS: PageAdState = { kind: "showing", pod: { kind: "unknown" }, skip: { kind: "unavailable" } };
 const AVAILABLE: PageAdState = { kind: "showing", pod: { kind: "known", index: 1, count: 2 }, skip: { kind: "available" } };
@@ -250,7 +250,7 @@ describe("приёмник донесений фреймов", () => {
 
 describe("переводчик сообщений плеера", () => {
   it("skip_ad — своё действие, а не «игнорировать»", () => {
-    assert.deepEqual(translatePlayerMessage({ type: "skip_ad" }, undefined), { kind: "site_adapter", command: { kind: "skip_ad" } });
+    assert.deepEqual(translatePlayerMessage({ type: "skip_ad" }, generationsAt(undefined)), { kind: "site_adapter", command: { kind: "skip_ad" } });
   });
 });
 

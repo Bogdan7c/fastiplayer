@@ -239,7 +239,8 @@ describe("передача вкладки: поток и команды", () => 
     socket.receive({ type: "set_rate", rate: 2000 });
     socket.receive({ type: "play" });
     assert.deepEqual(world.framePorts.last().posted.slice(1), [
-      { kind: "shadow", command: { kind: "clock", position_us: 1_500_000, state: "playing", rate: 1000 } },
+      // Тик без номера поколения: пометка «неизвестно» (16a2).
+      { kind: "shadow", command: { kind: "clock", position_us: 1_500_000, state: "playing", rate: 1000, relation: "unknown" } },
       { kind: "shadow", command: { kind: "pause" } },
       { kind: "shadow", command: { kind: "seek", seek_id: 5, target_us: 60_000_000 } },
       { kind: "shadow", command: { kind: "set_rate", rate: 2000 } },

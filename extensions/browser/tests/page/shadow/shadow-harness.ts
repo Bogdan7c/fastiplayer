@@ -1,6 +1,6 @@
 // Сборка тени на фейковом DOM: часы под управлением теста, журнал событий наружу и страж mediaSession.
 
-import type { PageEvent, ShadowCommand } from "../../../src/shared/handoff-contract.ts";
+import type { ClockRelation, PageEvent, ShadowCommand } from "../../../src/shared/handoff-contract.ts";
 import type { MediaSessionGuard } from "../../../src/page/media-session-guard.ts";
 import { captureElementOriginals, installShadowOverrides, startShadow, type ElementOriginals, type ShadowSession } from "../../../src/page/shadow/index.ts";
 import type { ShadowSourceKind } from "../../../src/page/handoff-seam.ts";
@@ -75,8 +75,8 @@ export interface ShadowHarness {
   startFile(video: FakeVideo): ShadowSession;
   /** Тень эфира нативного HLS (сессия 10a3). */
   startLive(video: FakeVideo): ShadowSession;
-  /** Тик часов плеера. */
-  tick(session: ShadowSession, positionSeconds: number, state: "playing" | "paused" | "waiting" | "ended", ratePermille?: number): void;
+  /** Тик часов плеера; `relation` по умолчанию — `unknown` (сторона 1.9, прежние правила тени). */
+  tick(session: ShadowSession, positionSeconds: number, state: "playing" | "paused" | "waiting" | "ended", ratePermille?: number, relation?: ClockRelation): void;
 }
 
 /** Blob-адрес MediaSource, с которым фейковый DOM создаёт видео (fake-media-dom.ts). */
@@ -128,8 +128,8 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
     start: (video) => startWith(video, "media_source"),
     startFile: (video) => startWith(video, "file"),
     startLive: (video) => startWith(video, "live_hls"),
-    tick(session, positionSeconds, state, ratePermille = 1000) {
-      const command: ShadowCommand = { kind: "clock", position_us: Math.round(positionSeconds * 1_000_000), state, rate: ratePermille };
+    tick(session, positionSeconds, state, ratePermille = 1000, relation = "unknown") {
+      const command: ShadowCommand = { kind: "clock", position_us: Math.round(positionSeconds * 1_000_000), state, rate: ratePermille, relation };
       session.apply(command);
     },
   };

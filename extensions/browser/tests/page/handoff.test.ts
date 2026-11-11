@@ -283,11 +283,12 @@ test("shadow commands reach the shadow; the shadow's own handoff_ended stops the
     await describeAndBegin(isolated);
     await isolated.waitFor(10);
     isolated.send({ kind: "shadow", command: { kind: "seek", seek_id: 4, target_us: 300_000 } });
-    isolated.send({ kind: "shadow", command: { kind: "clock", position_us: 10, state: "playing", rate: 1000 } });
+    isolated.send({ kind: "shadow", command: { kind: "clock", position_us: 10, state: "playing", rate: 1000, relation: "previous_video" } });
     await isolated.settle();
     assert.deepEqual(shadow.applied, [
       { kind: "seek", seek_id: 4, target_us: 300_000 },
-      { kind: "clock", position_us: 10, state: "playing", rate: 1000 },
+      // Пометка «чьи часы» (16a2) доходит до тени как есть.
+      { kind: "clock", position_us: 10, state: "playing", rate: 1000, relation: "previous_video" },
     ]);
     // Страница сама убрала источник: тень снялась и сказала об этом.
     isolated.received.length = 0;
@@ -514,7 +515,7 @@ test("handoff_ended that cannot be sent: no exception into the shadow, a trace, 
 
 /** Тик часов плеера странице (через изолированный мир, как от фона). */
 function clockTick(isolated: IsolatedSide, positionUs: number): void {
-  isolated.send({ kind: "shadow", command: { kind: "clock", position_us: positionUs, state: "playing", rate: 1000 } });
+  isolated.send({ kind: "shadow", command: { kind: "clock", position_us: positionUs, state: "playing", rate: 1000, relation: "this_video" } });
 }
 
 test("real shadow, YouTube order on the handed element: the new MediaSource flows live as a new stream, no handoff_ended", async () => {

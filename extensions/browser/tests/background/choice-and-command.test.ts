@@ -12,7 +12,7 @@ import { VIDEO_FILTER_RULES } from "../../src/background/tab-model/video-filter-
 import { HELD_VIDEO_REPORT_KIND, type HandOffTabOutcome, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { VIDEO_CANDIDATES_FUNCTION_NAME } from "../../src/shared/video-candidates-probe.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
-import { createFakeClock, flushPromises } from "./support.ts";
+import { createFakeClock, flushPromises, generationsAt } from "./support.ts";
 
 function video(element: number, overrides: Partial<VideoCandidate> = {}): VideoCandidate {
   return { document: "doc-top", element, media: { kind: "media_source", in_worker: false }, playing: false, visible_area_px: 1000, ...DEFAULT_CANDIDATE_FACTS, ...overrides };
@@ -609,21 +609,22 @@ describe("страница для open_session и сообщения плеер�
   });
 
   it("часы плеера теряют seq, return_to_page даёт точный возврат, fetch_range уходит загрузчику (09b)", () => {
-    assert.deepEqual(translatePlayerMessage({ type: "clock", seq: 3, position_us: 10, state: "waiting", rate: 500 }, 1), {
+    assert.deepEqual(translatePlayerMessage({ type: "clock", seq: 3, position_us: 10, state: "waiting", rate: 500 }, generationsAt(1)), {
       kind: "shadow",
-      command: { kind: "clock", position_us: 10, state: "waiting", rate: 500 },
+      // Тик без номера поколения (сторона 1.9): пометка «неизвестно», правила тени прежние (16a2).
+      command: { kind: "clock", position_us: 10, state: "waiting", rate: 500, relation: "unknown" },
     });
-    assert.deepEqual(translatePlayerMessage({ type: "return_to_page", position_us: 7, resume: "paused" }, 1), {
+    assert.deepEqual(translatePlayerMessage({ type: "return_to_page", position_us: 7, resume: "paused" }, generationsAt(1)), {
       kind: "end_handoff",
       position: { kind: "at", position_us: 7 },
       resume: { kind: "exactly", resume: "paused" },
       cause: "returned_to_page",
     });
-    assert.deepEqual(translatePlayerMessage({ type: "fetch_range", request_id: 1, offset: 0, length: 10 }, 1), {
+    assert.deepEqual(translatePlayerMessage({ type: "fetch_range", request_id: 1, offset: 0, length: 10 }, generationsAt(1)), {
       kind: "fetch_range",
       request: { request_id: 1, offset: 0, length: 10 },
     });
-    assert.deepEqual(translatePlayerMessage({ type: "stream_rejected", generation: 1, reason: "unsupported_codec" }, undefined), { kind: "ignore" });
+    assert.deepEqual(translatePlayerMessage({ type: "stream_rejected", generation: 1, reason: "unsupported_codec" }, generationsAt(undefined)), { kind: "ignore" });
   });
 });
 

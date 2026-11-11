@@ -9,7 +9,7 @@ import { translatePlayerMessage } from "../../src/background/handoff/player-mess
 import type { VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { setup, startHandoff, TAB } from "./handoff-world.ts";
-import { flushPromises } from "./support.ts";
+import { flushPromises, generationsAt } from "./support.ts";
 
 const REFUSED_7 = '{"type":"resource_fetch_finished","request_id":7,"outcome":{"kind":"failed","failure":{"kind":"refused"}}}';
 const PLAYING_FILE: VideoCandidate = { document: "doc-7f3a", element: 4, media: { kind: "file" }, playing: true, visible_area_px: 200_000, ...DEFAULT_CANDIDATE_FACTS, file_host: "cdn.example" };
@@ -32,7 +32,7 @@ describe("fetch_resource вне поколения HLS: честный отка�
   it("переводчик передаёт запрос ресурса сеансу как есть, с тем же номером запроса", () => {
     const action = translatePlayerMessage(
       { type: "fetch_resource", request_id: 7, resource: 3, byte_range: { kind: "whole" }, max_bytes: 1024 },
-      1,
+      generationsAt(1),
     );
     assert.deepEqual(action, {
       kind: "fetch_resource",

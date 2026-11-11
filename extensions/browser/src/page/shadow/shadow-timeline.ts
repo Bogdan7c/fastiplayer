@@ -9,6 +9,11 @@
 import type { ClockState } from "../../protocol/session/player.ts";
 import { MAX_JSON_SAFE_INTEGER } from "../../protocol/limits.ts";
 import { type MediaTimeMicros, NORMAL_PLAYBACK_RATE_PERMILLE, type PlaybackRatePermille } from "../../protocol/time.ts";
+import type { ClockRelation } from "../../shared/handoff-contract.ts";
+import { holdConfirmedBy, newPositionHold, noteUnconfirmedTick, type PositionHold } from "./position-hold.ts";
+
+// Пределы удержания живут у правил удержания (16a2); здесь — прежний адрес для тестов и соседей.
+export { MAX_UNCONFIRMED_TICKS, PAGE_SEEK_CONFIRM_TOLERANCE_US, SOURCE_RESET_GIVE_UP_MS } from "./position-hold.ts";
 
 /** Значения `HTMLMediaElement.readyState` по стандарту HTML. */
 export const READY_STATE = {
@@ -43,29 +48,6 @@ export const MAX_EXTRAPOLATION_MS = 1_500;
  */
 export const BACKWARD_JITTER_TOLERANCE_US = 250_000;
 
-/**
- * Перемотку страницы подтверждает тик, близкий к цели: тики, отправленные плеером до того,
- * как он узнал о `page_seek`, ещё несут старую позицию и не должны «отматывать» страницу назад.
- */
-export const PAGE_SEEK_CONFIRM_TOLERANCE_US = 1_000_000;
-
-/**
- * Перемотка страницы: если плеер встал не туда (живой эфир, обрезка окна DVR), восемь тиков
- * (~2 с) без подтверждения — и следующий тик принимается как есть: перемотка не висит вечно.
- * Смену источника это правило НЕ касается (там чужие тики — часы старого поколения, Д-4).
- */
-export const MAX_UNCONFIRMED_TICKS = 8;
-
-/**
- * Страховочный выход для смены источника (Д-4), когда плеер так и не признал новый источник
- * (ни тика у цели, ни тика ожидания): через 15 с тень принимает позицию часов, но НИКОГДА — их
- * `ended`. Меньше нельзя: плеер ещё показывает старое поколение, пока данные нового (рекламы)
- * не пришли, и его часы несут позицию старого фильма; 15 с покрывают медленную загрузку первого
- * куска рекламы. Выход нужен на случай плеера, который не шлёт «0 / waiting» (иначе тень стояла
- * бы на 0 вечно).
- */
-export const SOURCE_RESET_GIVE_UP_MS = 15_000;
-
 /** Медиасобытия, которые тень выпускает сама (синтетические, `isTrusted=false`). */
 export type ShadowMediaEventType =
   | "play"
@@ -94,32 +76,8 @@ export interface ClockTick {
   readonly position_us: MediaTimeMicros;
   readonly state: ClockState;
   readonly rate: PlaybackRatePermille;
-}
-
-/** Кто двигает позицию: плеер, страница или сама смена источника. */
-type PositionHoldKind = "player_seek" | "page_seek" | "source_reset";
-
-/** Позиция «заморожена» на цели, пока часы плеера не подтвердят прыжок. */
-interface PositionHold {
-  readonly kind: PositionHoldKind;
-  readonly targetUs: MediaTimeMicros;
-  /** Цель — конец ролика: после подтверждения тень переходит в `ended`. */
-  readonly landsAtEnd: boolean;
-  /** Перемотки: сколько ещё чужих тиков стерпеть до принятия позиции часов. */
-  unconfirmedTicksLeft: number;
-  /** Когда hold поставлен (страховочный выход смены источника считается от него). */
-  readonly startedAtMs: number;
-  /**
-   * Смена источника: плеер уже прислал тик ожидания («0 / waiting», пока новое поколение не
-   * показано) — значит, он признал новый источник, и следующий тик несёт уже его позицию.
-   */
-  playerAcknowledgedNewSource: boolean;
-}
-
-/** Часть тика, по которой решается судьба hold. */
-interface HoldTick {
-  readonly positionUs: MediaTimeMicros;
-  readonly state: ClockState;
+  /** К какому видео относится тик (16a2, пометка фона): часы прошлого видео не кончают и не подтверждают наше. */
+  readonly relation: ClockRelation;
 }
 
 export interface TimelineInit {
@@ -254,20 +212,23 @@ export class ShadowTimeline {
     this.#playedUs += this.#advanceSinceAnchorUs(nowMs);
     this.#lastTickAtMs = nowMs;
     this.#anchorAtMs = nowMs;
-    this.#clockState = tick.state;
+    const state = clockStateForThisVideo(tick);
+    this.#clockState = state;
     this.#clockRatePermille = tick.rate;
     const tickPositionUs = this.#clampToTimeline(tick.position_us);
 
     const hold = this.#hold;
     if (hold !== undefined) {
-      if (!holdConfirmedBy(hold, { positionUs: tickPositionUs, state: tick.state }, nowMs)) {
-        noteUnconfirmedTick(hold, tick.state);
+      const holdTick = { positionUs: tickPositionUs, state, relation: tick.relation };
+      if (!holdConfirmedBy(hold, holdTick, nowMs)) {
+        noteUnconfirmedTick(hold, holdTick);
         return;
       }
       this.#finishHold(hold, tickPositionUs, nowMs);
     } else {
       // Шаг назад без нашей перемотки (новое поколение на старте) — не перемотка: просто
-      // новая позиция; мелкое дрожание гасит `positionUs`.
+      // новая позиция; мелкое дрожание гасит `positionUs`. Позиция прошлого поколения тоже принимается:
+      // без удержания это смена качества новым MediaSource — то же место того же фильма (16a2).
       this.#anchorUs = tickPositionUs;
       this.#applyClockState(nowMs);
     }
@@ -374,14 +335,7 @@ export class ShadowTimeline {
     this.#ended = false;
     // Пока плеер не признал новый источник, его часы несут позицию СТАРОГО поколения (он
     // показывает его до первых данных нового): тень держит 0 и не принимает их `ended` (Д-4).
-    this.#hold = {
-      kind: "source_reset",
-      targetUs: 0,
-      landsAtEnd: false,
-      unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
-      startedAtMs: nowMs,
-      playerAcknowledgedNewSource: false,
-    };
+    this.#hold = newPositionHold({ kind: "source_reset", targetUs: 0, landsAtEnd: false }, nowMs);
     this.#anchorUs = 0;
     this.#lastReportedUs = 0;
     this.#readyState = READY_STATE.HAVE_METADATA;
@@ -398,14 +352,7 @@ export class ShadowTimeline {
   awaitPlayerOnNewSource(nowMs: number): void {
     const targetUs = this.positionUs(nowMs);
     this.#reanchor(nowMs);
-    this.#hold = {
-      kind: "source_reset",
-      targetUs,
-      landsAtEnd: false,
-      unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
-      startedAtMs: nowMs,
-      playerAcknowledgedNewSource: false,
-    };
+    this.#hold = newPositionHold({ kind: "source_reset", targetUs, landsAtEnd: false }, nowMs);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -415,17 +362,7 @@ export class ShadowTimeline {
   /** Удержание позиции на уже прижатой цели перемотки. */
   #startSeekHold(kind: "player_seek" | "page_seek", clampedUs: MediaTimeMicros, nowMs: number): MediaTimeMicros {
     const durationUs = this.#readDurationUs();
-    this.#startHold(
-      {
-        kind,
-        targetUs: clampedUs,
-        landsAtEnd: durationUs !== undefined && clampedUs >= durationUs,
-        unconfirmedTicksLeft: MAX_UNCONFIRMED_TICKS,
-        startedAtMs: nowMs,
-        playerAcknowledgedNewSource: false,
-      },
-      nowMs,
-    );
+    this.#startHold(newPositionHold({ kind, targetUs: clampedUs, landsAtEnd: durationUs !== undefined && clampedUs >= durationUs }, nowMs), nowMs);
     return clampedUs;
   }
 
@@ -535,28 +472,12 @@ export class ShadowTimeline {
   }
 }
 
-/** Подтверждает ли тик прыжок, которого ждёт тень. */
-function holdConfirmedBy(hold: PositionHold, tick: HoldTick, nowMs: number): boolean {
-  // Команды плеера и его часы идут по одному каналу по порядку: тик после `seek` — уже новый.
-  if (hold.kind === "player_seek") return true;
-  if (Math.abs(tick.positionUs - hold.targetUs) <= PAGE_SEEK_CONFIRM_TOLERANCE_US) return true;
-  if (hold.kind === "source_reset") return sourceResetConfirmedBy(hold, tick, nowMs);
-  return hold.unconfirmedTicksLeft <= 0;
-}
-
 /**
- * Смена источника, тик далеко от 0: принять его, только если плеер уже признал новый источник
- * (эфир, где новое поколение начинается не с 0), или по страховке времени — но чужой `ended`
- * не принимается никогда: это конец СТАРОГО поколения (решение 146), а не нового ролика.
+ * Состояние часов, как его видит наше видео. Конец ПРОШЛОГО видео для нашего значит только «часы стоят»
+ * (`paused`: позиция не идёт, `readyState` тот же, что дал бы `ended`), а не `ended`: иначе конец баннера, пришедший в тень
+ * фильма, защёлкнул бы у фильма `ended` и паузу (16a2). Это единственное место, где пометка меняет
+ * состояние: дальше `ended` из прошлого видео не доходит ни до удержания, ни до `#applyClockState`.
  */
-function sourceResetConfirmedBy(hold: PositionHold, tick: HoldTick, nowMs: number): boolean {
-  if (hold.playerAcknowledgedNewSource) return true;
-  if (tick.state === "ended") return false;
-  return nowMs - hold.startedAtMs >= SOURCE_RESET_GIVE_UP_MS;
-}
-
-/** Учесть неподтвердивший тик: счётчик перемотки и признак «плеер признал новый источник». */
-function noteUnconfirmedTick(hold: PositionHold, state: ClockState): void {
-  hold.unconfirmedTicksLeft -= 1;
-  if (state === "waiting") hold.playerAcknowledgedNewSource = true;
+function clockStateForThisVideo(tick: ClockTick): ClockState {
+  return tick.relation === "previous_video" && tick.state === "ended" ? "paused" : tick.state;
 }

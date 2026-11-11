@@ -11,7 +11,7 @@ import { protocolOutcomeOf } from "../../src/background/handoff/variant-outcome-
 import { PROTOCOL_VERSION_1_6, PROTOCOL_VERSION_1_7, type PageSessionMessage, type VariantMenu } from "../../src/protocol/index.ts";
 import { VARIANT_WATCH_REPORT_KIND, type PageVariantDescription, type VariantActionOutcome, type VariantWatchReport } from "../../src/shared/variant-watch-contract.ts";
 import { PLAYING_VIDEO, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
-import { flushPromises, grantFor } from "./support.ts";
+import { flushPromises, generationsAt, grantFor } from "./support.ts";
 
 const SERIES: PageVariantDescription = {
   seriesKey: "bench-series",
@@ -269,11 +269,11 @@ describe("команды плеера", () => {
   });
 
   it("переводчик: select_variant и next_episode — команды адаптеру, а не «пропустить»", () => {
-    assert.deepEqual(translatePlayerMessage({ type: "select_variant", kind: "audio", variant_id: "dub-b" }, undefined), {
+    assert.deepEqual(translatePlayerMessage({ type: "select_variant", kind: "audio", variant_id: "dub-b" }, generationsAt(undefined)), {
       kind: "site_adapter",
       command: { kind: "select_variant", variantKind: "audio", variantId: "dub-b" },
     });
-    assert.deepEqual(translatePlayerMessage({ type: "next_episode" }, undefined), { kind: "site_adapter", command: { kind: "next_episode" } });
+    assert.deepEqual(translatePlayerMessage({ type: "next_episode" }, generationsAt(undefined)), { kind: "site_adapter", command: { kind: "next_episode" } });
   });
 });
 

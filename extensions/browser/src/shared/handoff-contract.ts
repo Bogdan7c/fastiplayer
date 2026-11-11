@@ -414,6 +414,19 @@ export interface ViewerReturnRequest {
 // Фон → изолированный мир → MAIN.
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * К какому видео относится тик часов плеера (протокол 1.10, сессия 16a2, решение 311). Решает фон: только он
+ * знает номера поколений сеанса и миг, когда тень встала на новое видео (`current-video-generation.ts`).
+ * - `this_video` — тик описывает поколение текущего видео тени;
+ * - `previous_video` — тик описывает поколение, объявленное раньше текущего видео: плеер ещё показывает прошлый
+ *   ролик (переезд на другой элемент, новая серия) или прошлое поколение того же фильма (смена качества новым
+ *   MediaSource). Его позиция может быть правдой (тот же фильм), а его `ended` нашему видео — никогда;
+ * - `unknown` — номера нет: сторона плеера старше 1.10 или у плеера ещё нет поколения. Тень живёт по прежним
+ *   правилам (с запасным правилом про чужой `ended`, `shadow/position-hold.ts`).
+ */
+export const CLOCK_RELATIONS = ["this_video", "previous_video", "unknown"] as const;
+export type ClockRelation = (typeof CLOCK_RELATIONS)[number];
+
 /** Команды тени, переведённые из сообщений плеера. */
 export type ShadowCommand =
   | {
@@ -421,6 +434,8 @@ export type ShadowCommand =
       readonly position_us: MediaTimeMicros;
       readonly state: ClockState;
       readonly rate: PlaybackRatePermille;
+      /** Отношение тика к текущему видео: сам номер поколения тени не нужен (она во времени страницы). */
+      readonly relation: ClockRelation;
     }
   | { readonly kind: "play" }
   | { readonly kind: "pause" }

@@ -225,6 +225,39 @@ describe("решение фона", () => {
     assert.deepEqual(pageEvents.types(), []);
   });
 
+  it("фильм с 11,1 с, баннер в плеере кончился на 12,0 с (16a2): фильм не доигран и играет, когда плеер встал на него", async () => {
+    const { guard, harness, addVideo } = setupGuard();
+    // Фильм вернулся на страницу на паузе на 11,1 с; страница зовёт `play()` — сторож держит его.
+    const film = addVideo((video) => {
+      video.real.currentTime = 11.1;
+    });
+    const view = film as unknown as { readonly ended: boolean; readonly paused: boolean; readonly currentTime: number };
+    guard.arm(LEASE_MS);
+    void pagePlay(film);
+    const held = guard.take(film);
+    assert.ok(held !== null);
+    held.connect(() => {});
+    held.session.commitHold();
+    const pageEvents = recordEvents(film, ["ended", "pause"]);
+    // Плеер ещё показывает доигравший баннер: его конец приходит и без номера (1.9), и с номером (1.10).
+    harness.tick(held.session, 12, "ended");
+    harness.clock.advance(250);
+    harness.tick(held.session, 12, "ended", 1000, "previous_video");
+    assert.equal(view.ended, false, "конец баннера — не конец фильма");
+    assert.equal(view.paused, false, "play() страницы не отменён");
+    assert.deepEqual(pageEvents.types(), []);
+    // Плеер показал фильм: часы его поколения двигают тень, фильм идёт.
+    harness.clock.advance(250);
+    harness.tick(held.session, 11.1, "playing", 1000, "this_video");
+    harness.clock.advance(250);
+    harness.tick(held.session, 11.35, "playing", 1000, "this_video");
+    harness.clock.advance(100);
+    assert.equal(view.paused, false);
+    assert.equal(view.ended, false);
+    assert.ok(Math.abs(view.currentTime - 11.45) < 0.001, `фильм идёт с 11,35 с: ${view.currentTime}`);
+    assert.deepEqual(pageEvents.types(), []);
+  });
+
   it("страница сменила источник задержанного видео: запись снята, а чужой ключ не ломает отказ", async () => {
     const { guard, addVideo, keyOf } = setupGuard();
     const video = addVideo((element) => {

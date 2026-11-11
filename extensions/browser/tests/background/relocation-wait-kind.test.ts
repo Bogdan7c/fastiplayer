@@ -20,7 +20,7 @@ function waitAfterEnded(video: RelocationVideo): { readonly started: NextVideoWa
     },
   });
   relocation.videoStarted(video);
-  relocation.noteClockState("ended");
+  relocation.noteClockState({ state: "ended", relation: "this_video" });
   const episodeEnded = relocation.episodeEnded();
   const started = relocation.videoLeft();
   // Шаг в секунду до чуть дальше долгого срока: видно, на какой секунде истекло.

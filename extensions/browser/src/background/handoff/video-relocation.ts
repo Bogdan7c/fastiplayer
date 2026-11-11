@@ -19,6 +19,7 @@
 // Часы и таймеры — через `Scheduler` фона: таймеры страницы в скрытой вкладке спят, таймеры фона нет.
 
 import type { ClockState } from "../../protocol/session/player.ts";
+import type { ClockRelation } from "../../shared/handoff-contract.ts";
 import { NEXT_EPISODE_WAIT_MS } from "../../shared/next-episode-wait.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
@@ -52,6 +53,12 @@ export function nextVideoWaitLimitMs(wait: NextVideoWait): number {
   return wait === "after_episode_end" ? NEXT_EPISODE_WAIT_MS : NEXT_VIDEO_WAIT_MS;
 }
 
+/** Тик часов плеера, как его видит переезд: состояние и отношение к текущему видео (16a2). */
+export interface RelocationClockTick {
+  readonly state: ClockState;
+  readonly relation: ClockRelation;
+}
+
 /** На каком видео стоит сеанс. */
 export interface RelocationVideo {
   readonly role: VideoRole;
@@ -61,8 +68,12 @@ export interface RelocationVideo {
 export interface VideoRelocation {
   /** Тень встала на новое видео: первое в сеансе или после переезда. */
   videoStarted(video: RelocationVideo): void;
-  /** Тик часов плеера для текущего видео. */
-  noteClockState(state: ClockState): void;
+  /**
+   * Тик часов плеера. Часы прошлого видео (`previous_video`) переезду ничего не говорят: их `ended` не
+   * открывает переезд снова и не начинает ожидание серии. Без номера (`unknown`, сторона 1.9) — запасное
+   * правило «после переезда чужой `ended` до первого живого тика не считается».
+   */
+  noteClockState(tick: RelocationClockTick): void;
   /**
    * Тени нет: страница убрала видео, а следующего ещё нет. Начинается ожидание (или продолжается
    * прежнее, если переезд не удался); ответ — вид идущего ожидания.
@@ -103,7 +114,8 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
   let endedReached = false;
   // Тени нет, ждём следующее видео.
   let waiting = false;
-  // После переезда плеер ещё шлёт часы старого поколения: их `ended` к новому видео не относится.
+  // Запасное правило для часов без номера (сторона 1.9): после переезда плеер ещё шлёт часы старого
+  // поколения, их `ended` к новому видео не относится. С номером (1.10) это знает пометка тика.
   let staleClockExpected = false;
   // Предел вышел, пока сеанс переезжал: неудавшийся переезд новый срок не получает. Иначе страница,
   // которая подсовывает видео и не отвечает на `begin_handoff`, держала бы окно бесконечно.
@@ -173,12 +185,23 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       waitTimer.cancel();
       applyState();
     },
-    noteClockState(state) {
-      if (staleClockExpected) {
-        if (state === "ended") return;
-        staleClockExpected = false;
+    noteClockState(tick) {
+      switch (tick.relation) {
+        case "previous_video":
+          // Часы прошлого видео: ни конец, ни игра текущего видео из них не следуют.
+          return;
+        case "this_video":
+          // Номер говорит точно: это часы текущего видео, запасное правило больше не нужно.
+          staleClockExpected = false;
+          break;
+        case "unknown":
+          if (staleClockExpected) {
+            if (tick.state === "ended") return;
+            staleClockExpected = false;
+          }
+          break;
       }
-      endedReached = state === "ended";
+      endedReached = tick.state === "ended";
       applyState();
     },
     videoLeft() {

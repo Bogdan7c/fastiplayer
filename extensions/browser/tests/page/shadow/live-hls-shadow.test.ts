@@ -299,7 +299,13 @@ describe("сопоставление часов эфира: LiveClockAlignment",
     assert.equal(alignment.isAligned, false);
     assert.deepEqual(alignment.pageTimeOf(30 * SECOND_US), { kind: "offset_unknown" });
     alignment.notePlayerShowsGeneration();
-    assert.deepEqual(alignment.pageTickOf({ position_us: 30 * SECOND_US, state: "playing", rate: 1000 }), { position_us: 2 * SECOND_US, state: "playing", rate: 1000 });
+    // Пометка «чьи часы» (16a2) проходит перевод времени как есть.
+    assert.deepEqual(alignment.pageTickOf({ position_us: 30 * SECOND_US, state: "playing", rate: 1000, relation: "this_video" }), {
+      position_us: 2 * SECOND_US,
+      state: "playing",
+      rate: 1000,
+      relation: "this_video",
+    });
     assert.equal(alignment.isAligned, true);
     assert.deepEqual(alignment.pageTimeOf(10 * SECOND_US), { kind: "mapped", us: 0 });
     assert.deepEqual(alignment.pageTimeOf(31 * SECOND_US), { kind: "mapped", us: 3 * SECOND_US });
@@ -309,9 +315,14 @@ describe("сопоставление часов эфира: LiveClockAlignment",
   it("сдвиг фиксируется один раз: следующие окна и тики его не меняют", () => {
     const alignment = new LiveClockAlignment(100 * SECOND_US);
     alignment.notePlayerShowsGeneration();
-    alignment.pageTickOf({ position_us: 20 * SECOND_US, state: "waiting", rate: 1000 });
+    alignment.pageTickOf({ position_us: 20 * SECOND_US, state: "waiting", rate: 1000, relation: "unknown" });
     alignment.notePlayerShowsGeneration();
-    assert.deepEqual(alignment.pageTickOf({ position_us: 25 * SECOND_US, state: "playing", rate: 1500 }), { position_us: 105 * SECOND_US, state: "playing", rate: 1500 });
+    assert.deepEqual(alignment.pageTickOf({ position_us: 25 * SECOND_US, state: "playing", rate: 1500, relation: "previous_video" }), {
+      position_us: 105 * SECOND_US,
+      state: "playing",
+      rate: 1500,
+      relation: "previous_video",
+    });
     assert.deepEqual(alignment.playerTimeOf(50 * SECOND_US), { kind: "mapped", us: 0 }, "цель раньше начала плеера — его ноль");
   });
 });

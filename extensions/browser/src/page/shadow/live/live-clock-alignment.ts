@@ -50,10 +50,11 @@ export class LiveClockAlignment {
    */
   pageTickOf(tick: ClockTick): ClockTick {
     if (this.#offsetUs === undefined) {
-      if (!this.#playerShowsGeneration) return { position_us: this.#handoffPageUs, state: "waiting", rate: tick.rate };
+      // Пометка «чьи часы» (16a2) проходит как есть: перевод времени её не касается.
+      if (!this.#playerShowsGeneration) return { position_us: this.#handoffPageUs, state: "waiting", rate: tick.rate, relation: tick.relation };
       this.#offsetUs = this.#handoffPageUs - tick.position_us;
     }
-    return { position_us: this.#toPageUs(tick.position_us, this.#offsetUs), state: tick.state, rate: tick.rate };
+    return { position_us: this.#toPageUs(tick.position_us, this.#offsetUs), state: tick.state, rate: tick.rate, relation: tick.relation };
   }
 
   /** Момент плеера → момент страницы (не меньше нуля). */

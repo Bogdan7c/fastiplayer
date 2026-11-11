@@ -16,7 +16,7 @@ import {
 import { HELD_VIDEO_REPORT_KIND, type HlsStreamKind, type PageCommand, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { setup, startHandoff, TAB, type World } from "./handoff-world.ts";
-import { flushPromises, grantFor } from "./support.ts";
+import { flushPromises, generationsAt, grantFor } from "./support.ts";
 
 const LIVE_URL = "https://live.example/channel/index.m3u8";
 const PLAYING_LIVE: VideoCandidate = {
@@ -115,13 +115,13 @@ describe("эфир HLS через сеанс: допуск по версии", (
 describe("окно эфира: от плеера к тени", () => {
   it("переводчик: окно последнего поколения — команда тени без номера поколения; чужое — пропуск", () => {
     const window = liveWindow(3, 61_000_000);
-    assert.deepEqual(translatePlayerMessage(window, 3), {
+    assert.deepEqual(translatePlayerMessage(window, generationsAt(3)), {
       kind: "shadow",
       command: { kind: "live_window", edge_us: 61_000_000, seekable: { kind: "range", start_us: 41_000_000, end_us: 60_500_000 } },
     });
-    assert.deepEqual(translatePlayerMessage(window, 4), { kind: "ignore" }, "окно прошлого поколения");
-    assert.deepEqual(translatePlayerMessage(window, undefined), { kind: "ignore" }, "поколений ещё нет");
-    assert.deepEqual(translatePlayerMessage({ type: "live_window", generation: 3, edge_us: 5, seekable: { kind: "none" } }, 3), {
+    assert.deepEqual(translatePlayerMessage(window, generationsAt(4)), { kind: "ignore" }, "окно прошлого поколения");
+    assert.deepEqual(translatePlayerMessage(window, generationsAt(undefined)), { kind: "ignore" }, "поколений ещё нет");
+    assert.deepEqual(translatePlayerMessage({ type: "live_window", generation: 3, edge_us: 5, seekable: { kind: "none" } }, generationsAt(3)), {
       kind: "shadow",
       command: { kind: "live_window", edge_us: 5, seekable: { kind: "none" } },
     });
