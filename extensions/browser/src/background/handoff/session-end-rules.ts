@@ -84,6 +84,11 @@ export type PageEndedShadowStep =
 export interface PageEndedShadowFacts {
   /** Переезд открыт или видео может оказаться рекламой: ждать следующее видео (`nextVideoExpectedAfterLoss`). */
   readonly nextVideoExpected: boolean;
+  /**
+   * Доиграла ли у плеера именно серия (`relocation.episodeEnded()`): не реклама и не короткий ролик
+   * «может быть рекламой». Тень этого не знает и ждёт 60 с после любого конца; итог решает фон.
+   */
+  readonly episodeEnded: boolean;
   /** Сменился ли адрес вкладки с начала текущего видео (16a, решение 42). */
   readonly pageAddress: PageAddressSinceVideoBegan;
   readonly agreedProtocol: ProtocolVersion;
@@ -103,8 +108,9 @@ export interface PageEndedShadowFacts {
  */
 export function stepAfterPageEndedShadow(cause: HandoffEndCause, facts: PageEndedShadowFacts): PageEndedShadowStep {
   const lossFacts = { pageAddress: facts.pageAddress, agreedProtocol: facts.agreedProtocol };
-  if (cause === "next_episode_not_started") return endAfterSourceLoss("next_episode_not_started", lossFacts);
-  if (cause === "element_released" || cause === "page_player_failed") {
+  if (cause === "next_episode_not_started" && facts.episodeEnded) return endAfterSourceLoss("next_episode_not_started", lossFacts);
+  // Тень не дождалась видео после рекламы (не серии): это обычная потеря источника, а не «серия не пришла».
+  if (cause === "element_released" || cause === "page_player_failed" || cause === "next_episode_not_started") {
     if (facts.nextVideoExpected) return { kind: "wait_for_next_video" };
     if (cause === "page_player_failed") return { kind: "leave_page", reason: tabGoneReasonForPagePlayerFailure(facts.agreedProtocol) };
     return endAfterSourceLoss("video_taken_back", lossFacts);

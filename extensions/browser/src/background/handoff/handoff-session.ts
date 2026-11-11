@@ -166,6 +166,7 @@ export function startHandoffSession(
   const { endForLostFramePort, leavePage, notifyTabRemoved } = pageLeave;
   // Смена серии на той же странице (16a): заголовок и адрес вкладки, «ждём следующую серию» — episode-change/.
   const episodeChange = createSessionEpisodeChange({
+    scheduler: dependencies.scheduler,
     watchTabUpdates: dependencies.watchTabUpdates,
     currentTabId: () => presence.tabId(),
     openedPage: { title: target.page.title, url: target.tabUrl },
@@ -566,7 +567,7 @@ export function startHandoffSession(
     // В `moving` это прежняя тень: мы сами её сняли. В `between_videos` тени уже нет.
     if (phase !== "active") return;
     // Тень сняла страница сама: правило — session-end-rules.ts (переезд, поломка плеера сайта, вина страницы).
-    const facts = { nextVideoExpected: relocation.nextVideoExpectedAfterLoss(), pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol };
+    const facts = { nextVideoExpected: relocation.nextVideoExpectedAfterLoss(), episodeEnded: relocation.episodeEnded(), pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol };
     const step = stepAfterPageEndedShadow(cause, facts);
     if (step.kind === "wait_for_next_video") waitForNextVideo();
     else if (step.kind === "leave_page") leavePage(step.reason);

@@ -2,9 +2,10 @@
 // конец по потере источника. Сеанс целиком — в next-episode-session.test.ts.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createFakeClock } from "../support.ts";
 import { createNextEpisodeNotice } from "../../../src/background/handoff/episode-change/next-episode-notice.ts";
 import { createPageAddressTracker } from "../../../src/background/handoff/episode-change/page-address-tracker.ts";
-import { createPageTitleRelay } from "../../../src/background/handoff/episode-change/page-title-relay.ts";
+import { createPageTitleRelay, PAGE_TITLE_MIN_INTERVAL_MS } from "../../../src/background/handoff/episode-change/page-title-relay.ts";
 import { createSessionEpisodeChange, type TabUpdate } from "../../../src/background/handoff/episode-change/session-episode-change.ts";
 import { endAfterSourceLoss, sourceLossOfExpiredWait } from "../../../src/background/handoff/episode-change/source-loss-end.ts";
 import { MAX_PAGE_TITLE_BYTES, PROTOCOL_VERSION_1_8, PROTOCOL_VERSION_1_9, sanitizePageTitle, type PageSessionMessage, type ProtocolVersion } from "../../../src/protocol/index.ts";
@@ -24,7 +25,7 @@ function fakePlayer(agreed: ProtocolVersion = PROTOCOL_VERSION_1_9) {
 describe("заголовок вкладки → page_title_changed", () => {
   it("новый заголовок уходит очищенным; тот же после чистки и заголовок open_session — не уходят", () => {
     const player = fakePlayer();
-    const relay = createPageTitleRelay({ ...player.ports, openedTitle: sanitizePageTitle("Серія 1") });
+    const relay = createPageTitleRelay({ ...player.ports, scheduler: createFakeClock().scheduler, openedTitle: sanitizePageTitle("Серія 1") });
     assert.equal(relay.titleSeen("Серія 1"), "same_title", "заголовок open_session уже у плеера");
     assert.equal(relay.titleSeen("Серія 2\u0000‮"), "sent");
     assert.equal(relay.titleSeen("Серія 2"), "same_title", "та же строка после чистки");
@@ -34,7 +35,7 @@ describe("заголовок вкладки → page_title_changed", () => {
 
   it("длинный заголовок режется пределом open_session", () => {
     const player = fakePlayer();
-    const relay = createPageTitleRelay({ ...player.ports, openedTitle: "" });
+    const relay = createPageTitleRelay({ ...player.ports, scheduler: createFakeClock().scheduler, openedTitle: "" });
     relay.titleSeen("я".repeat(MAX_PAGE_TITLE_BYTES));
     const message = player.sent[0];
     assert.ok(message?.type === "page_title_changed");
@@ -43,16 +44,101 @@ describe("заголовок вкладки → page_title_changed", () => {
 
   it("плеер 1.8 — ни слова; плеер не слушает — ни слова, и «последний отправленный» не сдвигается", () => {
     const old = fakePlayer(PROTOCOL_VERSION_1_8);
-    assert.equal(createPageTitleRelay({ ...old.ports, openedTitle: "A" }).titleSeen("B"), "player_too_old");
+    assert.equal(createPageTitleRelay({ ...old.ports, scheduler: createFakeClock().scheduler, openedTitle: "A" }).titleSeen("B"), "player_too_old");
     assert.deepEqual(old.sent, []);
 
     const away = fakePlayer();
-    const relay = createPageTitleRelay({ ...away.ports, openedTitle: "A" });
+    const relay = createPageTitleRelay({ ...away.ports, scheduler: createFakeClock().scheduler, openedTitle: "A" });
     away.state.listening = false;
     assert.equal(relay.titleSeen("B"), "player_not_listening");
     away.state.listening = true;
     assert.equal(relay.titleSeen("B"), "sent", "непосланное не считается отправленным");
     assert.deepEqual(away.sent, [{ type: "page_title_changed", title: "B" }]);
+  });
+});
+
+describe("предел частоты page_title_changed", () => {
+  function throttled() {
+    const clock = createFakeClock();
+    const player = fakePlayer();
+    const relay = createPageTitleRelay({ ...player.ports, scheduler: clock.scheduler, openedTitle: "A" });
+    return { clock, player, relay };
+  }
+  const titles = (player: ReturnType<typeof fakePlayer>) => player.sent.map((message) => (message.type === "page_title_changed" ? message.title : "?"));
+
+  it("поток из 50 заголовков за секунду — ровно два слова: первый сразу и последний по концу интервала", () => {
+    const { clock, player, relay } = throttled();
+    assert.equal(relay.titleSeen("T0"), "sent");
+    for (let index = 1; index < 50; index += 1) {
+      clock.advance(20);
+      assert.equal(relay.titleSeen(`T${index}`), "deferred");
+    }
+    assert.deepEqual(titles(player), ["T0"], "внутри интервала ничего лишнего");
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS);
+    assert.deepEqual(titles(player), ["T0", "T49"]);
+    clock.advance(10 * PAGE_TITLE_MIN_INTERVAL_MS);
+    assert.equal(player.sent.length, 2, "после замыкающей отправки тишина");
+  });
+
+  it("изменение после тишины дольше интервала уходит сразу", () => {
+    const { clock, player, relay } = throttled();
+    relay.titleSeen("B");
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS);
+    assert.equal(relay.titleSeen("C"), "sent");
+    assert.deepEqual(titles(player), ["B", "C"]);
+  });
+
+  it("замыкающий заголовок, равный последнему отправленному, не уходит", () => {
+    const { clock, player, relay } = throttled();
+    relay.titleSeen("B");
+    clock.advance(100);
+    relay.titleSeen("C");
+    clock.advance(100);
+    assert.equal(relay.titleSeen("B"), "same_title");
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS * 3);
+    assert.deepEqual(titles(player), ["B"]);
+  });
+
+  it("stop() с ждущей замыкающей отправкой — позже ничего не уходит", () => {
+    const { clock, player, relay } = throttled();
+    relay.titleSeen("B");
+    assert.equal(relay.titleSeen("C"), "deferred");
+    relay.stop();
+    relay.stop();
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS * 3);
+    assert.deepEqual(titles(player), ["B"]);
+  });
+
+  it("страница ушла (плеер не слушает) — ждущий заголовок отброшен и после возврата не всплывает", () => {
+    const { clock, player, relay } = throttled();
+    relay.titleSeen("B");
+    relay.titleSeen("C");
+    player.state.listening = false;
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS);
+    player.state.listening = true;
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS * 3);
+    assert.deepEqual(titles(player), ["B"]);
+  });
+
+  it("сеанс целиком: stop() подписки снимает и ждущий заголовок", () => {
+    const clock = createFakeClock();
+    const player = fakePlayer();
+    const listeners: Array<(update: TabUpdate) => void> = [];
+    const change = createSessionEpisodeChange({
+      ...player.ports,
+      scheduler: clock.scheduler,
+      watchTabUpdates: (listener) => {
+        listeners.push(listener);
+        return () => void listeners.splice(0);
+      },
+      currentTabId: () => 1,
+      openedPage: { title: "A", url: undefined },
+    });
+    listeners[0]?.({ tabId: 1, title: "B", url: undefined });
+    listeners[0]?.({ tabId: 1, title: "C", url: undefined });
+    change.stop();
+    clock.advance(PAGE_TITLE_MIN_INTERVAL_MS * 3);
+    assert.deepEqual(titles(player), ["B"]);
   });
 });
 
@@ -147,6 +233,7 @@ describe("подписка сеанса на вкладки", () => {
     let currentTab = 7;
     const change = createSessionEpisodeChange({
       ...player.ports,
+      scheduler: createFakeClock().scheduler,
       watchTabUpdates: tabs.watch,
       currentTabId: () => currentTab,
       openedPage: { title: "A", url: "https://site.example/1" },

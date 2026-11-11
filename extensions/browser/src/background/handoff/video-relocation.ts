@@ -120,9 +120,18 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
     return waiting || (endedReached && role === "ad");
   }
 
+  /**
+   * Доиграла ли у плеера именно серия. Реклама и короткий ролик «может быть рекламой» (`mayBeAd`,
+   * не длиннее преролла) серией не считаются: после них страница ставит фильм быстро, а если не
+   * ставит — прежний короткий срок честно кончает сеанс (страница `ad-no-film`, решение 204).
+   */
+  function episodeEndReached(): boolean {
+    return endedReached && role !== "ad" && !mayBeAd;
+  }
+
   /** Вид ожидания, которое начинается сейчас: конец серии — долгое, остальное — короткое. */
   function waitStartingNow(): NextVideoWait {
-    return endedReached && role !== "ad" ? "after_episode_end" : "next_video";
+    return episodeEndReached() ? "after_episode_end" : "next_video";
   }
 
   function renewArming(): void {
@@ -178,7 +187,7 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       // `applyState` при `waiting` всегда запоминает вид ожидания; запасной ответ — для полноты типа.
       return currentWait ?? waitStartingNow();
     },
-    episodeEnded: () => endedReached && role !== "ad",
+    episodeEnded: episodeEndReached,
     adoptionOpen: () => role === "ad" || endedReached || waiting,
     nextVideoExpectedAfterLoss: () => role === "ad" || mayBeAd || endedReached || waiting,
     adOnScreen: () => role === "ad",

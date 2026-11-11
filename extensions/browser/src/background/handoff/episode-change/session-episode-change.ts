@@ -12,6 +12,7 @@
 // приходят только узкими вопросами.
 
 import type { PageSessionMessage, ProtocolVersion } from "../../../protocol/index.ts";
+import type { Scheduler } from "../../host-link/native-port.ts";
 import { createNextEpisodeNotice, type NextEpisodeNoticeOutcome } from "./next-episode-notice.ts";
 import { createPageAddressTracker, type PageAddressSinceVideoBegan } from "./page-address-tracker.ts";
 import { createPageTitleRelay } from "./page-title-relay.ts";
@@ -27,6 +28,8 @@ export interface TabUpdate {
 export type WatchTabUpdates = (listener: (update: TabUpdate) => void) => () => void;
 
 export interface SessionEpisodeChangePorts {
+  /** Часы и таймеры фона: по ним троттлинг заголовка (page-title-relay.ts). */
+  readonly scheduler: Scheduler;
   readonly watchTabUpdates: WatchTabUpdates;
   /** Вкладка страницы сеанса сейчас (после возврата страницы — другая). */
   readonly currentTabId: () => number;
@@ -51,7 +54,7 @@ export interface SessionEpisodeChange {
 
 export function createSessionEpisodeChange(ports: SessionEpisodeChangePorts): SessionEpisodeChange {
   const sayToPlayer = { agreedProtocol: ports.agreedProtocol, playerHearsPage: ports.playerHearsPage, send: ports.send };
-  const titleRelay = createPageTitleRelay({ ...sayToPlayer, openedTitle: ports.openedPage.title });
+  const titleRelay = createPageTitleRelay({ ...sayToPlayer, scheduler: ports.scheduler, openedTitle: ports.openedPage.title });
   const notice = createNextEpisodeNotice(sayToPlayer);
   const address = createPageAddressTracker(ports.openedPage.url);
   let unsubscribe: (() => void) | undefined = ports.watchTabUpdates((update) => {
@@ -70,6 +73,7 @@ export function createSessionEpisodeChange(ports: SessionEpisodeChangePorts): Se
     stop() {
       unsubscribe?.();
       unsubscribe = undefined;
+      titleRelay.stop(); // ждущая замыкающая отправка заголовка после конца сеанса не нужна
     },
   };
 }
