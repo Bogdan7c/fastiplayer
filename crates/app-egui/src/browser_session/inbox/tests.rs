@@ -9,6 +9,7 @@ use browser_bridge_session::SessionEndReason;
 use desktop_integration::{BrowserEntryCaller, BrowserEntryReply, BrowserEntryRequest};
 
 use super::*;
+use crate::browser_session::intake_notice::PageEpisodeWord;
 
 /// Считает пробуждения, чтобы видеть, что ящик будит цикл ровно на запись.
 #[derive(Default)]
@@ -440,6 +441,67 @@ fn a_full_notice_queue_keeps_only_the_latest_ad_state_of_each_session() {
             describe(&ad_state_notice("a", PageAdState::None {})),
         ],
         "the stale word of session a is gone, the final `none` is delivered"
+    );
+}
+
+fn title_notice(text: &str, title: &str) -> IntakeNotice {
+    IntakeNotice::EpisodeChange {
+        session: session(text),
+        word: PageEpisodeWord::TitleChanged(
+            browser_bridge_protocol::PageTitle::new(title).expect("valid title"),
+        ),
+    }
+}
+
+/// Что лежит в ящике, с заголовком вкладки открытым текстом (`Debug` заголовка скрыт).
+fn describe_with_title(notice: &IntakeNotice) -> String {
+    match notice {
+        IntakeNotice::EpisodeChange {
+            session,
+            word: PageEpisodeWord::TitleChanged(title),
+        } => format!("title {:?} {}", session.instance, title.as_str()),
+        other => describe(other),
+    }
+}
+
+/// Заголовок вкладки (16a): при полном ящике новый вытесняет прежний неисполненный того же
+/// сеанса, чужой сеанс и «ждём следующую серию» остаются — последний заголовок не теряется.
+#[test]
+fn a_full_notice_queue_keeps_only_the_latest_page_title_of_each_session() {
+    let (inbox, _wake) = inbox_with(InboxCapacity {
+        intake_notices: 1,
+        ..InboxCapacity::default()
+    });
+    let awaiting = || IntakeNotice::EpisodeChange {
+        session: session("a"),
+        word: PageEpisodeWord::AwaitingNextEpisode(
+            browser_bridge_protocol::session::NextEpisodePatience::from_millis(60_000),
+        ),
+    };
+    inbox.post_intake_notices([
+        close_notice("a"),
+        title_notice("b", "B 1"),
+        title_notice("a", "A 1"),
+        awaiting(),
+        awaiting(),
+        title_notice("a", "A 2"),
+    ]);
+
+    assert_eq!(
+        inbox
+            .take_batch()
+            .intake_notices
+            .iter()
+            .map(describe_with_title)
+            .collect::<Vec<_>>(),
+        vec![
+            describe(&close_notice("a")),
+            describe_with_title(&title_notice("b", "B 1")),
+            describe(&awaiting()),
+            describe(&awaiting()),
+            describe_with_title(&title_notice("a", "A 2")),
+        ],
+        "the stale title of session a is gone; the waiting words are kept"
     );
 }
 

@@ -201,6 +201,10 @@ impl BrowserSessionInbox {
                             // Прежнее меню того же вида (или навигация) устарело (14a).
                             remove_last_page_variant_of(&mut state.intake_notices, &notice);
                         }
+                        OverflowRule::ReplacePendingPageTitle => {
+                            // Прежний заголовок вкладки устарел: нужен только последний (16a).
+                            remove_last_page_title_of(&mut state.intake_notices, notice.session());
+                        }
                     }
                 }
                 state.intake_notices.push(notice);
@@ -322,6 +326,17 @@ fn remove_last_ad_state_of(notices: &mut Vec<IntakeNotice>, session: &SessionRef
     if let Some(index) = notices
         .iter()
         .rposition(|queued| queued.is_ad_state_of(session))
+    {
+        let _superseded = notices.remove(index);
+    }
+}
+
+/// Убирает последнюю неисполненную смену заголовка вкладки сеанса `session` (только при
+/// полном ящике).
+fn remove_last_page_title_of(notices: &mut Vec<IntakeNotice>, session: &SessionRef) {
+    if let Some(index) = notices
+        .iter()
+        .rposition(|queued| queued.is_page_title_of(session))
     {
         let _superseded = notices.remove(index);
     }

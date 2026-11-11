@@ -37,7 +37,9 @@ use super::super::session_media::GenerationWait;
 use super::desktop_transport::{DesktopWindowPort, TransportObservation};
 use super::driver::WindowPlaybackDriver;
 use super::end_notice::CenterStatusChange;
-use super::geometry::{apply_remembered_fullscreen, browser_window_attributes, observe_window};
+use super::geometry::{
+    WindowGeometryWatch, apply_remembered_fullscreen, browser_window_attributes,
+};
 use super::player_port::AppStateWindowPlayer;
 use super::render_path::renderer_startup_marker;
 use crate::ad_plate::AdPlate;
@@ -145,6 +147,8 @@ pub(super) struct BrowserWindowInstance {
     subtitle_wake_port: AppWakePort,
     /// Возможности плеера окна (снимок при создании) — для выбора варианта HLS.
     decode_capabilities: BrowserDecodeCapabilities,
+    /// Наблюдатель размера и фуллскрина окна (строка журнала при смене фуллскрина, 16a).
+    geometry_watch: WindowGeometryWatch,
 }
 
 impl BrowserWindowInstance {
@@ -269,6 +273,7 @@ impl BrowserWindowInstance {
             local_file_open_wake_port: ports.local_file_open,
             subtitle_wake_port: ports.subtitles,
             decode_capabilities,
+            geometry_watch: WindowGeometryWatch::default(),
         };
         instance.bind_queue_and_audio_level()?;
         info!(
@@ -567,7 +572,7 @@ impl BrowserWindowInstance {
 
     /// Запоминает размер/фуллскрин окна после изменения (запись — после паузы тишины).
     fn remember_window_geometry(&mut self) {
-        if let Some(observation) = observe_window(&self.window) {
+        if let Some(observation) = self.geometry_watch.observe(&self.window) {
             let _pending_changed = self
                 .settings_runtime
                 .record_browser_window_observation(observation, Instant::now());

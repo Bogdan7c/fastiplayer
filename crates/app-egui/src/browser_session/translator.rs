@@ -40,6 +40,7 @@ use super::rejection::{response_to_stream_failure, response_to_unsupported_media
 use super::stream_queue::{OwnedChunk, SessionInput};
 
 mod counters;
+mod episode_change;
 mod failure_response;
 mod file_generation;
 mod hls_generation;
@@ -425,10 +426,11 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             | PageSessionMessage::VariantOutcome { .. }) => {
                 self.forward_page_variants(&session, variants, out);
             }
-            // 16a P-A1: слова 1.9 о смене серии на той же странице пока не обрабатываются —
-            // считаются пропущенными (без текста страницы в журнале); обработчик — в новом модуле.
-            PageSessionMessage::AwaitingNextEpisode { .. }
-            | PageSessionMessage::PageTitleChanged { .. } => self.counters.note_ignored_message(),
+            // Смена серии на той же странице (протокол 1.9, 16a) — `episode_change`.
+            episode @ (PageSessionMessage::AwaitingNextEpisode { .. }
+            | PageSessionMessage::PageTitleChanged { .. }) => {
+                self.forward_episode_change(&session, episode, out);
+            }
             // `attach` до приёмников не доходит (его съедает сервер).
             PageSessionMessage::Attach { .. } => self.counters.note_ignored_message(),
         }

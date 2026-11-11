@@ -12,7 +12,8 @@
 //! закрытие): обрыв по ошибке потока со стороны плеера ([`SessionEndView::StreamError`],
 //! решение 132) и честные концы со стороны страницы (сессия 09a2) — страница забрала
 //! видео ([`SessionEndView::PageTookVideoBack`], код 4009, решение 179) и сбой на стороне
-//! страницы ([`SessionEndView::PageStreamError`], её код 4003).
+//! страницы ([`SessionEndView::PageStreamError`], её код 4003), а также «страница не начала
+//! следующую серию» ([`SessionEndView::NextEpisodeNotStarted`], код 4011, протокол 1.9).
 //!
 //! Молча и сразу окно закрывается, когда зритель сам вернул видео странице кнопкой «Return»
 //! на заглушке (код 4010, решение 236): ему нечего сообщать — видео играет у него на глазах.
@@ -117,6 +118,11 @@ pub(crate) enum SessionEndView {
     /// «The page took the video back» и закрытие окна. Без доигрывания (страница уже играет
     /// сама — было бы два звука) и без `return_to_page` (видео и так у страницы).
     PageTookVideoBack,
+    /// Серия доиграла, а страница за срок экстеншена не начала следующую (код 4011, протокол
+    /// 1.9, решение 307): короткое «The page didn't start the next episode» и закрытие окна.
+    /// Тот же класс конца, что [`Self::PageTookVideoBack`]: доигрывать нечего (серия уже
+    /// кончилась у зрителя на глазах), прощания `return_to_page` нет (сокет закрыла страница).
+    NextEpisodeNotStarted,
 }
 
 impl SessionEndView {
@@ -136,9 +142,9 @@ impl SessionEndView {
 
     /// Что сказать о конце, который страница назвала кодом протокола.
     ///
-    /// Говорят только два кода, у которых для зрителя есть смысл: 4009 (страница забрала
-    /// видео) и 4003 (сбой на стороне страницы). Остальные закрытия страницей молчат, как
-    /// раньше:
+    /// Говорят только коды, у которых для зрителя есть смысл: 4009 (страница забрала
+    /// видео), 4011 (страница не начала следующую серию) и 4003 (сбой на стороне страницы).
+    /// Остальные закрытия страницей молчат, как раньше:
     /// - обычное 1000 и кадр без кода (до этого метода не доходят — `None` у
     ///   `reason_named_by_page`): экстеншен так завершает передачу, конец которой уже
     ///   решён и объяснён в другом месте (ответ на наш `end_handoff`, неудачный старт до
@@ -152,9 +158,7 @@ impl SessionEndView {
     const fn of_page_named_reason(named: SessionCloseReason) -> Option<Self> {
         match named {
             SessionCloseReason::PageTookVideoBack => Some(Self::PageTookVideoBack),
-            // 16a P-A1: 4011 (протокол 1.9) пока говорит как 4009 — своей надписи
-            // «The page didn't start the next episode» ещё нет; заменить на собственный вид.
-            SessionCloseReason::NextEpisodeNotStarted => Some(Self::PageTookVideoBack),
+            SessionCloseReason::NextEpisodeNotStarted => Some(Self::NextEpisodeNotStarted),
             SessionCloseReason::ProtocolViolation => Some(Self::PageStreamError),
             SessionCloseReason::ViewerReturnedToPage => None,
             SessionCloseReason::PlayerClosed
@@ -182,6 +186,7 @@ const PAGE_PLAYER_STOPPED_WAITING: &str =
 const REOPENING_PAGE: &str = "Reopening the page…";
 const STREAM_ERROR: &str = "Stream error — video returned to the page";
 const PAGE_TOOK_VIDEO_BACK: &str = "The page took the video back";
+const NEXT_EPISODE_NOT_STARTED: &str = "The page didn't start the next episode";
 const BROWSER_LOST: &str = "Lost connection to the browser";
 const BROWSER_LOST_STALLED: &str = "Lost connection to the browser — playback stalled";
 const BROWSER_LOST_FAILED: &str = "Lost connection to the browser — playback failed";
@@ -203,6 +208,7 @@ impl SessionEndView {
             // Сбой с любой стороны зритель видит одинаково: видео снова у страницы.
             Self::StreamError | Self::PageStreamError => Some(STREAM_ERROR),
             Self::PageTookVideoBack => Some(PAGE_TOOK_VIDEO_BACK),
+            Self::NextEpisodeNotStarted => Some(NEXT_EPISODE_NOT_STARTED),
         }
     }
 
@@ -245,6 +251,12 @@ impl SessionEndView {
                 cause: "page_took_video_back",
                 end: "none",
             },
+            // Договор со стендом моста (сессия 16a): не переименовывать.
+            Self::NextEpisodeNotStarted => SessionEndLogLabels {
+                notice: "next_episode_not_started",
+                cause: "next_episode_not_started",
+                end: "none",
+            },
         }
     }
 }
@@ -253,10 +265,11 @@ impl SessionEndView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionEndLogLabels {
     /// `silent` / `waiting_for_viewer` / `reopening_page` / `finished` / `stream_error` /
-    /// `page_took_video_back`.
+    /// `page_took_video_back` / `next_episode_not_started`.
     pub(crate) notice: &'static str,
     /// Метка [`DrainCause`], сторона сбоя потока (`protocol_violation` — плеер,
-    /// `page_stream_error` — страница), `page_took_video_back` или `none`.
+    /// `page_stream_error` — страница), `page_took_video_back`, `next_episode_not_started`
+    /// или `none`.
     pub(crate) cause: &'static str,
     /// Метка [`DrainEnd`] или `none`.
     pub(crate) end: &'static str,
@@ -407,14 +420,15 @@ mod tests {
         let page_stream_error = SessionEndReason::ClosedByPage {
             code: Some(SessionCloseReason::ProtocolViolation.close_code()),
         };
-        // 16a P-A1: 4011 пока ожидается тем же видом, что 4009; поменять вместе с видом.
         let next_episode_not_started = SessionEndReason::ClosedByPage {
             code: Some(SessionCloseReason::NextEpisodeNotStarted.close_code()),
         };
         if reason == SessionEndReason::ClosedByPlayer(SessionCloseReason::ProtocolViolation) {
             Some(SessionEndView::StreamError)
-        } else if reason == page_took_video_back || reason == next_episode_not_started {
+        } else if reason == page_took_video_back {
             Some(SessionEndView::PageTookVideoBack)
+        } else if reason == next_episode_not_started {
+            Some(SessionEndView::NextEpisodeNotStarted)
         } else if reason == page_stream_error {
             Some(SessionEndView::PageStreamError)
         } else {
@@ -463,6 +477,31 @@ mod tests {
             SessionEndLogLabels {
                 notice: "page_took_video_back",
                 cause: "page_took_video_back",
+                end: "none",
+            }
+        );
+    }
+
+    #[test]
+    fn the_page_not_starting_the_next_episode_is_told_briefly_and_is_never_played_on() {
+        let reason = SessionEndReason::ClosedByPage {
+            code: Some(SessionCloseReason::NextEpisodeNotStarted.close_code()),
+        };
+        // Серия уже доиграла у зрителя на глазах: доигрывать нечего (решение 307).
+        assert!(!ends_with_playback_drain(reason));
+        assert_eq!(DrainCause::of(reason), None);
+        let view = SessionEndView::of_undrained_end(reason).expect("the window speaks");
+        assert_eq!(view, SessionEndView::NextEpisodeNotStarted);
+        assert_eq!(
+            view.center_message(),
+            Some("The page didn't start the next episode")
+        );
+        // Метки — договор со стендом (сессия 16a).
+        assert_eq!(
+            view.log_labels(),
+            SessionEndLogLabels {
+                notice: "next_episode_not_started",
+                cause: "next_episode_not_started",
                 end: "none",
             }
         );

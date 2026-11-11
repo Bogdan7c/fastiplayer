@@ -903,3 +903,8 @@ mod page_variants;
 // дорожку до кадров окна, выбор зрителя уходит странице одним `subtitle_choice`.
 #[path = "browser_session_process/page_subtitle_preference.rs"]
 mod page_subtitle_preference;
+
+// Сессия 16a: следующая серия на той же странице (протокол 1.9) — другая спецификация в том
+// же окне, надпись ожидания, заголовок вкладки, код 4011.
+#[path = "browser_session_process/next_episode.rs"]
+mod next_episode;

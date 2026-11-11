@@ -46,3 +46,10 @@ for size in 64 96; do
 done
 ffmpeg "${common[@]}" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
     -ac 1 -c:a aac -b:a 24k -frag_duration 1000000 "${fmp4[@]}" "$here/audio-6s.mp4"
+
+# Следующая серия с другим звуком (сессия 16a, процессный тест браузерного режима
+# `next_episode`): AAC-LC стерео 44,1 кГц, 4,8 с — частота, каналы и длительность не те, что
+# у audio-6s.mp4 (моно 48 кГц, 6 с). Видео к нему — первые четыре фрагмента video-96-6s.mp4
+# (0–4,8 с, другое разрешение, чем у серии 1 на video-64-6s.mp4). Звук — фрагменты по ~1 с.
+ffmpeg "${common[@]}" -f lavfi -i "sine=frequency=550:sample_rate=44100:duration=4.8" \
+    -ac 2 -c:a aac -b:a 32k -frag_duration 1000000 "${fmp4[@]}" "$here/audio-44k-stereo-4800ms.mp4"

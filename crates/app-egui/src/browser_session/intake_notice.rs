@@ -13,9 +13,11 @@
 use std::fmt;
 
 use browser_bridge_protocol::session::player::StreamRejection;
-use browser_bridge_protocol::session::{PageAdState, PageReopenFailure, TabGoneReason};
+use browser_bridge_protocol::session::{
+    NextEpisodePatience, PageAdState, PageReopenFailure, TabGoneReason,
+};
 use browser_bridge_protocol::{
-    MediaTime, PlaybackRate, SeekId, SessionCloseReason, StreamGeneration,
+    MediaTime, PageTitle, PlaybackRate, SeekId, SessionCloseReason, StreamGeneration,
 };
 use browser_bridge_session::SessionRef;
 use media_prefetch::PrefetchConfig;
@@ -27,6 +29,18 @@ use pushed_media_source::{
 use super::hls_bridge::opener::HlsGenerationOpener;
 use super::page_variants::{PageVariantSlot, PageVariantUpdate};
 use crate::page_subtitles::PageSubtitleDocument;
+
+/// Слово страницы о смене серии на той же странице (протокол 1.9, сессия 16a).
+///
+/// Только сведения страницы: что с ними делать, решает медиа-часть (ожидание следующей
+/// серии — `session_media::next_episode_wait`, заголовок — `session_media::page_retitle`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PageEpisodeWord {
+    /// `awaiting_next_episode`: серия доиграла, экстеншен ждёт новый источник не дольше срока.
+    AwaitingNextEpisode(NextEpisodePatience),
+    /// `page_title_changed`: новый заголовок вкладки (Debug типа скрыт — инвариант 7).
+    TitleChanged(PageTitle),
+}
 
 /// Что случилось со страницей сеанса, пока связь держится (протокол 1.4, «сирота»).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +230,15 @@ pub(crate) enum IntakeNotice {
         /// Что сказала страница.
         update: PageVariantUpdate,
     },
+    /// Слово страницы о смене серии на той же странице (протокол 1.9, 16a): «ждём
+    /// следующую серию» или «заголовок вкладки сменился». Вне поколений, идёт в порядке
+    /// провода.
+    EpisodeChange {
+        /// Сеанс.
+        session: SessionRef,
+        /// Что сказала страница.
+        word: PageEpisodeWord,
+    },
     /// Сеанс надо закрыть этим кодом (`SessionControl::close_session` — только
     /// этот экземпляр, не тот, что успел его заменить).
     CloseSession {
@@ -239,6 +262,7 @@ impl IntakeNotice {
             | Self::PageLink { session, .. }
             | Self::PageSubtitleReady { session, .. }
             | Self::PageVariants { session, .. }
+            | Self::EpisodeChange { session, .. }
             | Self::Reject { session, .. }
             | Self::CloseSession { session, .. } => session,
         }
@@ -267,7 +291,11 @@ impl IntakeNotice {
     ///   главный цикл выбирает ящик каждый проход;
     /// - слово о вариантах страницы (14a) — терять НЕЛЬЗЯ последнее (меню пропало бы или
     ///   «следующая серия» застряла бы), но важно только последнее на место: новое меню
-    ///   вида вытесняет неисполненное того же вида, навигация — навигацию.
+    ///   вида вытесняет неисполненное того же вида, навигация — навигацию;
+    /// - заголовок вкладки (16a) — терять НЕЛЬЗЯ последний (окно осталось бы со старым), но
+    ///   важен только последний: страница может менять заголовок часто (бегущая строка),
+    ///   поэтому новый вытесняет неисполненный прежний того же сеанса;
+    /// - «ждём следующую серию» (16a) — единичное событие на конец серии: ложится всегда.
     pub(crate) const fn overflow_rule(&self) -> OverflowRule {
         match self {
             Self::PageIntent {
@@ -276,6 +304,10 @@ impl IntakeNotice {
             } => OverflowRule::ReplacePendingPageSeek,
             Self::AdState { .. } => OverflowRule::ReplacePendingAdState,
             Self::PageVariants { .. } => OverflowRule::ReplacePendingPageVariant,
+            Self::EpisodeChange {
+                word: PageEpisodeWord::TitleChanged(_),
+                ..
+            } => OverflowRule::ReplacePendingPageTitle,
             Self::PageIntent { .. } | Self::PlayerSeekAcknowledged { .. } => {
                 OverflowRule::Droppable
             }
@@ -284,6 +316,10 @@ impl IntakeNotice {
             | Self::InstanceSealed { .. }
             | Self::PageLink { .. }
             | Self::PageSubtitleReady { .. }
+            | Self::EpisodeChange {
+                word: PageEpisodeWord::AwaitingNextEpisode(_),
+                ..
+            }
             | Self::Reject { .. }
             | Self::CloseSession { .. } => OverflowRule::Keep,
         }
@@ -305,6 +341,17 @@ impl IntakeNotice {
     /// Это состояние рекламы сеанса `session`.
     pub(crate) fn is_ad_state_of(&self, session: &SessionRef) -> bool {
         matches!(self, Self::AdState { session: notice_session, .. } if notice_session == session)
+    }
+
+    /// Это смена заголовка вкладки сеанса `session` (16a).
+    pub(crate) fn is_page_title_of(&self, session: &SessionRef) -> bool {
+        matches!(
+            self,
+            Self::EpisodeChange {
+                session: notice_session,
+                word: PageEpisodeWord::TitleChanged(_),
+            } if notice_session == session
+        )
     }
 
     /// Это слово о вариантах сеанса `session` в месте `slot` (меню того же вида или навигация).
@@ -339,4 +386,7 @@ pub(crate) enum OverflowRule {
     /// Ложится, вытесняя прежнее неисполненное слово о вариантах того же места и сеанса
     /// (меню того же вида или навигацию): нужно только последнее, терять его нельзя.
     ReplacePendingPageVariant,
+    /// Ложится, вытесняя прежнюю неисполненную смену заголовка вкладки того же сеанса
+    /// (16a): нужен только последний заголовок, терять его нельзя.
+    ReplacePendingPageTitle,
 }

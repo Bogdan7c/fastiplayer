@@ -5,7 +5,8 @@
 //! - [`ShownEndNotice`] ставит и снимает сообщение в центре окна только при смене (и
 //!   пишет одну строку журнала без данных страницы — её читают сквозные тесты);
 //! - [`exit_plan`] — как выходить, когда машина выхода решила «выход»: доигрывание
-//!   кончилось (а также сбой потока или «страница забрала видео», 09a2) → сообщение висит
+//!   кончилось (а также сбой потока, «страница забрала видео», 09a2, или «страница не
+//!   начала следующую серию», 16a) → сообщение висит
 //!   [`END_NOTICE_PERIOD`], окно рисует последний кадр, потом закрывается; любой другой
 //!   выход — сразу, как раньше.
 //!
@@ -41,12 +42,14 @@ pub(super) enum WindowExit {
 /// открыл сеанс…) — сразу.
 pub(super) fn exit_plan(view: SessionEndView, now: Instant) -> WindowExit {
     match view {
-        // Обрыв по ошибке потока с любой стороны (решение 132) и «страница забрала видео»
-        // (решение 179, «2–3 с, потом закрыть»): сообщение держится столько же.
+        // Обрыв по ошибке потока с любой стороны (решение 132), «страница забрала видео»
+        // (решение 179, «2–3 с, потом закрыть») и «страница не начала следующую серию»
+        // (решение 307, тот же срок): сообщение держится столько же.
         SessionEndView::Finished(_)
         | SessionEndView::StreamError
         | SessionEndView::PageStreamError
-        | SessionEndView::PageTookVideoBack => WindowExit::AfterNotice {
+        | SessionEndView::PageTookVideoBack
+        | SessionEndView::NextEpisodeNotStarted => WindowExit::AfterNotice {
             close_at: now + END_NOTICE_PERIOD,
         },
         // Возврат страницы держит доигрывание: машина выхода «выход» в это время не скажет;
@@ -168,6 +171,24 @@ mod tests {
         assert_eq!(
             notice.update(SessionEndView::PageTookVideoBack),
             Some(CenterStatusChange::Show("The page took the video back"))
+        );
+    }
+
+    #[test]
+    fn the_next_episode_not_starting_holds_the_notice_then_closes_the_window() {
+        let now = Instant::now();
+        assert_eq!(
+            exit_plan(SessionEndView::NextEpisodeNotStarted, now),
+            WindowExit::AfterNotice {
+                close_at: now + END_NOTICE_PERIOD
+            }
+        );
+        let mut notice = ShownEndNotice::default();
+        assert_eq!(
+            notice.update(SessionEndView::NextEpisodeNotStarted),
+            Some(CenterStatusChange::Show(
+                "The page didn't start the next episode"
+            ))
         );
     }
 

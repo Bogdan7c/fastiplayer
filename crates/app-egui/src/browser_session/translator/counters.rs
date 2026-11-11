@@ -17,6 +17,9 @@ pub(crate) struct TranslatorCounters {
     /// Слова страницы о вариантах (меню, навигация, подсказка субтитров), отданные главному
     /// циклу (14a).
     pub(crate) page_variant_words: u64,
+    /// Слова страницы о смене серии на той же странице (`awaiting_next_episode`,
+    /// `page_title_changed`), отданные главному циклу (16a).
+    pub(crate) episode_change_words: u64,
     /// `tab_gone` страницы: переходник его только отмечает — сеанс закрывает сервер
     /// (4002), а доигрывание полученного ведёт главный цикл.
     pub(crate) tab_gone_messages: u64,

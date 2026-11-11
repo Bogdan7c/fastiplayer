@@ -172,6 +172,11 @@ fn a_fullscreen_window_comes_up_fullscreen_and_leaving_it_is_remembered() {
             .fullscreen,
         "the remembered fullscreen must reach the compositor"
     );
+    // Стенд моста (16a) видит окно и вход в запомненный фуллскрин строками журнала.
+    let bus = &process.bus;
+    bus.wait_for_log_line("Browser window created");
+    let entered = bus.wait_for_log_line("Browser window fullscreen changed");
+    assert!(entered.contains("fullscreen=true"), "{entered}");
 
     display.leave_fastiplayer_fullscreen();
     let deadline = Instant::now() + WAIT;
@@ -186,6 +191,12 @@ fn a_fullscreen_window_comes_up_fullscreen_and_leaving_it_is_remembered() {
         assert!(Instant::now() < deadline, "KWin never left fullscreen");
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Выход из фуллскрина — одна строка, а не по строке на каждый размер.
+    let left = bus.wait_for_log_line_without(
+        "Browser window fullscreen changed",
+        &["Browser window created"],
+    );
+    assert!(left.contains("fullscreen=false"), "{left}");
     close_window_and_wait_for_exit(&process, socket, clock_seen);
 
     let after = std::fs::read_to_string(process.bus.user_config_path()).expect("config.toml");

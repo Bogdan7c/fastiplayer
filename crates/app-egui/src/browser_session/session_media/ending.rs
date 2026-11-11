@@ -10,7 +10,8 @@
 //!  окно: session_end_view() ─► Silent / WaitingForViewer / Finished (по последнему ответу)
 //!                             или StreamError / PageStreamError (обрыв 4003 плеером или
 //!                             страницей) / PageTookVideoBack (страница закрыла 4009, решение
-//!                             179): не доигрываются, но не молчат
+//!                             179) / NextEpisodeNotStarted (4011, решение 307): не
+//!                             доигрываются, но не молчат
 //! ```
 
 use std::time::Instant;
@@ -74,6 +75,8 @@ impl SessionMedia {
     /// ей забывается, всё полученное досматривается.
     pub(super) fn begin_drain(&mut self, reason: SessionEndReason) {
         self.outbound.forget_pending_of_ended_session();
+        // Страницы нет — новой серии от неё не будет: надпись ожидания снимается.
+        self.end_next_episode_wait_on_session_end();
         // Страницы нет — рекламы на её экране тоже: плашку снимаем вместе с вкладкой.
         self.ad.clear();
         self.drain = Some(ActiveDrain {

@@ -73,7 +73,7 @@ use self::generation_start::GenerationStart;
 use self::page_clock::{LoadedMediaShown, PageClockSource, PageStartWord};
 use self::page_reopen::PageReopen;
 use self::seek_handover::UnansweredSeek;
-use super::intake_notice::{GenerationHandoff, IntakeNotice, PageIntent};
+use super::intake_notice::{GenerationHandoff, IntakeNotice, PageEpisodeWord, PageIntent};
 use super::outbound::PageOutbound;
 use super::playback::{
     BrowserPlaybackCommandError, MediaLoadTicket, PlaybackObservation, PlayerSeekAnswers,
@@ -91,10 +91,12 @@ mod generation_rejection;
 mod generation_start;
 mod install_reconcile;
 mod live_hls;
+mod next_episode_wait;
 mod open_pending;
 mod page_clock;
 mod page_quality;
 mod page_reopen;
+mod page_retitle;
 mod page_subtitles;
 mod page_variant_outcome;
 mod page_variants;
@@ -111,6 +113,7 @@ mod wake_schedule;
 pub(crate) use self::drain::{DrainEnd, DrainPolicy, DrainProgress, PausedDrain};
 pub(crate) use self::farewell::ViewerCloseStep;
 pub(crate) use self::generation_placement::{GenerationPlacementPolicy, GenerationWait};
+pub(crate) use self::next_episode_wait::{NextEpisodeWaitEnd, NextEpisodeWaitView};
 pub(crate) use self::page_quality::PageViewNotice;
 pub(crate) use self::page_reopen::{PageReopenNotice, PageReopenRefusal};
 pub(crate) use self::position_carry::PositionCarryPolicy;
@@ -254,6 +257,11 @@ pub(crate) struct SessionMedia {
     page_view_notice: PageViewNotice,
     /// Варианты страницы: склад меню, возврат на секунду, тост (14a, [`page_variants`]).
     variants: self::page_variants::SessionPageVariants,
+    /// «Ждём следующую серию» (16a, [`next_episode_wait`]): надпись окна до показа нового
+    /// поколения или конца сеанса.
+    next_episode_wait: self::next_episode_wait::NextEpisodeWait,
+    /// Смены заголовка вкладки посреди сеанса (16a, [`page_retitle`]).
+    page_retitles: self::page_retitle::PageRetitles,
 }
 
 impl SessionMedia {
@@ -288,6 +296,8 @@ impl SessionMedia {
             page_subtitles: Default::default(),
             page_view_notice: PageViewNotice::Nothing,
             variants: self::page_variants::SessionPageVariants::new(),
+            next_episode_wait: Default::default(),
+            page_retitles: Default::default(),
         }
     }
 
@@ -300,6 +310,10 @@ impl SessionMedia {
         if self.current_session.as_ref() == Some(session) {
             return;
         }
+        // Прежний экземпляр кончился для зрителя (его `Ended` придёт уже чужим): ожидание
+        // следующей серии снято, невостребованный заголовок прежней страницы забыт.
+        self.end_next_episode_wait_on_session_end();
+        self.page_retitles.forget_unclaimed();
         self.current_session = Some(session.clone());
         self.pending = None;
         self.bytes_arrived = false;
@@ -401,6 +415,12 @@ impl SessionMedia {
                 self.shelve_page_subtitle(*document)
             }
             IntakeNotice::PageVariants { update, .. } => self.apply_page_variant_update(update),
+            IntakeNotice::EpisodeChange { word, .. } => match word {
+                PageEpisodeWord::AwaitingNextEpisode(patience) => {
+                    self.note_page_awaits_next_episode(patience);
+                }
+                PageEpisodeWord::TitleChanged(title) => self.note_page_title_change(title),
+            },
             IntakeNotice::PlayerSeekAcknowledged {
                 seek_id, target, ..
             } => {
@@ -556,6 +576,8 @@ impl SessionMedia {
         };
 
         if reconcile_now {
+            // Поколение впервые показано: «ждём следующую серию» (если было) кончилось.
+            self.end_next_episode_wait_on_generation_shown();
             let seek_after_show = self.seek_after_show_with_viewer_click(seek_when_shown, now);
             self.reconcile_with_page(observation, seek_after_show);
         }

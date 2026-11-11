@@ -54,9 +54,10 @@ use super::super::rejection_notice::{
 };
 use super::super::runtime::{DRAIN_FALLBACK_WAKE, RuntimeFinish};
 use super::super::session_media::{PageReopenNotice, PageReopenRefusal, ViewerSeekNotice};
+use super::center_status::WindowCenterStatus;
 use super::desktop_transport::WindowDesktopTransport;
 use super::driver::WindowPlaybackDriver;
-use super::end_notice::{ShownEndNotice, WindowExit, exit_plan};
+use super::end_notice::{WindowExit, exit_plan};
 use super::instance::{
     BrowserWindowInstance, BrowserWindowStartError, InstanceAudio, InstanceSignal,
     InstanceWakePorts, apply_redraw_action,
@@ -125,8 +126,8 @@ pub(super) struct BrowserWindowApp {
     forced_exit: Option<ForcedExit>,
     window_failure: Option<BrowserWindowStartError>,
     finish: Option<RuntimeFinish>,
-    /// Сообщение о конце сеанса, которое окно показывает сейчас.
-    end_notice: ShownEndNotice,
+    /// Сообщение в центре окна сейчас: о конце сеанса или «ждём следующую серию» (16a).
+    center_status: WindowCenterStatus,
     /// Ядро уже закрыто, окно показывает сообщение о конце сеанса до этого момента.
     closing_after_notice: Option<Instant>,
     /// Выбор варианта страницы тестовой переменной (только тесты 14a; без неё — ничего).
@@ -163,7 +164,7 @@ impl BrowserWindowApp {
             forced_exit: None,
             window_failure: None,
             finish: None,
-            end_notice: ShownEndNotice::default(),
+            center_status: WindowCenterStatus::default(),
             closing_after_notice: None,
             variant_test_trigger: VariantTestTrigger::from_environment(),
             subtitle_test_trigger: SubtitleTestTrigger::from_environment(),
@@ -236,8 +237,11 @@ impl BrowserWindowApp {
             }
             instance.apply_page(page);
         }
-        // Сообщение о конце сеанса — каждый проход (ставится и снимается только при смене).
-        if let Some(change) = self.end_notice.update(step.session_end)
+        // Сообщение о конце сеанса или «ждём следующую серию» — каждый проход (ставится и
+        // снимается только при смене).
+        if let Some(change) = self
+            .center_status
+            .update(step.session_end, step.next_episode_wait)
             && let Some(instance) = self.instance.as_mut()
         {
             instance.apply_center_status(change);
@@ -339,6 +343,8 @@ impl BrowserWindowApp {
         );
         match created {
             Ok(mut instance) => {
+                // Стенд моста узнаёт «то же окно» по этой строке: одна на окно процесса.
+                info!("Browser window created");
                 self.driver.attach_window();
                 // Плеер окна назвал свои возможности: HLS-поколения выбирают по ним вариант.
                 self.desk

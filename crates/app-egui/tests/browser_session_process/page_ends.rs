@@ -28,7 +28,7 @@ use super::*;
 /// Строки журнала, которых при честном конце со стороны страницы быть не должно:
 /// доигрывание (решение 179: страница уже играет сама) и прощание `return_to_page`
 /// (сокет закрыла страница, видео и так у неё).
-const NO_DRAIN_NO_FAREWELL: &[&str] = &[
+pub(super) const NO_DRAIN_NO_FAREWELL: &[&str] = &[
     "Playback drain finished",
     "Session closed with a farewell to the page",
 ];
@@ -55,7 +55,7 @@ const HEADLESS_EXIT_WITHIN: Duration = Duration::from_secs(3);
 /// Страница закрывает связь кодом причины `reason` (как экстеншен) и дочитывает сокет до
 /// ответного кадра закрытия. Возвращает сообщения плеера, пришедшие после закрытия: туда
 /// могут попасть только часы, отправленные до того, как плеер прочёл наш кадр.
-fn page_closes_the_link(
+pub(super) fn page_closes_the_link(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     reason: SessionCloseReason,
 ) -> Vec<PlayerSessionMessage> {
@@ -88,7 +88,7 @@ fn page_closes_the_link(
 }
 
 /// Плеер ничего не вернул странице: среди сообщений после закрытия нет `return_to_page`.
-fn assert_no_return_to_page(after_close: &[PlayerSessionMessage]) {
+pub(super) fn assert_no_return_to_page(after_close: &[PlayerSessionMessage]) {
     assert!(
         !after_close
             .iter()

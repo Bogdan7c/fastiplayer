@@ -1,5 +1,6 @@
 //! Геометрия окна браузерного режима: открыться с запомненным размером и фуллскрином,
-//! рассказать `SettingsRuntime`, что окно изменилось (решение 138).
+//! рассказать `SettingsRuntime`, что окно изменилось (решение 138), и сказать журналу,
+//! когда окно вошло в фуллскрин или вышло из него (стенд моста, 16a).
 //!
 //! Обычное окно эти правила не использует и ничего не меняет: его атрибуты —
 //! `main_window_attributes()` (1280×720) при любых значениях `[browser_session.window]`.
@@ -9,6 +10,7 @@
 //! обёртки над `Window`.
 
 use fastiplayer_config::BrowserWindowConfig;
+use tracing::info;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::{Window, WindowAttributes};
 
@@ -62,13 +64,51 @@ pub(super) fn observation_from_window_state(
     ))
 }
 
-/// Наблюдение за живым окном (после `Resized`).
-pub(super) fn observe_window(window: &Window) -> Option<BrowserWindowObservation> {
-    observation_from_window_state(
-        window.inner_size(),
-        window.scale_factor(),
-        window.fullscreen().is_some(),
-    )
+/// Смена фуллскрина, замеченная наблюдателем окна.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FullscreenChange {
+    /// Окно в том же состоянии, что и в прошлый раз.
+    Unchanged,
+    /// Окно вошло в фуллскрин или вышло из него (новое состояние).
+    Changed {
+        /// Окно сейчас в фуллскрине.
+        fullscreen: bool,
+    },
+}
+
+/// Наблюдатель живого окна (после каждого `Resized`): что окно увидело о себе и сменился ли
+/// фуллскрин.
+///
+/// `Resized` — единственное место, где окно узнаёт о смене своего состояния (кнопка, клавиша,
+/// композитор, запомненный фуллскрин на старте — тот тоже приходит размером от композитора).
+/// Окно создаётся оконным, поэтому начальное состояние — «не фуллскрин»: строка журнала
+/// `Browser window fullscreen changed fullscreen=<true|false>` пишется только при смене, а не
+/// на каждый размер.
+#[derive(Debug, Default)]
+pub(super) struct WindowGeometryWatch {
+    /// Последнее увиденное состояние фуллскрина.
+    fullscreen: bool,
+}
+
+impl WindowGeometryWatch {
+    /// Наблюдение за живым окном (после `Resized`); смена фуллскрина — в журнал.
+    pub(super) fn observe(&mut self, window: &Window) -> Option<BrowserWindowObservation> {
+        let fullscreen = window.fullscreen().is_some();
+        if let FullscreenChange::Changed { fullscreen } = self.note_fullscreen(fullscreen) {
+            // Формат — договор со стендом моста (16a).
+            info!("Browser window fullscreen changed fullscreen={fullscreen}");
+        }
+        observation_from_window_state(window.inner_size(), window.scale_factor(), fullscreen)
+    }
+
+    /// Чистое правило: сменилось ли состояние фуллскрина с прошлого раза.
+    fn note_fullscreen(&mut self, fullscreen: bool) -> FullscreenChange {
+        if fullscreen == self.fullscreen {
+            return FullscreenChange::Unchanged;
+        }
+        self.fullscreen = fullscreen;
+        FullscreenChange::Changed { fullscreen }
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +191,24 @@ mod tests {
         let observation = observation_from_window_state(PhysicalSize::new(3840, 2160), 1.0, true);
 
         assert_eq!(observation, Some(BrowserWindowObservation::Fullscreen));
+    }
+
+    /// Окно создаётся оконным: первый размер без фуллскрина — не смена; вход в фуллскрин (в
+    /// том числе запомненный на старте) и выход — смены; повторы одного состояния — нет.
+    #[test]
+    fn the_fullscreen_watch_reports_only_changes() {
+        let mut watch = WindowGeometryWatch::default();
+        assert_eq!(watch.note_fullscreen(false), FullscreenChange::Unchanged);
+        assert_eq!(
+            watch.note_fullscreen(true),
+            FullscreenChange::Changed { fullscreen: true }
+        );
+        assert_eq!(watch.note_fullscreen(true), FullscreenChange::Unchanged);
+        assert_eq!(
+            watch.note_fullscreen(false),
+            FullscreenChange::Changed { fullscreen: false }
+        );
+        assert_eq!(watch.note_fullscreen(false), FullscreenChange::Unchanged);
     }
 
     /// Свёрнутое окно (нулевая сторона) и странный масштаб ничего не запоминают.

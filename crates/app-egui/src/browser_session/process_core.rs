@@ -35,7 +35,7 @@ use super::hls_bridge::factory::BridgeHlsFactory;
 use super::inbox::{BrowserSessionInbox, BrowserSessionWake, InboxCapacity};
 use super::intake_notice::IntakeNotice;
 use super::normal_player_pause::SystemNormalPlayerPause;
-use super::opened_page::OpenedPage;
+use super::opened_page::{OpenedPage, PageLabelHandoff, RetitleOutcome};
 use super::outbound::PageOutbound;
 use super::range_wake::RangeRequestWake;
 use super::rejection_notice::GenerationRejectionNotice;
@@ -43,9 +43,9 @@ use super::runtime::{BrowserSessionRuntime, RuntimeFinish, SessionMediaPort};
 use super::session_config::BrowserSessionSettings;
 use super::session_end::SessionEndView;
 use super::session_media::{
-    DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, PageReopenNotice,
-    PageViewNotice, PausedDrain, PositionCarryPolicy, SessionMedia, ViewerCloseStep,
-    ViewerSeekNotice,
+    DrainProgress, GenerationPlacementPolicy, GenerationWait, MediaPlayback, NextEpisodeWaitView,
+    PageReopenNotice, PageViewNotice, PausedDrain, PositionCarryPolicy, SessionMedia,
+    ViewerCloseStep, ViewerSeekNotice,
 };
 use super::stream_intake::StreamIntake;
 use super::stream_queue::{OrderedSessionQueue, QueueLimits};
@@ -80,6 +80,9 @@ pub(super) struct CoreStep {
     /// Новое поколение ждёт данных у цели клика (04d, путь C): окно показывает спиннер,
     /// хотя прежнее видео ещё играет. Безоконный процесс его не читает.
     pub(super) generation_wait: GenerationWait,
+    /// «Ждём следующую серию» (16a): окно держит последний кадр с надписью, пока новое
+    /// поколение не показано или сеанс не кончился. Безоконный процесс его не читает.
+    pub(super) next_episode_wait: NextEpisodeWaitView,
     /// Перемотка зрителя за скачанное во время досмотра отклонена (09a2, Д-5): окно
     /// показывает короткое сообщение. Безоконный процесс его не читает.
     pub(super) viewer_seek_notice: ViewerSeekNotice,
@@ -123,9 +126,9 @@ pub(super) struct BrowserSessionCore {
     server: BrowserSessionServer,
     entry_service: BrowserEntryService,
     control: SessionControl,
-    /// Страница, открытая за последний шаг, пока окно её не забрало
-    /// ([`Self::take_opened_page`]). Только в памяти (инвариант 7).
-    opened_page: Option<OpenedPage>,
+    /// Подпись страницы на пути к окну: открытая за шаг или с новым заголовком вкладки, пока
+    /// окно её не забрало ([`Self::take_opened_page`]). Только в памяти (инвариант 7).
+    page_label: PageLabelHandoff,
     /// Окно буфера для следующего видео (его обновляет маршрут настроек окна).
     live_buffer_window: LiveBufferWindow,
 }
@@ -256,7 +259,7 @@ impl BrowserSessionCore {
             server,
             entry_service,
             control,
-            opened_page: None,
+            page_label: PageLabelHandoff::default(),
             live_buffer_window,
         })
     }
@@ -274,16 +277,24 @@ impl BrowserSessionCore {
             page: None,
         };
         let verdict = self.runtime.step(now, &mut observed);
+        let session_opened = observed.opened;
         // Свежая подпись вытесняет невостребованную: новая страница важнее старой.
         if let Some(page) = observed.page.take() {
-            self.opened_page = Some(page);
+            self.page_label.note_opened(page);
+        }
+        // Заголовок вкладки сменился посреди сеанса (16a): та же подпись с новым заголовком.
+        if let Some(title) = self.media.take_page_retitle()
+            && self.page_label.note_retitled(title.as_str()) == RetitleOutcome::NoPageYet
+        {
+            debug!("The page title changed before any page was named; nothing to show");
         }
         CoreStep {
             verdict,
-            session_opened: observed.opened,
+            session_opened,
             session_end: self.media.session_end_view(),
             generation_rejection: self.media.take_generation_rejection_notice(),
             generation_wait: self.media.generation_wait(),
+            next_episode_wait: self.media.next_episode_wait(),
             viewer_seek_notice: self.media.take_viewer_seek_notice(),
             page_reopen_notice: self.media.take_page_reopen_notice(),
             ad_plate: self.media.ad_plate(now),
@@ -295,10 +306,11 @@ impl BrowserSessionCore {
         }
     }
 
-    /// Страница, открытая с прошлого вызова (новый сеанс, замена вкладки, повтор),
-    /// либо `None`. Забирает: окно применяет её один раз (заголовок, Info, подъём окна).
+    /// Страница, открытая с прошлого вызова (новый сеанс, замена вкладки, повтор) или с
+    /// новым заголовком вкладки (16a), либо `None`. Забирает: окно применяет её один раз
+    /// (заголовок, Info, подъём окна — только для нового видео).
     pub(super) fn take_opened_page(&mut self) -> Option<OpenedPage> {
-        self.opened_page.take()
+        self.page_label.take_unclaimed()
     }
 
     /// Действия зрителя в окне (транспорт): медиа-часть исполняет их на плеере и

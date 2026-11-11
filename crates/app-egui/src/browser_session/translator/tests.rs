@@ -288,6 +288,8 @@ enum Seen {
         u64,
         crate::browser_session::page_variants::PageVariantUpdate,
     ),
+    /// Слово страницы о смене серии на той же странице (16a).
+    EpisodeChange(u64, crate::browser_session::intake_notice::PageEpisodeWord),
 }
 
 fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
@@ -329,6 +331,9 @@ fn seen(notices: &[IntakeNotice]) -> Vec<Seen> {
             ),
             IntakeNotice::PageVariants { session, update } => {
                 Seen::PageVariants(session.instance.0, update.clone())
+            }
+            IntakeNotice::EpisodeChange { session, word } => {
+                Seen::EpisodeChange(session.instance.0, word.clone())
             }
         })
         .collect()
