@@ -5,7 +5,8 @@ import type { HandoffEndPosition, HandoffEndResume, PageEvent, ShadowCommand } f
 import type { HeldShadowPlayback, PendingPlay, ShadowSourceKind } from "../handoff-seam.ts";
 import { interruptFileReturn } from "./file-shadow-lifecycle.ts";
 import { installShadowOverrides } from "./prototype-overrides.ts";
-import { ShadowController, type FileStopMoment, type ShadowEnvironment } from "./shadow-session.ts";
+import type { FileStopMoment, ShadowEnvironment } from "./shadow-environment.ts";
+import { ShadowController } from "./shadow-session.ts";
 
 /** Управление тенью для MAIN-мира. */
 export interface ShadowSession {

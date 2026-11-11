@@ -59,7 +59,7 @@ import type { FramePort } from "./frame-port.ts";
 import { playerAbilitiesOf } from "./hls-player-support.ts";
 import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { choiceMemoryWritingOf, createSessionSiteAdapters } from "./session-site-adapters.ts";
-import { DEMAND_REASON, NATIVE_HLS_NOT_YET, startsGeneration, TOP_FRAME_ID, UNKNOWN_HINTS, type PageDelivery, type SessionPlace } from "./handoff-session-basics.ts";
+import { DEMAND_REASON, NATIVE_HLS_NOT_YET, startsGeneration, UNKNOWN_HINTS, type PageDelivery, type SessionPlace } from "./handoff-session-basics.ts";
 import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 import type { SessionPhase } from "./session-phase.ts";
 
@@ -86,6 +86,7 @@ import { describeRefusal, describeSocketEnd, outcomeOfRefusedBegin, playerWindow
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
 import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
+import { createPageLeave } from "./session-page-leave.ts";
 import { createPagePresence } from "./session-page-presence.ts";
 import { createSessionPageReveal } from "./page-tab-reveal.ts";
 
@@ -133,6 +134,30 @@ export function startHandoffSession(
     endSession: (end) => finish(end),
   });
   pageReturn.notePage(target.pagePlace);
+  // Уход страницы (порт умер, вкладку закрыли, ушли со страницы): page-leave.ts; состоянием владеет сеанс.
+  const pageLeave = createPageLeave({
+    presence,
+    pageReturn,
+    relocation,
+    silenceWatch,
+    phase: () => phase,
+    portFrameId: () => portFrameId,
+    socketOpened: () => socket !== undefined,
+    socketAttached: () => socketAttached,
+    agreedProtocol: () => agreedProtocol,
+    sendTabGoneAndClose: (reason) => socket?.sendTabGoneAndClose(reason),
+    forgetFramePort: () => {
+      framePort = undefined;
+    },
+    abandonGrantedSession: (reason, failure) => abandonGrantedSession({ kind: "failed", reason: failure }, reason),
+    isAbandonmentPending: () => abandoned !== undefined,
+    relabelAbandonmentAsClosed: () => {
+      if (abandoned !== undefined) abandoned = { outcome: abandoned.outcome, reason: "closed" };
+    },
+    waitForNextVideo: () => waitForNextVideo(),
+    finish: (end) => finish(end),
+  });
+  const { endForLostFramePort, leavePage, notifyTabRemoved } = pageLeave;
   let phase: SessionPhase = "opening";
   let place: SessionPlace = { frameId: target.frameId, beginRequestId: target.beginRequestId, fileAddressRule: target.fileAddressRule };
   // Видео, на которое идёт тень сейчас: его признаки войдут в силу с `handoff_began{started}`.
@@ -659,64 +684,6 @@ export function startHandoffSession(
     endForLostFramePort();
   }
 
-  /**
-   * Порт к странице мёртв: пришёл его `onDisconnect` или команда в него не ушла (Д-7 — тогда
-   * `onDisconnect` может и не прийти, а плеер ждал бы подтверждения перемотки до 60 с).
-   */
-  function endForLostFramePort(): void {
-    if (phase === "finished" || phase === "page_away") return;
-    if (phase === "beginning") {
-      abandonGrantedSession({ kind: "failed", reason: "page_navigated_away" }, presence.wasRemoved() ? "closed" : "navigated_away");
-      return;
-    }
-    if (presence.wasRemoved()) {
-      leavePage("closed");
-      return;
-    }
-    if (framePortLossIsSurvivable()) {
-      askWhetherPageStayed();
-      return;
-    }
-    // Порт закрывается раньше, чем приходит tabs.onRemoved: живость вкладки спрашиваем у браузера.
-    presence.askWhyPageLeft(leavePage);
-  }
-
-  /**
-   * Порт рекламного фрейма умер. Убрали ролик — ждём следующий. Человек ушёл на другой адрес — видно
-   * по адресу вкладки: фрейм умер вместе со страницей, и новый сайт сеанс подхватывать не должен.
-   */
-  function askWhetherPageStayed(): void {
-    framePort = undefined;
-    silenceWatch.stop();
-    presence.askWhetherPageStayed((answer) => {
-      if (phase !== "active" && phase !== "between_videos" && phase !== "moving") return;
-      if (answer !== "same_page") leavePage(answer);
-      else if (phase !== "between_videos") waitForNextVideo();
-    });
-  }
-
-  /**
-   * Рекламный фрейм убрали вместе с роликом: это конец ролика, а не страницы. Главный документ вкладки
-   * так не теряется: его порт умер, значит, страница ушла.
-   */
-  function framePortLossIsSurvivable(): boolean {
-    if (portFrameId === TOP_FRAME_ID) return false;
-    return phase === "between_videos" || phase === "moving" || (phase === "active" && relocation.nextVideoExpectedAfterLoss());
-  }
-
-  /**
-   * Страница ушла. Вернувшаяся вкладка ушла раньше тени — отказ возврата. Вернуть можно (11b2) — сирота
-   * (`page_left` и фаза `page_away` через порт `sendPageLeft`); иначе прежний `tab_gone`.
-   */
-  function leavePage(reason: TabGoneReason): void {
-    // В сироте страницы нет: запоздавший ответ браузера о старой вкладке сироту не кончает.
-    if (phase === "finished" || phase === "page_away") return;
-    if (pageReturn.isReturning()) return pageReturn.shadowDidNotStand();
-    if (phase !== "ending" && socketAttached && pageReturn.pageLeft(reason, agreedProtocol) === "orphaned") return;
-    socket?.sendTabGoneAndClose(reason);
-    finish({ kind: "page_gone", reason });
-  }
-
   /** Сирота: тени, порта и загрузок нет, связь с плеером держим (11b2). Сеанс ждёт `reopen_page`. */
   function quietenForOrphan(): void {
     phase = "page_away";
@@ -737,20 +704,6 @@ export function startHandoffSession(
     subtitles.endDocument();
     if (framePort !== undefined) disconnectQuietly(framePort);
     framePort = undefined;
-  }
-
-  function notifyTabRemoved(): void {
-    presence.markRemoved();
-    // В сироте старая вкладка уже не наша; при возврате закрытие новой — отказ «страница не загрузилась».
-    if (phase === "page_away" || pageReturn.isReturning()) return pageReturn.tabRemoved(presence.tabId());
-    if (phase === "beginning" || (phase === "opening" && socket !== undefined)) {
-      abandonGrantedSession({ kind: "failed", reason: "tab_closed" }, "closed");
-    } else if (phase === "abandoning" && abandoned !== undefined) {
-      abandoned = { outcome: abandoned.outcome, reason: "closed" };
-    } else if (phase === "active" || phase === "ending" || phase === "between_videos" || phase === "moving") {
-      leavePage("closed");
-    }
-    // opening без сокета: openPlayerSession увидит флаг, когда плеер выдаст сеанс.
   }
 
   // ---------------------------------------------------------------- помощники
