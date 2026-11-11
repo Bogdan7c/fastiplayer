@@ -563,3 +563,11 @@
 - **Чьё:** экстеншен — опрос вкладки и его потребители (`tab-handoffs.ts`, `link-entry.ts`).
 - **Что сделать (решение владельца 297):** отдельная часть 15c сразу после 15b: доказать корень (какой фрейм молчит и почему), опрашивать фреймы по одному (`webNavigation.getAllFrames` + `executeScript` с `frameIds`) со сроком на каждый фрейм и брать тех, кто ответил; страница стенда с «зависшим фреймом», живьём klonua в Chromium.
 - **Итог (сессия 15c1 плана моста, 11.11.2026) — ЗАКРЫТО исправлением.** Корень доказан живой пробой: не реклама, а ленивый `<iframe loading="lazy">` трейлера YouTube ниже экрана. Он остаётся на начальном пустом документе, а Chromium по умолчанию ждёт загрузки каждого фрейма, поэтому общий вызов не отвечал никогда; Firefox не ждёт. Исправление (решение 299): модуль `extensions/browser/src/background/frame-injection/` — список фреймов `webNavigation.getAllFrames`, внедрение в каждый фрейм отдельно с `injectImmediately`, общий срок 5 с; через него идут опрос вкладки, поздний вход и возврат страницы. Стенд `frame-never-loads`: Chromium до — FAIL `survey_timed_out`, после — PASS. Живьём klonua в Chromium и Firefox: передача, три нажатия озвучки сериала. Отчёт: `user/browser-bridge/results/15c1.md`.
+
+## 47. CI: проверка «Workspace check on Rust 1.99.0» (Toolchain policy) красная — `audiopus_sys` не собирается новым CMake
+
+- **Где найдено:** итоговая сверка сессии 15c2 плана моста (11.11.2026). Workflow «Toolchain policy» падает на `main` с 10.11.2026 на каждом коммите, задолго до 15c2 и независимо от правок.
+- **Что видно в журнале:** сборочный скрипт `audiopus_sys` вызывает CMake для вложенного Opus, а CMake на машине GitHub отказывает: «Compatibility with CMake < 3.5 has been removed from CMake» (`cmake_minimum_required` у Opus старше 3.5). Перед этим `pkg_config` не находит системный Opus, поэтому crate собирает свой.
+- **Гипотеза корня (не проверена):** образ машины GitHub обновил CMake до 4.x. Локально проверка не воспроизводилась.
+- **Чьё:** CI (`.github/workflows/`), зависимость Opus.
+- **Что сделать:** решить владельцу. Варианты: поставить системный `libopus-dev` в этом job, чтобы `audiopus_sys` не собирал Opus сам; задать `CMAKE_POLICY_VERSION_MINIMUM=3.5` в окружении job; закрепить CMake 3.x.
