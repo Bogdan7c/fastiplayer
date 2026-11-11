@@ -166,6 +166,8 @@ fn writing_is_unchanged_by_the_strict_layer() {
         position_us: MediaTime::from_micros(1_000).expect("1000 мкс — допустимо"),
         state: ClockState::Playing,
         rate: crate::time::PlaybackRate::from_permille(1_000).expect("1× — допустимо"),
+        // Без номера поколения (протокол 1.10): ключа на проводе нет вовсе.
+        generation: None,
     };
     let text = crate::codec::encode_message(&message).expect("сообщение записывается");
     assert_eq!(

@@ -407,6 +407,8 @@ impl PageOutbound {
             position_us: clock_position(observation.page_clock_position()),
             state: page_clock_state(observation),
             rate: clock_rate(observation.rate),
+            // Номер поколения в часах (протокол 1.10) ставит пакет P2 сессии 16a2.
+            generation: None,
         };
         self.next_clock_sequence = self.next_clock_sequence.wrapping_add(1);
         match self.deliver(&message) {

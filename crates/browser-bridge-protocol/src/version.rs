@@ -78,6 +78,14 @@
 //!   источник не пришёл за срок). При общей версии ниже 1.9 экстеншен новых слов не шлёт,
 //!   сторож отвергает входящие, а вместо 4011 экстеншен закрывает связь прежним 4009.
 //!   Договор — `crate::session::episode_change`.
+//! - **1.10** (сессия 16a2, решение 311) — первое необязательное ПОЛЕ старого сообщения, а не
+//!   новое сообщение: тик часов плеер → страница `clock` может нести `generation` — номер
+//!   поколения, которое этот тик описывает. Без номера тень на странице не отличает часы
+//!   прошлого ролика от часов нового: `ended` баннера защёлкивал конец у только что начатого
+//!   фильма. При общей версии ниже 1.10 плеер поля не шлёт (тик остаётся формой 1.0), а
+//!   получатель 1.9 разобрал бы его как незнакомое поле. Версию поля знает
+//!   `PlayerSessionMessage::required_version` и общая таблица `fixtures/field-versions.json`.
+//!   Договор — `crate::session::clock_generation`.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -132,6 +140,14 @@ impl ProtocolVersion {
     /// `awaiting_next_episode`, `page_title_changed`, код закрытия 4011.
     pub const V1_9: Self = Self { major: 1, minor: 9 };
 
+    /// Номер поколения в тике часов (сессия 16a2, решение 311): необязательное поле
+    /// `clock.generation`. Первая двузначная `minor`: версии сравниваются числами, а не
+    /// текстом (`"1.10"` как строка меньше `"1.9"`).
+    pub const V1_10: Self = Self {
+        major: 1,
+        minor: 10,
+    };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -144,7 +160,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_9;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_10;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -226,18 +242,22 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_9() {
-        // Сессия 16a: смена серии на той же странице. Число закреплено — его же зеркалит
+    fn this_crate_speaks_protocol_1_10() {
+        // Сессия 16a2: номер поколения в тике часов. Число закреплено — его же зеркалит
         // экстеншен (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 9));
-        assert!(ProtocolVersion::V1_9.includes(ProtocolVersion::V1_8));
-        assert!(!ProtocolVersion::V1_8.includes(ProtocolVersion::V1_9));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 10));
+        assert!(ProtocolVersion::V1_10.includes(ProtocolVersion::V1_9));
+        assert!(!ProtocolVersion::V1_9.includes(ProtocolVersion::V1_10));
+        // Двузначная minor сравнивается числом: 1.10 новее и 1.9, и 1.1.
+        assert!(ProtocolVersion::V1_10 > ProtocolVersion::V1_9);
+        assert!(!ProtocolVersion::V1_1.includes(ProtocolVersion::V1_10));
     }
 
     #[test]
-    fn a_1_9_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_10_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_9,
             ProtocolVersion::V1_8,
             ProtocolVersion::V1_7,
             ProtocolVersion::V1_6,
@@ -249,11 +269,11 @@ mod tests {
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_9, older),
+                negotiate_protocol_version(ProtocolVersion::V1_10, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_9),
+                negotiate_protocol_version(older, ProtocolVersion::V1_10),
                 Ok(older)
             );
         }

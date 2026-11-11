@@ -18,6 +18,7 @@ import {
   PROTOCOL_VERSION_1_9,
   type ProtocolVersion,
 } from "../version.ts";
+import { CLOCK_GENERATION_INTRODUCED_IN } from "./clock-generation.ts";
 import type { PageSessionMessage, TabGoneReason } from "./page.ts";
 import { type PageReopenFailure } from "./page-reopen.ts";
 import type { PlayerSessionMessage } from "./player.ts";
@@ -135,4 +136,18 @@ export function pageSessionRequiredVersion(message: PageSessionMessage): Protoco
     }
   })();
   return valueVersion.minor > typeVersion.minor ? valueVersion : typeVersion;
+}
+
+/**
+ * Самая старая общая версия, при которой плеер вправе прислать это сообщение: самая новая из версий его типа и его
+ * полей. Зеркало `PlayerSessionMessage::required_version` (player.rs). Новое необязательное поле старого сообщения
+ * версионируется здесь (таблица - fixtures/field-versions.json): тик `clock` без номера - форма 1.0, с номером
+ * поколения - 1.10.
+ */
+export function playerSessionRequiredVersion(message: PlayerSessionMessage): ProtocolVersion {
+  // Тип `clock` из 1.0, поэтому версия поля всегда не старше типа.
+  if (message.type === "clock" && message.generation !== undefined) {
+    return CLOCK_GENERATION_INTRODUCED_IN;
+  }
+  return PLAYER_SESSION_INTRODUCED_IN[message.type];
 }

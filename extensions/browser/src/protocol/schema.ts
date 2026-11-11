@@ -6,6 +6,9 @@
 // - поля обрабатываются в порядке появления во входе, первая же ошибка прерывает
 //   разбор: неизвестное поле -> `unknown_field`, повтор -> `duplicate_field`,
 //   плохое значение -> ошибка значения; «нет поля» проверяется в самом конце;
+// - необязательное поле (`optionalField`, с протокола 1.10) может отсутствовать: тогда его нет
+//   и в разобранном объекте. Если ключ есть, значение разбирается строго своим кодеком, и
+//   `null` - `wrong_value_type`, как у любого поля (зеркало `strict_shape::optional_field`);
 // - у перечислений с полем-меткой (`type`/`kind`) метка сначала ищется по ВСЕМ
 //   полям (повтор метки, незнакомое значение), и только потом разбираются поля
 //   варианта. Так делает serde: он буферизует содержимое и разбирает его позже;
@@ -27,8 +30,54 @@ export interface Codec<T> {
   encode(value: T): unknown;
 }
 
-/** Набор кодеков полей структуры `T`: ключи в порядке записи. */
-export type FieldCodecs<T> = { readonly [K in keyof T]-?: Codec<T[K]> };
+/**
+ * Кодек НЕОБЯЗАТЕЛЬНОГО поля (первое - `clock.generation`, протокол 1.10): ключа может не быть.
+ *
+ * Метка `presence` нужна разбору структуры: только у такого поля отсутствие ключа - не
+ * `missing_field`. Типы требуют её ровно у необязательных свойств (`FieldCodecs`), поэтому
+ * забыть пометку или навесить её на обязательное поле не выйдет - не соберётся.
+ */
+export interface OptionalFieldCodec<T> extends Codec<T> {
+  readonly presence: "optional";
+}
+
+/** Кодек обязательного поля: любой кодек, кроме помеченного необязательным. */
+type RequiredFieldCodec<T> = Codec<T> & { readonly presence?: never };
+
+/** Необязательно ли свойство `K` у `T` (`generation?:`). */
+type IsOptionalKey<T, K extends keyof T> = Partial<Pick<T, K>> extends Pick<T, K> ? true : false;
+
+/**
+ * Набор кодеков полей структуры `T`: ключи в порядке записи. Необязательному свойству нужен
+ * `OptionalFieldCodec` (`optionalField(...)`), обязательному - обычный кодек.
+ */
+export type FieldCodecs<T> = {
+  readonly [K in keyof T]-?: IsOptionalKey<T, K> extends true
+    ? OptionalFieldCodec<Exclude<T[K], undefined>>
+    : RequiredFieldCodec<T[K]>;
+};
+
+/**
+ * Делает поле необязательным: нет ключа - нет свойства в разобранном объекте (не `undefined`:
+ * с `exactOptionalPropertyTypes` это разные формы, и запись обратно должна дать те же байты).
+ * Ключ есть - значение разбирает `present` со всеми его правилами; `null` он отвергает сам как
+ * значение не того типа. Почему не принимать `null` за «нет»: тогда у смысла «номера нет» было
+ * бы две формы на проводе, и `{"generation":null}` не записался бы обратно байт в байт. Так же
+ * решено в Rust (`strict_shape::optional_field`). Запись: отсутствующее значение не пишется
+ * (`encodeFields` пропускает `undefined`).
+ */
+export function optionalField<T>(present: Codec<T>): OptionalFieldCodec<T> {
+  return {
+    presence: "optional",
+    decode: (json) => present.decode(json),
+    encode: (value) => present.encode(value),
+  };
+}
+
+/** Помечено ли поле необязательным (`optionalField`). */
+function isOptionalField(codec: Codec<unknown>): boolean {
+  return (codec as Partial<OptionalFieldCodec<unknown>>).presence === "optional";
+}
 
 // ---------------------------------------------------------------- перечисления
 
@@ -101,11 +150,13 @@ function decodeFields<T extends object>(
     }
   }
   const result: Record<string, unknown> = {};
-  for (const key of Object.keys(fieldCodecs)) {
-    if (!decoded.has(key)) {
+  for (const [key, codec] of Object.entries(fieldCodecs)) {
+    if (decoded.has(key)) {
+      result[key] = decoded.get(key);
+    } else if (!isOptionalField(codec)) {
       throw new ProtocolFailure("missing_field").prependPath(key);
     }
-    result[key] = decoded.get(key);
+    // Необязательного поля нет во входе - нет и свойства в итоге (а не `key: undefined`).
   }
   return result as T;
 }
@@ -117,7 +168,8 @@ function encodeFields<T extends object>(value: T, fields: FieldCodecs<T>): Recor
   for (const key of Object.keys(fieldCodecs)) {
     const codec = fieldCodecs[key];
     const fieldValue = source[key];
-    // Нет поля — не записываем: разбор записанного текста честно скажет `missing_field`.
+    // Нет поля — не записываем: у необязательного это и есть форма «нет значения», а у
+    // обязательного разбор записанного текста честно скажет `missing_field`.
     if (codec !== undefined && fieldValue !== undefined) {
       written[key] = codec.encode(fieldValue);
     }

@@ -5,7 +5,7 @@
 
 import { ProtocolFailure } from "../errors.ts";
 import { type ResourceByteRange, resourceByteRangeCodec, resourceFetchLengthCodec } from "../resource.ts";
-import { type Codec, stringEnum, taggedUnion, type TaggedUnionCodec } from "../schema.ts";
+import { type Codec, optionalField, stringEnum, taggedUnion, type TaggedUnionCodec } from "../schema.ts";
 import {
   type ResourceHandle,
   type StreamGeneration,
@@ -55,6 +55,12 @@ export type PlayerSessionMessage =
       readonly position_us: MediaTimeMicros;
       readonly state: ClockState;
       readonly rate: PlaybackRatePermille;
+      /**
+       * Протокол 1.10 (решение 311): поколение, которое описывает этот тик. Нужно тени, чтобы отличить часы
+       * прошлого видео от часов текущего. Свойства нет - номер неизвестен (общая версия ниже 1.10 или у плеера
+       * ещё нет поколения). Договор - `clock-generation.ts`.
+       */
+      readonly generation?: StreamGeneration;
     }
   | {
       readonly type: "buffer_state";
@@ -126,6 +132,8 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
     position_us: mediaTimeCodec,
     state: clockStateCodec,
     rate: playbackRateCodec,
+    // Последним: порядок записи обеих сторон (тик 1.9 - префикс тика 1.10). Нет ключа - нет свойства, `null` - отказ.
+    generation: optionalField(streamGenerationCodec),
   },
   buffer_state: {
     generation: streamGenerationCodec,

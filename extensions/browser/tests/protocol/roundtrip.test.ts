@@ -171,6 +171,15 @@ function playerSession(random: Random): PlayerSessionMessage {
   return random.pick<PlayerSessionMessage>([
     { type: "attached" },
     { type: "clock", seq: random.next(), position_us: random.safeInt(), state: random.pick(["playing", "paused", "waiting", "ended"] as const), rate: 63 + random.int(15938) },
+    // Протокол 1.10: тик с номером поколения, которое он описывает (поле последнее).
+    {
+      type: "clock",
+      seq: random.next(),
+      position_us: random.safeInt(),
+      state: random.pick(["playing", "paused", "waiting", "ended"] as const),
+      rate: 63 + random.int(15938),
+      generation: generation(random),
+    },
     { type: "buffer_state", generation: generation(random), ahead_us: random.safeInt(), intake: random.pick(["accepting", "full"] as const) },
     { type: "play" },
     { type: "pause" },

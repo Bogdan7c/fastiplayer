@@ -49,6 +49,7 @@
 //! молча.
 
 pub mod ad_state;
+pub mod clock_generation;
 pub mod episode_change;
 pub mod live_window;
 pub mod page;
@@ -63,6 +64,7 @@ pub use ad_state::{
     AdCountdownSeconds, AdPod, AdPodNumber, AdSkip, MAX_AD_COUNTDOWN_SECONDS, MAX_ADS_IN_POD,
     PageAdState,
 };
+pub use clock_generation::CLOCK_GENERATION_INTRODUCED_IN;
 pub use episode_change::{
     AWAITING_NEXT_EPISODE_INTRODUCED_IN, NEXT_EPISODE_NOT_STARTED_INTRODUCED_IN,
     NextEpisodePatience, PAGE_TITLE_CHANGED_INTRODUCED_IN,

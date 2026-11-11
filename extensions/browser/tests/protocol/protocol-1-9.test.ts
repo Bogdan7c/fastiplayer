@@ -51,14 +51,15 @@ const DOCUMENTED: readonly { json: string; value: PageSessionMessage }[] = [
   { json: '{"type":"page_title_changed","title":""}', value: { type: "page_title_changed", title: "" } },
 ];
 
-test("в 1.9 ровно два новых сообщения страницы; экстеншен реализует именно 1.9", () => {
+test("в 1.9 ровно два новых сообщения страницы; экстеншен реализует 1.9 или новее", () => {
   assert.deepEqual(newerIn19("page_session").sort(), ["awaiting_next_episode", "page_title_changed"]);
   assert.deepEqual(newerIn19("player_session"), []);
   for (const { value } of DOCUMENTED) {
     assert.deepEqual(pageSessionIntroducedIn(value.type), PROTOCOL_VERSION_1_9);
     assert.deepEqual(pageSessionRequiredVersion(value), PROTOCOL_VERSION_1_9);
   }
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_9);
+  // С 1.10 экстеншен говорит на более новой версии, а 1.9 в неё входит.
+  assert.equal(versionIncludes(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_9), true);
 });
 
 test("awaiting_next_episode и page_title_changed пишутся ровно задокументированным JSON и читаются обратно", () => {

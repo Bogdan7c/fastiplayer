@@ -14,8 +14,8 @@
 
 Нужны только медиа из fixtures/media/ (их делает media/generate.sh). Скрипт
 стирает и пересоздаёт control/, session/, data/, streams/, manifest.json,
-resource-addresses.json, message-versions.json, value-versions.json и
-page-subtitle-gate.json.
+resource-addresses.json, message-versions.json, value-versions.json,
+field-versions.json и page-subtitle-gate.json.
 """
 
 from __future__ import annotations
@@ -793,6 +793,10 @@ def write_player_session(manifest: Manifest) -> None:
             {"type": "clock", "seq": 812, "position_us": 1_029_250_000, "state": "playing", "rate": 1000},
         ),
         ("clock-waiting", {"type": "clock", "seq": 813, "position_us": 1_029_500_000, "state": "waiting", "rate": 1500}),
+        # Протокол 1.10 (решение 311): тик называет поколение, которое описывает. Поле последнее.
+        ("clock-with-generation", clock_with_generation(2)),
+        ("clock-ended-of-generation-1", {**clock_with_generation(1), "state": "ended", "position_us": 12_000_000}),
+        ("clock-generation-u32-max", clock_with_generation(U32_MAX)),
         (
             "buffer-state-full",
             {"type": "buffer_state", "generation": 3, "ahead_us": 118_000_000, "intake": "full"},
@@ -877,10 +881,35 @@ def write_player_session(manifest: Manifest) -> None:
         compact_json({"type": "clock", "seq": 1, "position_us": 0, "state": "rewinding", "rate": 1000}),
         "unknown_value",
     )
+    write_invalid_clock_generation(manifest)
     write_invalid_fetch_resource(manifest)
     write_invalid_live_window(manifest)
     write_invalid_reopen_page(manifest)
     write_invalid_show_page(manifest)
+
+
+def clock_with_generation(generation: Any) -> dict[str, Any]:
+    """Тик часов протокола 1.10: прежние поля и `generation` ПОСЛЕДНИМ (порядок записи обеих сторон)."""
+    return {"type": "clock", "seq": 42, "position_us": 11_100_000, "state": "playing", "rate": 1000, "generation": generation}
+
+
+def write_invalid_clock_generation(manifest: Manifest) -> None:
+    """Плохой номер поколения в тике (протокол 1.10).
+
+    Поле необязательное, но «номера нет» на проводе — только отсутствие ключа: `null` —
+    `wrong_value_type`, как у любого поля протокола. Поколения считаются с 1: ноль,
+    отрицательное и больше `u32` — `number_out_of_range`; строка и дробь — `wrong_value_type`.
+    """
+    invalid = "session/invalid/player-clock-generation-"
+    for name, generation, kind in [
+        ("as-null", None, "wrong_value_type"),
+        ("as-string", "2", "wrong_value_type"),
+        ("fractional", 1.5, "wrong_value_type"),
+        ("zero", 0, "number_out_of_range"),
+        ("negative", -1, "number_out_of_range"),
+        ("beyond-u32", U32_MAX + 1, "number_out_of_range"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", "player_session", compact_json(clock_with_generation(generation)), kind)
 
 
 def write_invalid_reopen_page(manifest: Manifest) -> None:
@@ -1724,6 +1753,25 @@ def write_value_versions() -> None:
     )
 
 
+# В какой версии протокола появилось каждое НЕОБЯЗАТЕЛЬНОЕ ПОЛЕ старого сообщения (с 1.10).
+# Сторона → «сообщение.поле» → версия. Сообщение с таким полем требует общей версии не ниже
+# версии поля (`required_version` обеих сторон), без поля — версии своего типа. Версии здесь
+# текстом, а сравнивать их надо ЧИСЛАМИ: "1.10" как строка меньше "1.9".
+FIELD_VERSIONS: dict[str, dict[str, str]] = {
+    "page_session": {},
+    "player_session": {
+        # Сессия 16a2, решение 311: номер поколения, которое описывает тик часов.
+        "clock.generation": "1.10",
+    },
+}
+
+
+def write_field_versions() -> None:
+    (FIXTURES_ROOT / "field-versions.json").write_bytes(
+        json.dumps(FIELD_VERSIONS, ensure_ascii=False, indent=2).encode() + b"\n"
+    )
+
+
 def write_quality_switch_stream(manifest: Manifest) -> None:
     """5. Смена качества новым MediaSource три раза подряд (сессия 03e).
 
@@ -2170,6 +2218,7 @@ def main() -> None:
     write_resource_addresses()
     write_message_versions()
     write_value_versions()
+    write_field_versions()
     (FIXTURES_ROOT / "manifest.json").write_bytes(
         json.dumps({"cases": manifest.cases, "streams": manifest.streams}, ensure_ascii=False, indent=2).encode()
         + b"\n"

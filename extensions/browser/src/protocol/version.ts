@@ -31,6 +31,10 @@
 // `awaiting_next_episode` (ждём новый источник после конца серии) и `page_title_changed` (заголовок вкладки
 // сменился), код закрытия 4011 `next_episode_not_started` (новый источник не пришёл за срок; со старым плеером -
 // прежний 4009). Договор - `session/episode-change.ts`.
+// 1.10 (сессия 16a2, решение 311) - первое необязательное ПОЛЕ старого сообщения, а не новое сообщение: тик
+// плеер -> страница `clock` может нести `generation` - номер поколения, которое он описывает. Без номера тень не
+// отличает часы прошлого видео от часов нового. Первая двузначная minor: версии сравниваются числами, а не текстом
+// ("1.10" как строка меньше "1.9"). Договор - `session/clock-generation.ts`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -71,8 +75,11 @@ export const PROTOCOL_VERSION_1_8: ProtocolVersion = Object.freeze({ major: 1, m
 /** Смена серии на той же странице: `awaiting_next_episode`, `page_title_changed`, код 4011 (сессия 16a). */
 export const PROTOCOL_VERSION_1_9: ProtocolVersion = Object.freeze({ major: 1, minor: 9 });
 
+/** Номер поколения в тике часов: необязательное поле `clock.generation` (сессия 16a2, решение 311). */
+export const PROTOCOL_VERSION_1_10: ProtocolVersion = Object.freeze({ major: 1, minor: 10 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_9;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_10;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

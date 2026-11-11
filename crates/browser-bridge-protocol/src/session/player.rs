@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::codec::ProtocolMessage;
 use crate::error::ValueViolation;
 use crate::resource::{ResourceByteRange, ResourceFetchLength, ResourceHandle};
+use crate::session::clock_generation::CLOCK_GENERATION_INTRODUCED_IN;
 use crate::session::live_window::LiveSeekable;
 use crate::session::page_subtitles::{SUBTITLE_CHOICE_INTRODUCED_IN, SubtitleChoice};
 use crate::session::variants::VariantKind;
@@ -106,6 +107,18 @@ pub enum PlayerSessionMessage {
         state: ClockState,
         /// Скорость.
         rate: PlaybackRate,
+        /// Поколение, которое описывает этот тик (протокол 1.10, решение 311; договор —
+        /// [`crate::session::clock_generation`]).
+        ///
+        /// Нужно тени страницы, чтобы отличить часы прошлого видео (плеер ещё доигрывает или
+        /// держит старое поколение) от часов текущего. `None` — ключа на проводе нет: общая
+        /// версия ниже 1.10 или поколения у плеера ещё нет. Поле последнее, `null` отвергается.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::strict_shape::optional_field"
+        )]
+        generation: Option<StreamGeneration>,
     },
     /// Сколько буфера впереди и принимает ли плеер ещё.
     BufferState {
@@ -285,6 +298,25 @@ impl PlayerSessionMessage {
             | Self::SkipAd {}
             | Self::FetchRange { .. }
             | Self::StreamRejected { .. } => ProtocolVersion::V1_0,
+        }
+    }
+
+    /// Самая старая общая версия сеанса, при которой плеер вправе послать именно это
+    /// сообщение: самая новая из версий его типа ([`Self::introduced_in`]) и его полей.
+    ///
+    /// Зеркало `PageSessionMessage::required_version`. Новое необязательное поле старого
+    /// сообщения (1.10: `clock.generation`) версионируется здесь: тик без номера — форма 1.0,
+    /// с номером — 1.10. Совпадает с общими таблицами `fixtures/message-versions.json` и
+    /// `fixtures/field-versions.json` (сверяет `tests/fixtures.rs`).
+    #[must_use]
+    pub const fn required_version(&self) -> ProtocolVersion {
+        match self {
+            // Тип `clock` из 1.0, поэтому версия поля всегда не старше типа.
+            Self::Clock {
+                generation: Some(_),
+                ..
+            } => CLOCK_GENERATION_INTRODUCED_IN,
+            other => other.introduced_in(),
         }
     }
 }

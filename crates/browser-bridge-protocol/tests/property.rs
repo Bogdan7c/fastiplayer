@@ -532,6 +532,8 @@ fn random_player_message(generator: &mut Generator) -> PlayerSessionMessage {
                 ClockState::Ended,
             ]),
             rate: playback_rate(generator),
+            // Протокол 1.10: номер поколения есть не всегда — обе формы тика ходят обратно.
+            generation: generator.coin().then(|| generation(generator)),
         },
         2 => PlayerSessionMessage::BufferState {
             generation: generation(generator),

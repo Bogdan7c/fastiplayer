@@ -50,6 +50,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use serde::Deserialize;
 use serde::de::value::{MapAccessDeserializer, StrDeserializer};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, Visitor};
 
@@ -284,6 +285,31 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for TextOnlyVisitor<V> {
     fn visit_string<E: de::Error>(self, name: String) -> Result<Self::Value, E> {
         self.0.visit_string(name)
     }
+}
+
+/// Разбор НЕОБЯЗАТЕЛЬНОГО поля (первое — `clock.generation`, протокол 1.10): `None` только
+/// при отсутствии ключа, `null` — ошибка.
+///
+/// Используется вместе с `#[serde(default, skip_serializing_if = "Option::is_none")]`:
+/// - ключа нет — функцию не зовут, `default` даёт `None` (так пишет сторона старой версии);
+/// - ключ есть — значение обязано быть самим `T` по его строгим правилам;
+/// - `null` — `wrong_value_type`, как у любого другого поля протокола (фикстуры `*-as-null`).
+///
+/// Почему не стандартный разбор `Option<T>`: он принимает `null` как `None`, а запись
+/// `None` ключа не пишет — `{"generation":null}` не вернулся бы обратно байт в байт, и у
+/// одного смысла «номера нет» стало бы две формы на проводе. Одна форма — нет ключа.
+///
+/// `T` разбирается через типаж (`<T as Deserialize>`), а не по имени типа: у типов с
+/// `#[serde(remote = "Self")]` функция `T::deserialize` нестрогая (см. «Чего не делать»).
+///
+/// # Errors
+/// Ошибка разбора самого `T` (`null` — «invalid type», то есть `wrong_value_type`).
+pub(crate) fn optional_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    <T as Deserialize<'de>>::deserialize(deserializer).map(Some)
 }
 
 /// Общая часть макросов: запись — производная, производный разбор — через

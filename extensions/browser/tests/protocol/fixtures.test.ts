@@ -3,6 +3,8 @@
 // отвергается с ТОЧНЫМ видом причины. Расхождение с манифестом - ошибка TS-стороны.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -19,13 +21,16 @@ import {
   encodePageSession,
   encodePlayerControl,
   encodePlayerSession,
+  pageSessionRequiredVersion,
+  playerSessionRequiredVersion,
   type DataFrameHeader,
   type DecodeResult,
   type EncodeResult,
+  type ProtocolVersion,
 } from "../../src/protocol/index.ts";
 import { pageSessionCodec } from "../../src/protocol/session/page.ts";
 import { playerSessionCodec } from "../../src/protocol/session/player.ts";
-import { type FixtureCase, loadManifest, readFixtureBytes } from "./fixtures-support.ts";
+import { FIXTURES_ROOT, type FixtureCase, loadManifest, readFixtureBytes } from "./fixtures-support.ts";
 
 interface JsonSchemaOps {
   readonly decode: (input: Uint8Array) => DecodeResult<{ readonly type: string }>;
@@ -146,6 +151,69 @@ test("у каждой схемы валидные фикстуры покрыв�
   assert.deepEqual([...new Set(coveredTypes("player_session"))].sort(), [...playerSessionCodec.knownTags].sort());
   assert.equal(new Set(coveredTypes("page_session")).size, 27);
   assert.equal(new Set(coveredTypes("player_session")).size, 18);
+});
+
+// ---------------------------------------------------------------- версия каждой валидной фикстуры сеанса
+
+type SideTable = Readonly<Record<"page_session" | "player_session", Readonly<Record<string, string>>>>;
+
+const readTable = <T>(name: string): T => JSON.parse(readFileSync(join(FIXTURES_ROOT, name), "utf8")) as T;
+
+/** Версия из текста таблицы - ЧИСЛАМИ: "1.10" как строка меньше "1.9". */
+function versionOf(text: string): ProtocolVersion {
+  const [major, minor] = text.split(".").map(Number);
+  assert.ok(Number.isInteger(major) && Number.isInteger(minor), `версия ${text}`);
+  return { major: major ?? Number.NaN, minor: minor ?? Number.NaN };
+}
+
+/** Более новая из двух версий одного major (в таблицах только major 1). */
+const newerOf = (left: ProtocolVersion, right: ProtocolVersion): ProtocolVersion => (right.minor > left.minor ? right : left);
+
+const types = readTable<SideTable>("message-versions.json");
+const fields = readTable<SideTable>("field-versions.json");
+const values = readTable<Readonly<Record<string, Readonly<Record<string, string>>>>>("value-versions.json");
+
+/**
+ * Версия, которой по общим таблицам требует сообщение фикстуры: самая новая из версии типа (message-versions.json),
+ * версий присутствующих необязательных полей (field-versions.json, с 1.10) и версий значений (value-versions.json,
+ * с 1.3). Независимая от кода оценка: только JSON фикстуры и таблицы.
+ */
+function tableRequiredVersion(message: Readonly<Record<string, unknown>>, side: "page_session" | "player_session"): ProtocolVersion {
+  const type = String(message["type"]);
+  let required = versionOf(types[side][type] ?? "");
+  for (const [field, value] of Object.entries(message)) {
+    const key = `${type}.${field}`;
+    const fieldVersion = fields[side][key];
+    if (fieldVersion !== undefined) required = newerOf(required, versionOf(fieldVersion));
+    const valueVersion = typeof value === "string" ? values[key]?.[value] : undefined;
+    if (valueVersion !== undefined) required = newerOf(required, versionOf(valueVersion));
+  }
+  return required;
+}
+
+test("каждая валидная фикстура сеанса требует ровно ту версию, что дают общие таблицы (тик с номером - 1.10)", () => {
+  let ticksWithGeneration = 0;
+  for (const fixture of manifest.cases) {
+    if (fixture.expect.result !== "ok" || (fixture.schema !== "page_session" && fixture.schema !== "player_session")) continue;
+    const bytes = readFixtureBytes(fixture.file);
+    const json = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+    const expected = tableRequiredVersion(json, fixture.schema);
+    if (fixture.schema === "page_session") {
+      const decoded = decodePageSession(bytes);
+      assert.ok(decoded.ok, fixture.file);
+      assert.deepEqual(pageSessionRequiredVersion(decoded.value), expected, fixture.file);
+    } else {
+      const decoded = decodePlayerSession(bytes);
+      assert.ok(decoded.ok, fixture.file);
+      assert.deepEqual(playerSessionRequiredVersion(decoded.value), expected, fixture.file);
+      if (json["type"] === "clock" && "generation" in json) {
+        assert.deepEqual(expected, { major: 1, minor: 10 }, fixture.file);
+        ticksWithGeneration += 1;
+      }
+    }
+  }
+  // Проверка не пустая: тики с номером поколения среди фикстур есть.
+  assert.ok(ticksWithGeneration >= 3, `тиков с номером: ${ticksWithGeneration}`);
 });
 
 // ---------------------------------------------------------------- предел размера (каждая сторона собирает сама)

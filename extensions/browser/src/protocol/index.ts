@@ -137,6 +137,7 @@ export {
   pageTitleChangedMessage,
 } from "./session/episode-change.ts";
 export { VARIANT_OUTCOMES, variantOutcomeCodec, variantRequestCodec } from "./session/variant-outcome.ts";
+export { CLOCK_GENERATION_INTRODUCED_IN } from "./session/clock-generation.ts";
 export type { NextEpisodeAvailability } from "./session/page-navigation.ts";
 export { NEXT_EPISODE_AVAILABILITIES } from "./session/page-navigation.ts";
 export { PAGE_SUBTITLE_DISPLAYS, PAGE_SUBTITLE_ORIGINS, SUBTITLE_FORMAT_HINTS } from "./session/page-subtitles.ts";
@@ -163,6 +164,7 @@ export {
   pageSessionIntroducedIn,
   pageSessionRequiredVersion,
   playerSessionIntroducedIn,
+  playerSessionRequiredVersion,
   tabGoneReasonIntroducedIn,
 } from "./session/introduced-in.ts";
 
@@ -178,6 +180,7 @@ export {
   PROTOCOL_VERSION_1_7,
   PROTOCOL_VERSION_1_8,
   PROTOCOL_VERSION_1_9,
+  PROTOCOL_VERSION_1_10,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";

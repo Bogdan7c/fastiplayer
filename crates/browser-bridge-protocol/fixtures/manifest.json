@@ -967,6 +967,27 @@
       }
     },
     {
+      "file": "session/valid/player-clock-with-generation.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-clock-ended-of-generation-1.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-clock-generation-u32-max.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/player-buffer-state-full.json",
       "schema": "player_session",
       "expect": {
@@ -1164,6 +1185,54 @@
       "expect": {
         "result": "error",
         "kind": "unknown_value"
+      }
+    },
+    {
+      "file": "session/invalid/player-clock-generation-as-null.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-clock-generation-as-string.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-clock-generation-fractional.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "wrong_value_type"
+      }
+    },
+    {
+      "file": "session/invalid/player-clock-generation-zero.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-clock-generation-negative.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-clock-generation-beyond-u32.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
       }
     },
     {

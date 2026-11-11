@@ -56,6 +56,7 @@ fn clock_tick(sequence: u32) -> PlayerSessionMessage {
         position_us: MediaTime::from_micros(12_000_000).unwrap(),
         state: ClockState::Paused,
         rate: PlaybackRate::NORMAL,
+        generation: None,
     }
 }
 

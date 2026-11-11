@@ -75,6 +75,7 @@ fn clock(seq: u32, position_us: u64, state: ClockState, permille: u32) -> Player
         position_us: micros(position_us),
         state,
         rate: PagePlaybackRate::from_permille(permille).expect("rate"),
+        generation: None,
     }
 }
 

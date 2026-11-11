@@ -100,7 +100,8 @@ fn protocol_1_9_adds_exactly_the_two_episode_change_messages() {
         // Оба слова не про поток: поколение их не касается.
         assert_eq!(message.stream_scope(), StreamScope::Unbound);
     }
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::V1_9);
+    // С 1.10 crate говорит на более новой версии, а 1.9 в неё входит.
+    assert!(CURRENT_PROTOCOL_VERSION.includes(ProtocolVersion::V1_9));
 }
 
 #[test]
