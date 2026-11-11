@@ -177,3 +177,107 @@ fn next_presses_the_ad_offer_first_then_asks_for_the_next_episode() {
     assert_eq!(browser.activate_next(), NextActivation::NothingToDo);
     assert_eq!(drained_intents(&mut browser), vec![]);
 }
+
+// ---- тосты исхода выбора (15c2) ------------------------------------------------------
+
+/// Тексты видимых плашек центра (новые сверху).
+fn visible_toast_texts(center: &mut NotificationCenter, now: Instant) -> Vec<String> {
+    center
+        .frame(
+            crate::state::notifications::OpenProgress::Idle,
+            crate::ui::animation::UiMotion::Standard,
+            now,
+        )
+        .toasts
+        .iter()
+        .map(|toast| toast.message.to_string())
+        .collect()
+}
+
+fn show_all(center: &mut NotificationCenter, notices: &[PageVariantNotice], now: Instant) {
+    for notice in notices {
+        show_page_variant_toast(center, notice, now);
+    }
+}
+
+#[test]
+fn audio_switching_is_replaced_by_the_refusal_reason_in_one_toast() {
+    use crate::page_variants::{PageVariantRefusal, PageVariantSubject};
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    show_all(
+        &mut center,
+        &[PageVariantNotice::Switching {
+            kind: PageVariantKind::Audio,
+        }],
+        now,
+    );
+    assert_eq!(
+        visible_toast_texts(&mut center, now),
+        ["Switching audio on the page\u{2026}"]
+    );
+    show_all(
+        &mut center,
+        &[PageVariantNotice::Refused {
+            subject: PageVariantSubject::Menu(PageVariantKind::Audio),
+            reason: PageVariantRefusal::NoSuchEpisode,
+        }],
+        now,
+    );
+    assert_eq!(
+        visible_toast_texts(&mut center, now),
+        ["This dub has no such episode \u{2014} pick an earlier episode on the page"]
+    );
+}
+
+#[test]
+fn quality_switching_is_replaced_by_done_and_does_not_touch_the_audio_toast() {
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    show_all(
+        &mut center,
+        &[
+            PageVariantNotice::Switching {
+                kind: PageVariantKind::Audio,
+            },
+            PageVariantNotice::Switching {
+                kind: PageVariantKind::Quality,
+            },
+            PageVariantNotice::Selected {
+                kind: PageVariantKind::Quality,
+                label: Arc::from("720p"),
+            },
+        ],
+        now,
+    );
+    assert_eq!(
+        visible_toast_texts(&mut center, now),
+        ["Quality: 720p", "Switching audio on the page\u{2026}"]
+    );
+}
+
+#[test]
+fn the_next_episode_refusal_replaces_its_own_toast_and_subtitles_show_none() {
+    use crate::page_variants::{PageVariantRefusal, PageVariantSubject};
+    let now = Instant::now();
+    let mut center = NotificationCenter::default();
+    show_all(
+        &mut center,
+        &[
+            PageVariantNotice::NextEpisodeRequested,
+            PageVariantNotice::Refused {
+                subject: PageVariantSubject::NextEpisode,
+                reason: PageVariantRefusal::Failed,
+            },
+            PageVariantNotice::Selected {
+                kind: PageVariantKind::Subtitles,
+                label: Arc::from("uk"),
+            },
+        ],
+        now,
+    );
+    assert_eq!(
+        visible_toast_texts(&mut center, now),
+        ["Could not open the next episode on the page"]
+    );
+}

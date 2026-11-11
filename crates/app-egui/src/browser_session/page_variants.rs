@@ -26,7 +26,8 @@
 use std::sync::Arc;
 
 use browser_bridge_protocol::session::{
-    NextEpisodeAvailability, SubtitleChoice, VariantKind, VariantMenu, VariantSelection,
+    NextEpisodeAvailability, SubtitleChoice, VariantKind, VariantMenu, VariantOutcome,
+    VariantRequest, VariantSelection,
 };
 use browser_bridge_protocol::text::VariantId;
 
@@ -46,6 +47,28 @@ pub(crate) enum PageVariantUpdate {
     /// Подсказка субтитров для этой серии (`subtitle_preference`, 1.7). Её склад — не этот, а
     /// склад субтитров сеанса (`page_subtitles::shelf`): там её прочтёт владелец субтитров.
     SubtitlePreference(SubtitleChoice),
+    /// Исход выбора зрителя (`variant_outcome`, 1.8, сессия 15c2): склад меню его не читает,
+    /// сверяет со своим ожидающим выбором медиа-часть (`session_media::page_variant_outcome`).
+    Outcome(PageVariantOutcomeWord),
+}
+
+/// Слово страницы «чем кончилась просьба плеера» (протокол 1.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PageVariantOutcomeWord {
+    /// На какую просьбу плеера это ответ.
+    pub(crate) request: VariantRequest,
+    /// Что сделала страница.
+    pub(crate) outcome: VariantOutcome,
+}
+
+/// О чём исход: у каждого предмета своё место в ящике, чтобы меню или навигация не вытеснили
+/// ещё не прочитанный исход, а новый исход того же предмета заменил старый.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeSubject {
+    /// Выбор пункта меню этого вида.
+    Menu(VariantKind),
+    /// Следующая серия.
+    NextEpisode,
 }
 
 /// Место слова в ящике: новое слово того же места вытесняет неисполненное старое
@@ -58,6 +81,8 @@ pub(crate) enum PageVariantSlot {
     Navigation,
     /// Подсказка субтитров.
     SubtitlePreference,
+    /// Исход выбора зрителя по этому предмету (свои места, не пересекаются с меню).
+    Outcome(OutcomeSubject),
 }
 
 impl PageVariantUpdate {
@@ -67,6 +92,10 @@ impl PageVariantUpdate {
             Self::Menu(menu) => PageVariantSlot::Menu(menu.kind),
             Self::Navigation(_) => PageVariantSlot::Navigation,
             Self::SubtitlePreference(_) => PageVariantSlot::SubtitlePreference,
+            Self::Outcome(word) => PageVariantSlot::Outcome(match &word.request {
+                VariantRequest::SelectVariant { menu, .. } => OutcomeSubject::Menu(*menu),
+                VariantRequest::NextEpisode {} => OutcomeSubject::NextEpisode,
+            }),
         }
     }
 }

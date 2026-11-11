@@ -21,6 +21,8 @@ use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
+use super::page_variant_outcome::PendingVariantRequests;
+
 use super::SessionMedia;
 use super::position_carry::{CarryEnd, PositionCarry, PositionCarryPolicy};
 use crate::browser_session::outbound::{
@@ -79,7 +81,9 @@ pub(super) struct SessionPageVariants {
     /// Возврат на секунду после выбора (решение 280).
     pub(super) carry: PositionCarry,
     /// Что сказать зрителю тостом (одно слово за шаг).
-    notice: Option<PageVariantNotice>,
+    pub(super) notice: Option<PageVariantNotice>,
+    /// Просьбы зрителя, ждущие исхода от страницы (1.8, `page_variant_outcome`).
+    pub(super) pending: PendingVariantRequests,
 }
 
 impl SessionPageVariants {
@@ -89,6 +93,7 @@ impl SessionPageVariants {
             shelf: PageVariantShelf::default(),
             carry: PositionCarry::new(PositionCarryPolicy::recommended()),
             notice: None,
+            pending: PendingVariantRequests::default(),
         }
     }
 
@@ -97,6 +102,7 @@ impl SessionPageVariants {
         self.shelf.start_new_session();
         self.carry.forget(CarryEnd::NewSession);
         self.notice = None;
+        self.pending.clear();
     }
 }
 
@@ -136,6 +142,8 @@ impl SessionMedia {
             PageVariantUpdate::SubtitlePreference(choice) => {
                 self.note_page_subtitle_preference(choice);
             }
+            // Исход выбора зрителя (1.8): сверка с ожидающим выбором и тост — отдельный модуль.
+            PageVariantUpdate::Outcome(word) => self.apply_variant_outcome(word),
         }
     }
 
@@ -188,7 +196,7 @@ impl SessionMedia {
         };
         match self
             .outbound
-            .request_select_variant(found.kind, found.variant_id)
+            .request_select_variant(found.kind, found.variant_id.clone())
         {
             SelectVariantSendOutcome::Queued => {}
             SelectVariantSendOutcome::NotAttachedYet => {
@@ -201,17 +209,8 @@ impl SessionMedia {
             choice.kind.log_label(),
             choice.index.get()
         );
-        // Субтитры поколения не меняют (страница лишь скачивает ещё один документ): ни
-        // возврата секунды, ни тоста о смене варианта, иначе взведённый возврат дождался бы
-        // чужого поколения (например, после рекламы) и сдвинул бы видео.
-        if choice.kind.selection_restarts_media() {
-            // Решение 280: новое поколение после смены встанет на секунду зрителя.
-            self.arm_position_carry(now);
-            self.variants.notice = Some(PageVariantNotice::Selected {
-                kind: choice.kind,
-                label: found.label,
-            });
-        }
+        // Ожидание исхода, возврат секунды и тост — `after_selection_sent`.
+        self.after_selection_sent(choice.kind, found.variant_id, found.label, now);
         PageVariantRequestOutcome::Queued
     }
 
@@ -241,6 +240,7 @@ impl SessionMedia {
         // Следующая серия начинается сначала: позицию прежней не переносим.
         self.forget_position_carry(CarryEnd::NextEpisode);
         self.variants.notice = Some(PageVariantNotice::NextEpisodeRequested);
+        self.after_next_episode_sent();
         NextEpisodeRequestOutcome::Queued
     }
 

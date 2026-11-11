@@ -520,3 +520,71 @@ fn a_newer_variant_menu_replaces_the_pending_one_of_its_kind_only() {
         "the newest word of every place is delivered, the stale ones are gone"
     );
 }
+
+#[test]
+fn a_variant_outcome_has_its_own_place_and_is_replaced_only_by_a_newer_one_of_its_subject() {
+    use crate::browser_session::page_variants::{PageVariantOutcomeWord, PageVariantUpdate};
+    use browser_bridge_protocol::session::{
+        VariantKind, VariantMenu, VariantOutcome, VariantRequest,
+    };
+    use browser_bridge_protocol::text::VariantId;
+
+    let (inbox, _wake) = inbox_with(InboxCapacity {
+        intake_notices: 1,
+        ..InboxCapacity::default()
+    });
+    let outcome = |request: VariantRequest, outcome: VariantOutcome| IntakeNotice::PageVariants {
+        session: session("a"),
+        update: PageVariantUpdate::Outcome(PageVariantOutcomeWord { request, outcome }),
+    };
+    let select = |menu: VariantKind, variant: &str| VariantRequest::SelectVariant {
+        menu,
+        variant_id: VariantId::new(variant).expect("id"),
+    };
+    let audio_menu = IntakeNotice::PageVariants {
+        session: session("a"),
+        update: PageVariantUpdate::Menu(VariantMenu {
+            kind: VariantKind::Audio,
+            options: Vec::new(),
+        }),
+    };
+    // Ящик полон: меню того же вида НЕ вытесняет исход озвучки, исход качества — тоже, а
+    // новый исход озвучки заменяет прежний неисполненный.
+    inbox.post_intake_notices([
+        outcome(select(VariantKind::Audio, "old"), VariantOutcome::Failed),
+        audio_menu,
+        outcome(select(VariantKind::Quality, "720"), VariantOutcome::Done),
+        outcome(
+            select(VariantKind::Audio, "new"),
+            VariantOutcome::PersonOnly,
+        ),
+        outcome(VariantRequest::NextEpisode {}, VariantOutcome::Failed),
+    ]);
+    let words: Vec<_> = inbox
+        .take_batch()
+        .intake_notices
+        .iter()
+        .map(|notice| match notice {
+            IntakeNotice::PageVariants {
+                update: PageVariantUpdate::Menu(menu),
+                ..
+            } => format!("menu {:?}", menu.kind),
+            IntakeNotice::PageVariants {
+                update: PageVariantUpdate::Outcome(word),
+                ..
+            } => format!("outcome {:?} {:?}", word.request, word.outcome),
+            other => panic!("unexpected notice {other:?}"),
+        })
+        .collect();
+    assert_eq!(words.len(), 4, "{words:?}");
+    assert!(words[0].starts_with("menu Audio"), "{words:?}");
+    assert!(
+        words[1].contains("Quality") && words[1].contains("Done"),
+        "{words:?}"
+    );
+    assert!(
+        words[2].contains("\"new\"") && words[2].contains("PersonOnly"),
+        "the newer audio outcome replaced the older one: {words:?}"
+    );
+    assert!(words[3].contains("NextEpisode"), "{words:?}");
+}

@@ -45,6 +45,15 @@ impl PageVariantKind {
         }
     }
 
+    /// Существительное для тоста «Switching audio on the page…».
+    pub(crate) const fn viewer_noun(self) -> &'static str {
+        match self {
+            Self::Audio => "audio",
+            Self::Quality => "quality",
+            Self::Subtitles => "subtitles",
+        }
+    }
+
     /// Рождает ли выбор пункта этого вида новое поколение медиа (и значит, нужен возврат
     /// секунды зрителя, решение 280). Озвучка и качество переоткрывают поток; субтитры —
     /// нет: страница просто скачивает ещё один документ, видео идёт как шло.
@@ -268,7 +277,8 @@ impl PageVariantFacts {
 /// Что сказать зрителю тостом после принятого действия (одно слово за шаг).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PageVariantNotice {
-    /// Выбор ушёл странице: «Audio: <подпись>» / «Quality: <подпись>».
+    /// Выбор ушёл странице и (с 1.8) страница его выполнила либо (до 1.8) исхода не будет:
+    /// «Audio: <подпись>» / «Quality: <подпись>».
     Selected {
         /// Вид меню.
         kind: PageVariantKind,
@@ -277,6 +287,39 @@ pub(crate) enum PageVariantNotice {
     },
     /// Просьба о следующей серии ушла странице: «Next episode».
     NextEpisodeRequested,
+    /// Выбор ушёл странице, исход ещё неизвестен (15c2, страница 1.8+): «Switching audio on
+    /// the page…». Позже его заменит `Selected` или `Refused` того же вида.
+    Switching {
+        /// Вид меню (озвучка или качество: у субтитров слов о смене нет).
+        kind: PageVariantKind,
+    },
+    /// Страница не выполнила просьбу зрителя (15c2): причина вместо «Switching…».
+    Refused {
+        /// Что просили.
+        subject: PageVariantSubject,
+        /// Почему не вышло.
+        reason: PageVariantRefusal,
+    },
+}
+
+/// О чём просил зритель, когда страница отказала.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageVariantSubject {
+    /// Пункт меню этого вида.
+    Menu(PageVariantKind),
+    /// Следующая серия.
+    NextEpisode,
+}
+
+/// Почему страница не выполнила просьбу (слова протокола 1.8 без `done`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageVariantRefusal {
+    /// У новой озвучки нет текущей серии (решение 295).
+    NoSuchEpisode,
+    /// Сайт принимает этот выбор только от человека на самой странице.
+    PersonOnly,
+    /// Не вышло по другой причине.
+    Failed,
 }
 
 /// Текст тоста о следующей серии.
@@ -288,6 +331,44 @@ impl PageVariantNotice {
         match self {
             Self::Selected { kind, label } => format!("{}: {label}", kind.viewer_title()),
             Self::NextEpisodeRequested => NEXT_EPISODE_TOAST.to_owned(),
+            Self::Switching { kind } => {
+                format!("Switching {} on the page\u{2026}", kind.viewer_noun())
+            }
+            Self::Refused { subject, reason } => refusal_text(*subject, *reason).to_owned(),
+        }
+    }
+}
+
+/// Текст отказа страницы. «Нет такой серии» возможно только у озвучки (договор протокола):
+/// для остальных предметов это обычный сбой.
+const fn refusal_text(subject: PageVariantSubject, reason: PageVariantRefusal) -> &'static str {
+    match (subject, reason) {
+        (PageVariantSubject::Menu(PageVariantKind::Audio), PageVariantRefusal::NoSuchEpisode) => {
+            "This dub has no such episode \u{2014} pick an earlier episode on the page"
+        }
+        (PageVariantSubject::Menu(PageVariantKind::Audio), PageVariantRefusal::PersonOnly) => {
+            "Audio can be switched only on the page"
+        }
+        (PageVariantSubject::Menu(PageVariantKind::Quality), PageVariantRefusal::PersonOnly) => {
+            "Quality can be changed only on the page"
+        }
+        (PageVariantSubject::NextEpisode, PageVariantRefusal::PersonOnly) => {
+            "The next episode can be opened only on the page"
+        }
+        (PageVariantSubject::Menu(PageVariantKind::Audio), PageVariantRefusal::Failed) => {
+            "Could not switch audio on the page"
+        }
+        (
+            PageVariantSubject::Menu(PageVariantKind::Quality),
+            PageVariantRefusal::Failed | PageVariantRefusal::NoSuchEpisode,
+        ) => "Could not change quality on the page",
+        (
+            PageVariantSubject::NextEpisode,
+            PageVariantRefusal::Failed | PageVariantRefusal::NoSuchEpisode,
+        ) => "Could not open the next episode on the page",
+        // Субтитры тостов не дают (сессия таких слов не рождает); текст — запасной.
+        (PageVariantSubject::Menu(PageVariantKind::Subtitles), _) => {
+            "Could not change subtitles on the page"
         }
     }
 }
@@ -396,6 +477,54 @@ mod tests {
         assert_eq!(
             PageVariantNotice::NextEpisodeRequested.toast_text(),
             "Next episode"
+        );
+    }
+
+    #[test]
+    fn switching_and_refusal_toasts_say_what_happened_in_plain_english() {
+        let switching = |kind| PageVariantNotice::Switching { kind }.toast_text();
+        assert_eq!(
+            switching(PageVariantKind::Audio),
+            "Switching audio on the page\u{2026}"
+        );
+        assert_eq!(
+            switching(PageVariantKind::Quality),
+            "Switching quality on the page\u{2026}"
+        );
+        let refused = |subject, reason| PageVariantNotice::Refused { subject, reason }.toast_text();
+        let audio = PageVariantSubject::Menu(PageVariantKind::Audio);
+        let quality = PageVariantSubject::Menu(PageVariantKind::Quality);
+        assert_eq!(
+            refused(audio, PageVariantRefusal::NoSuchEpisode),
+            "This dub has no such episode \u{2014} pick an earlier episode on the page"
+        );
+        assert_eq!(
+            refused(audio, PageVariantRefusal::PersonOnly),
+            "Audio can be switched only on the page"
+        );
+        assert_eq!(
+            refused(audio, PageVariantRefusal::Failed),
+            "Could not switch audio on the page"
+        );
+        assert_eq!(
+            refused(quality, PageVariantRefusal::PersonOnly),
+            "Quality can be changed only on the page"
+        );
+        // Для качества «нет такой серии» невозможно по договору: читается как сбой.
+        assert_eq!(
+            refused(quality, PageVariantRefusal::NoSuchEpisode),
+            "Could not change quality on the page"
+        );
+        assert_eq!(
+            refused(
+                PageVariantSubject::NextEpisode,
+                PageVariantRefusal::PersonOnly
+            ),
+            "The next episode can be opened only on the page"
+        );
+        assert_eq!(
+            refused(PageVariantSubject::NextEpisode, PageVariantRefusal::Failed),
+            "Could not open the next episode on the page"
         );
     }
 

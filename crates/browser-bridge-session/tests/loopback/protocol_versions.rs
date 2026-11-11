@@ -287,9 +287,14 @@ fn the_last_hello_of_the_caller_decides_the_version_of_its_next_session() {
 
 #[test]
 fn a_newer_extension_minor_is_held_to_the_players_version() {
-    // Экстеншен из будущего (1.7) с этим плеером говорит на 1.1: HLS принимается.
+    // Экстеншен из будущего (на одну minor новее плеера) говорит на версии плеера: HLS
+    // принимается. Номер берётся от текущей версии, чтобы тест не устаревал с каждой minor.
     let env = Env::start();
-    let mut socket = attached_after_hello(&env, ProtocolVersion { major: 1, minor: 7 });
+    let future_extension = ProtocolVersion {
+        minor: CURRENT_PROTOCOL_VERSION.minor + 1,
+        ..CURRENT_PROTOCOL_VERSION
+    };
+    let mut socket = attached_after_hello(&env, future_extension);
     assert_eq!(attached_version(&env), CURRENT_PROTOCOL_VERSION);
     send_text(&mut socket, GENERATION_1);
     send_text(&mut socket, HLS_SOURCE_1);

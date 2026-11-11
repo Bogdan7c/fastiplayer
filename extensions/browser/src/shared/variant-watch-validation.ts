@@ -112,7 +112,7 @@ export function parseVariantCommandRequest(value: unknown): VariantCommandReques
   return command === undefined ? undefined : { kind: VARIANT_COMMAND_KIND, command };
 }
 
-const ACTION_OUTCOMES: readonly VariantActionOutcome[] = ["done", "no_such_variant", "person_only", "failed"];
+const ACTION_OUTCOMES: readonly VariantActionOutcome[] = ["done", "no_such_variant", "no_such_episode", "person_only", "failed"];
 
 /** Ответ фрейма на команду (разбирает фон). Незнакомый ответ — `undefined`. */
 export function parseVariantActionOutcome(value: unknown): VariantActionOutcome | undefined {

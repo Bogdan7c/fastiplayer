@@ -128,6 +128,8 @@ export type {
   SubtitleFormatHint,
 } from "./session/page-subtitles.ts";
 export { subtitleChoiceCodec } from "./session/page-subtitles.ts";
+export type { VariantOutcome, VariantRequest } from "./session/variant-outcome.ts";
+export { VARIANT_OUTCOMES, variantOutcomeCodec, variantRequestCodec } from "./session/variant-outcome.ts";
 export type { NextEpisodeAvailability } from "./session/page-navigation.ts";
 export { NEXT_EPISODE_AVAILABILITIES } from "./session/page-navigation.ts";
 export { PAGE_SUBTITLE_DISPLAYS, PAGE_SUBTITLE_ORIGINS, SUBTITLE_FORMAT_HINTS } from "./session/page-subtitles.ts";
@@ -167,6 +169,7 @@ export {
   PROTOCOL_VERSION_1_5,
   PROTOCOL_VERSION_1_6,
   PROTOCOL_VERSION_1_7,
+  PROTOCOL_VERSION_1_8,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";

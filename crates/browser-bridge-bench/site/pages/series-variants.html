@@ -26,6 +26,11 @@ import { requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
 //   ждёт `<мс>` и кликает кнопку тем же обработчиком, каким жмёт человек, то есть пишет
 //   `generation cause=dub …`. Без параметра хука нет, поведение страницы прежнее. Подтверждение
 //   `ack hook:pick-dub` приходит ПОСЛЕ клика: робот знает, что выбор уже сделан.
+// - `&dub_episodes=<id озвучки>:<серия>,<серия>…` (15c2, решение 295) — у этой озвучки есть только
+//   перечисленные серии, как у отстающей озвучки Ashdi. Кнопка несёт `data-dub-episodes="2 3"`: по нему
+//   адаптер узнаёт, что у озвучки нет текущей серии, и отвечает `no_such_episode`, ничего не нажимая.
+//   Клик по такой кнопке (рукой человека) страница отклоняет и остаётся, где была:
+//   `dub refused dub=<id> episode=<серия>`, нового поколения нет.
 // Каждое новое поколение страница пишет в журнал строкой `generation …`: по ним судит стенд.
 
 /** Серии: один и тот же ассет с дорожками озвучек, ключ серии — номер. */
@@ -47,6 +52,7 @@ await runScenario('series-variants', async (ctx) => {
   const controls = document.getElementById('controls');
   const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
   const state = { episode: 1, dub: DUBS[0].id, quality: QUALITIES[0].id };
+  const dubEpisodes = parseDubEpisodes(ctx.params.raw.get('dub_episodes'));
   // Поколения, которые страница открыла САМА после передачи: их ждёт проверка «лишних MediaSource».
   // Номера поколений, которые открыла страница: память выбора экстеншена (14b2) может нажать озвучку
   // сразу при передаче, ещё ДО отметки окна, и такое поколение не «лишнее» в окне.
@@ -67,8 +73,15 @@ await runScenario('series-variants', async (ctx) => {
   const dubButtons = DUBS.map((dub) => {
     const element = Object.assign(document.createElement('button'), { textContent: dub.label });
     element.dataset.dub = dub.id;
+    const episodes = dubEpisodes.get(dub.id);
+    if (episodes !== undefined) element.dataset.dubEpisodes = episodes.join(' ');
     element.addEventListener('click', () => {
       if (state.dub === dub.id) return;
+      // Отстающая озвучка без текущей серии: страница остаётся на прежней озвучке (решение 295).
+      if (episodes !== undefined && !episodes.includes(String(state.episode))) {
+        ctx.log(`dub refused dub=${dub.id} episode=${state.episode}`);
+        return;
+      }
       state.dub = dub.id;
       renderDubs();
       void openGeneration('dub', 0);
@@ -117,6 +130,17 @@ await runScenario('series-variants', async (ctx) => {
     },
   };
 
+  // Серии отстающих озвучек: `dub-b:2,3` → {dub-b: ['2', '3']}. Разбор строгий, как у `pick_dub`.
+  function parseDubEpisodes(raw) {
+    const byDub = new Map();
+    if (raw === null) return byDub;
+    const match = /^([a-z0-9-]+):(\d+(?:,\d+)*)$/.exec(raw);
+    if (!match || !DUBS.some((dub) => dub.id === match[1])) {
+      throw new Error(`dub_episodes must look like <dub id>:<episode>,<episode> with a known dub id, got '${raw}'`);
+    }
+    byDub.set(match[1], match[2].split(','));
+    return byDub;
+  }
   // Выбор зрителя на странице (14b2): `pick_dub=dub-b@1500`. Разбор строгий: неизвестная озвучка или
   // кривое время — провал страницы, а не молчаливое «ничего не нажали».
   const pickDub = parsePickDub(ctx.params.raw.get('pick_dub'));

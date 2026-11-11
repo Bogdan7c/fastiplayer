@@ -786,6 +786,7 @@ mod page_quality;
 mod page_reopen;
 mod page_subtitle_choice;
 mod page_subtitles;
+mod page_variant_outcome;
 mod page_variants;
 mod seek_handover;
 mod viewer_click_claim;

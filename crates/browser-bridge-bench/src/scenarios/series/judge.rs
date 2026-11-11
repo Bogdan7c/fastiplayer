@@ -68,7 +68,7 @@ fn position_failures(selected_at: Duration, position: Option<Duration>) -> Vec<S
 }
 
 /// Общие провалы: посредник, отчёт страницы, запрещённые строки плеера.
-fn common_failures(
+pub(super) fn common_failures(
     page: &str,
     host: &HostLogEvidence,
     report: &Result<PageReport, SiteError>,

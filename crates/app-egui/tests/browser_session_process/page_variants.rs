@@ -29,6 +29,9 @@ use super::*;
 /// `hello` экстеншена протокола 1.7 (`page_navigation`).
 const HELLO_1_7: &str = r#"{"type":"hello","protocol":{"major":1,"minor":7},"software_version":"0.1.0","capabilities":[]}"#;
 
+/// `hello` экстеншена протокола 1.8 (`variant_outcome`, 15c2).
+const HELLO_1_8: &str = r#"{"type":"hello","protocol":{"major":1,"minor":8},"software_version":"0.1.0","capabilities":[]}"#;
+
 /// Тестовая переменная выбора варианта (формат — в `variant_test_trigger.rs`).
 const SELECT_VARIANT_VARIABLE: &str = "FASTIPLAYER_TEST_BROWSER_SELECT_VARIANT";
 
@@ -314,5 +317,57 @@ fn next_asks_for_the_next_episode_only_after_the_page_offers_it() {
         "only the press after page_navigation{{available}} asks for the next episode"
     );
     bus.wait_for_log_line("Next episode requested");
+    send_tab_gone_and_expect_close(&mut socket);
+}
+
+/// 15c2: с протоколом 1.8 зритель сначала видит «идёт смена», а отказ страницы («у этой
+/// озвучки нет такой серии») показывается причиной и снимает возврат на секунду зрителя.
+/// Цепочка проверяется по журналу настоящего процесса: выбор → окно говорит `switching_audio`
+/// → исход страницы → строка исхода (`matched=true`) → окно говорит про отказ → возврат снят.
+#[test]
+fn a_page_refusal_is_told_to_the_viewer_and_cancels_the_carry() {
+    let Some(process) = SessionProcessUnderTest::start_with_env(
+        "dub-refused",
+        VideoMode::Window,
+        &[(SELECT_VARIANT_VARIABLE, &format!("audio:1@{SELECT_AT_MS}"))],
+    ) else {
+        return;
+    };
+    let bus = &process.bus;
+    bus.forbid_in_log(&["Q7", "Z9"]);
+    let mut socket = open_attached_session_speaking(&process, HELLO_1_8);
+    send_all(&mut socket, vec![audio_menu()]);
+    send_all(&mut socket, first_generation_long_head());
+    wait_until_playing_past(&mut socket, 1_000_000);
+    wait_until_controllable(bus);
+
+    let before_select = read_player_messages_until(&mut socket, "select_variant", |message| {
+        matches!(message, PlayerSessionMessage::SelectVariant { .. })
+    });
+    let Some(PlayerSessionMessage::SelectVariant { kind, variant_id }) = before_select.last()
+    else {
+        panic!("the read ends with select_variant");
+    };
+    assert_eq!(
+        (*kind, variant_id.as_str()),
+        (browser_bridge_protocol::session::VariantKind::Audio, "dub")
+    );
+    bus.wait_for_log_line("Page variant selected kind=audio index=1");
+    // 1.8: вместо мгновенного «Audio: …» окно говорит, что смена ещё идёт.
+    bus.wait_for_log_line("Browser window tells the viewer about a page variant: switching_audio");
+
+    // Страница отвечает, что у новой озвучки нет текущей серии.
+    send_all(
+        &mut socket,
+        vec![Message::text(
+            r#"{"type":"variant_outcome","request":{"kind":"select_variant","menu":"audio","variant_id":"dub"},"outcome":"no_such_episode"}"#,
+        )],
+    );
+    bus.wait_for_log_line("Page variant outcome kind=audio outcome=no_such_episode matched=true");
+    // Журнал читается по порядку: возврат снимается раньше, чем окно получает тост.
+    bus.wait_for_log_line("end=PageRefusedSelection");
+    bus.wait_for_log_line(
+        "Browser window tells the viewer about a page variant: refused_audio_no_such_episode",
+    );
     send_tab_gone_and_expect_close(&mut socket);
 }

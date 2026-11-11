@@ -1658,6 +1658,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         "subtitle_track_offered": "1.5",
         "page_navigation": "1.7",
         "subtitle_preference": "1.7",
+        "variant_outcome": "1.8",
     },
     "player_session": {
         **{
@@ -1960,6 +1961,43 @@ def write_variant_protocol_messages(manifest: Manifest) -> None:
         manifest.invalid(f"{player_invalid}{name}.json", "player_session", compact_json(message), kind)
 
 
+def write_variant_outcome_messages(manifest: Manifest) -> None:
+    """Сообщение протокола 1.8 (сессия 15c2): `variant_outcome` — исход выбора зрителя на странице.
+
+    `request` — метка с видом: `{"kind":"select_variant","menu":<вид меню>,"variant_id":<пункт>}`
+    или `{"kind":"next_episode"}`; `outcome` — `done | no_such_episode | person_only | failed`.
+    Форма строгая: лишнее поле, чужой вид просьбы, пустой пункт и незнакомый исход — ошибки.
+    """
+    valid = "session/valid/page-variant-outcome-"
+    invalid = "session/invalid/page-variant-outcome-"
+    select_dub = {"kind": "select_variant", "menu": "audio", "variant_id": "dub-b"}
+    next_episode = {"kind": "next_episode"}
+    for name, message in [
+        ("select-done", page_message("variant_outcome", request={"kind": "select_variant", "menu": "quality", "variant_id": "q1_a7"}, outcome="done")),
+        ("select-no-such-episode", page_message("variant_outcome", request=select_dub, outcome="no_such_episode")),
+        ("select-person-only", page_message("variant_outcome", request={"kind": "select_variant", "menu": "subtitles", "variant_id": "x-uk"}, outcome="person_only")),
+        ("next-done", page_message("variant_outcome", request=next_episode, outcome="done")),
+        ("next-failed", page_message("variant_outcome", request=next_episode, outcome="failed")),
+    ]:
+        manifest.valid(f"{valid}{name}.json", "page_session", message)
+
+    for name, message, kind in [
+        ("unknown-field", page_message("variant_outcome", request=next_episode, outcome="done", label="Dub B"), "unknown_field"),
+        ("missing-outcome", page_message("variant_outcome", request=next_episode), "missing_field"),
+        ("missing-request", page_message("variant_outcome", outcome="done"), "missing_field"),
+        ("unknown-outcome", page_message("variant_outcome", request=select_dub, outcome="ignored"), "unknown_value"),
+        ("outcome-as-bool", page_message("variant_outcome", request=select_dub, outcome=True), "wrong_value_type"),
+        ("request-kind-unknown", page_message("variant_outcome", request={"kind": "skip_ad"}, outcome="done"), "unknown_value"),
+        ("request-as-string", page_message("variant_outcome", request="next_episode", outcome="done"), "wrong_value_type"),
+        ("select-missing-menu", page_message("variant_outcome", request={"kind": "select_variant", "variant_id": "dub-b"}, outcome="done"), "missing_field"),
+        ("select-menu-unknown", page_message("variant_outcome", request={"kind": "select_variant", "menu": "chapters", "variant_id": "dub-b"}, outcome="done"), "unknown_value"),
+        ("select-empty-variant-id", page_message("variant_outcome", request={"kind": "select_variant", "menu": "audio", "variant_id": ""}, outcome="done"), "text_empty"),
+        ("select-extra-field", page_message("variant_outcome", request={**select_dub, "label": "Dub B"}, outcome="done"), "unknown_field"),
+        ("next-extra-field", page_message("variant_outcome", request={"kind": "next_episode", "menu": "audio"}, outcome="done"), "unknown_field"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", "page_session", compact_json(message), kind)
+
+
 def gate_text(message: dict[str, Any]) -> dict[str, str]:
     """Шаг случая сторожа: текстовая рамка — ровно байты сообщения на проводе."""
     return {"text": compact_json(message).decode("utf-8")}
@@ -2079,6 +2117,7 @@ def main() -> None:
     write_shape_strictness(manifest)
     write_page_subtitle_messages(manifest)
     write_variant_protocol_messages(manifest)
+    write_variant_outcome_messages(manifest)
     write_page_subtitle_gate_cases()
     write_streams(manifest)
     write_resource_addresses()

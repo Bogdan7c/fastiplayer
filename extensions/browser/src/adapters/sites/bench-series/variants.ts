@@ -70,11 +70,22 @@ export function createBenchSeriesVariants(hands: VariantHands): VariantAdapter {
     return value;
   }
 
+  /** Есть ли у озвучки серия, которая сейчас на странице. Нет списка серий у кнопки - есть во всех. */
+  function dubHasEpisode(button: AdElement, where: AdElement): boolean {
+    const episodes = dom.attributeOf(button, markup.dubEpisodesAttribute);
+    if (episodes === null) return true;
+    const current = dom.attributeOf(where, markup.episodeKeyAttribute);
+    return current !== null && episodes.split(/\s+/u).includes(current);
+  }
+
   /** Озвучка: найти кнопку перебором, а не селектором из `id` (id пришёл извне, в селектор его не подставляем). */
   function selectDub(id: string): VariantActionOutcome {
     const where = root();
-    const button = where === undefined ? undefined : dubButtons(where).find((candidate) => dom.attributeOf(candidate, markup.dubKeyAttribute) === id);
+    if (where === undefined) return "no_such_variant";
+    const button = dubButtons(where).find((candidate) => dom.attributeOf(candidate, markup.dubKeyAttribute) === id);
     if (button === undefined) return "no_such_variant";
+    // У озвучки нет текущей серии: не нажимаем, страница остаётся как была (как Ashdi, решение 295).
+    if (!dubHasEpisode(button, where)) return "no_such_episode";
     button.click();
     return "done";
   }

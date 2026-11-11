@@ -36,7 +36,7 @@ use browser_bridge_protocol::session::{
     PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, RangeFetchFailure,
     RangeFetchOutcome, RemovalEnd, ResourceSize, ResumeState, SeekCause, StreamRejection,
     SubtitleChoice, SubtitleFormatHint, TabGoneReason, VariantKind, VariantMenu, VariantOption,
-    VariantSelection,
+    VariantOutcome, VariantRequest, VariantSelection,
 };
 use browser_bridge_protocol::{
     AppendSequence, BridgeSoftware, ByteOffset, CapabilityToken, DataFrameHeader,
@@ -299,10 +299,23 @@ fn random_tab_gone_reason(generator: &mut Generator) -> TabGoneReason {
     ])
 }
 
+/// Просьба плеера, на которую отвечает `variant_outcome`: выбор пункта меню или Next.
+fn variant_request(generator: &mut Generator) -> VariantRequest {
+    if generator.below(2) == 0 {
+        VariantRequest::NextEpisode {}
+    } else {
+        let ordinal = generator.below(8) as usize;
+        VariantRequest::SelectVariant {
+            menu: variant_kind(generator),
+            variant_id: variant_id(generator, ordinal),
+        }
+    }
+}
+
 fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
     let generation = generation(generator);
     let source_buffer = source_buffer(generator);
-    match generator.below(22) {
+    match generator.below(23) {
         0 => PageSessionMessage::Attach {
             session_key: session_key(generator),
             token: session_token(generator),
@@ -424,6 +437,16 @@ fn random_page_message(generator: &mut Generator) -> PageSessionMessage {
         },
         20 => PageSessionMessage::SubtitlePreference {
             choice: subtitle_choice(generator),
+        },
+        // Протокол 1.8: исход выбора зрителя на странице.
+        21 => PageSessionMessage::VariantOutcome {
+            request: variant_request(generator),
+            outcome: *generator.pick(&[
+                VariantOutcome::Done,
+                VariantOutcome::NoSuchEpisode,
+                VariantOutcome::PersonOnly,
+                VariantOutcome::Failed,
+            ]),
         },
         _ => PageSessionMessage::PageReopenFailed {
             reason: *generator.pick(&[

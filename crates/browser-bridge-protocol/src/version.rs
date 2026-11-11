@@ -66,6 +66,11 @@
 //!   `select_variant`, `next_episode` не менялись. При общей версии ниже 1.7 плеер этих
 //!   сообщений не шлёт, а сторож отвергает входящие как нарушение; без `page_navigation`
 //!   кнопки Next нет. Договор — `crate::session::page_navigation` и `page_subtitles`.
+//! - **1.8** (сессия 15c2, решения 298, 301) — исход выбора на странице: страница → плеер
+//!   `variant_outcome{request, outcome}` в ответ на `select_variant` или `next_episode`
+//!   зрителя (`done | no_such_episode | person_only | failed`). При общей версии ниже 1.8
+//!   экстеншен исхода не шлёт, сторож отвергает входящий, а плеер сразу пишет «Audio: …»,
+//!   как в 1.7. Договор — `crate::session::variant_outcome`.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -113,6 +118,9 @@ impl ProtocolVersion {
     /// `subtitle_choice`.
     pub const V1_7: Self = Self { major: 1, minor: 7 };
 
+    /// Исход выбора на странице (сессия 15c2, решения 298, 301): `variant_outcome`.
+    pub const V1_8: Self = Self { major: 1, minor: 8 };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -125,7 +133,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_7;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_8;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -207,18 +215,19 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_7() {
-        // Сессия 14a: варианты страницы. Число закреплено — его же зеркалит экстеншен
+    fn this_crate_speaks_protocol_1_8() {
+        // Сессия 15c2: исход выбора на странице. Число закреплено — его же зеркалит экстеншен
         // (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 7));
-        assert!(ProtocolVersion::V1_7.includes(ProtocolVersion::V1_6));
-        assert!(!ProtocolVersion::V1_6.includes(ProtocolVersion::V1_7));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 8));
+        assert!(ProtocolVersion::V1_8.includes(ProtocolVersion::V1_7));
+        assert!(!ProtocolVersion::V1_7.includes(ProtocolVersion::V1_8));
     }
 
     #[test]
-    fn a_1_7_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_8_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_7,
             ProtocolVersion::V1_6,
             ProtocolVersion::V1_5,
             ProtocolVersion::V1_4,
@@ -228,11 +237,11 @@ mod tests {
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_7, older),
+                negotiate_protocol_version(ProtocolVersion::V1_8, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_7),
+                negotiate_protocol_version(older, ProtocolVersion::V1_8),
                 Ok(older)
             );
         }

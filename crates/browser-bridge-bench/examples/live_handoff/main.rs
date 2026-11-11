@@ -123,6 +123,8 @@ const INTERESTING_LINES: &[&str] = &[
     "Page navigation changed",
     "Next episode",
     "Position carr",
+    // Исход выбора (15c2): что окно сказало зрителю — «switching», «audio» или причина отказа.
+    "tells the viewer about a page variant",
 ];
 /// Сколько окно стоит на паузе до закрытия вкладки и сколько сирота ждёт до play (`--tab-return-after`).
 const TAB_RETURN_PAUSE: Duration = Duration::from_secs(1);

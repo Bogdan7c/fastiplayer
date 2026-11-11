@@ -25,6 +25,8 @@
 // (есть ли следующая серия) и `subtitle_preference` (запомненный выбор субтитров); плеер -> страница
 // `subtitle_choice` (выбор зрителя). Сообщения 1.0 `variant_menu_changed`, `select_variant`, `next_episode`
 // не менялись. Договор - `session/page-navigation.ts` и `session/page-subtitles.ts`.
+// 1.8 (сессия 15c2, решение 301) - исход выбора на странице: страница -> плеер `variant_outcome` (чем кончился
+// выбор зрителя: готово, у озвучки нет серии, только человеком, сбой). Договор - `session/variant-outcome.ts`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -59,8 +61,11 @@ export const PROTOCOL_VERSION_1_6: ProtocolVersion = Object.freeze({ major: 1, m
 /** Варианты страницы в окне плеера: `page_navigation`, `subtitle_preference`, `subtitle_choice` (сессия 14a). */
 export const PROTOCOL_VERSION_1_7: ProtocolVersion = Object.freeze({ major: 1, minor: 7 });
 
+/** Исход выбора на странице: `variant_outcome` (сессия 15c2, решение 301). */
+export const PROTOCOL_VERSION_1_8: ProtocolVersion = Object.freeze({ major: 1, minor: 8 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_7;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_8;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

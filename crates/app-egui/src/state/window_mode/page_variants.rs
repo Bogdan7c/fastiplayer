@@ -24,10 +24,10 @@ use tracing::{debug, info};
 use super::{AdOfferActivation, TransportRoute, ViewerTransportIntent, WindowMode};
 use crate::page_variants::{
     PageVariantAvailability, PageVariantChoice, PageVariantFacts, PageVariantKind,
-    PageVariantNotice,
+    PageVariantNotice, PageVariantSubject,
 };
 use crate::state::AppState;
-use crate::state::notifications::TransientReplaceKey;
+use crate::state::notifications::{NotificationCenter, TransientReplaceKey};
 
 /// Выбор отклонён окном: на экране реклама (тот же смысл, что у отказа перемотки).
 pub(crate) const PAGE_VARIANT_REFUSED_IN_WINDOW_LINE: &str =
@@ -202,33 +202,47 @@ impl AppState {
         self.window_mode.next_episode_offered()
     }
 
-    /// Тост после принятого сеансом действия: «Audio: …» заменяет прежний тост дорожки
-    /// звука (клавиша B ходит по озвучкам), качество и следующая серия — обычный тост.
+    /// Тост после принятого сеансом действия. Каждый предмет (озвучка, качество, Next) — своя
+    /// плашка с заменой: «Switching audio…» потом сменяется «Audio: …» или причиной отказа, а
+    /// не копится стопкой (клавиша B тоже ходит по озвучкам, поэтому ключ озвучки общий).
     pub(crate) fn announce_page_variant_notice(&mut self, notice: &PageVariantNotice) {
-        let text = notice.toast_text();
-        match notice {
-            PageVariantNotice::Selected {
-                kind: PageVariantKind::Audio,
-                ..
-            } => {
-                self.notifications.notify_transient_replacing(
-                    TransientReplaceKey::AudioTrack,
-                    text,
-                    Instant::now(),
-                );
-            }
-            PageVariantNotice::Selected {
-                kind: PageVariantKind::Quality,
-                ..
-            }
-            | PageVariantNotice::NextEpisodeRequested => self.notify_transient(text),
-            // Выбор субтитров тоста не даёт: результат виден сам (субтитры на кадре), а
-            // сессия такого слова не рождает.
-            PageVariantNotice::Selected {
-                kind: PageVariantKind::Subtitles,
-                ..
-            } => {}
-        }
+        show_page_variant_toast(&mut self.notifications, notice, Instant::now());
+    }
+}
+
+/// Показывает тост слова о вариантах в центре уведомлений (отдельно от `AppState`, чтобы
+/// замену плашек проверять на настоящем центре).
+fn show_page_variant_toast(
+    notifications: &mut NotificationCenter,
+    notice: &PageVariantNotice,
+    now: Instant,
+) {
+    let Some(key) = page_variant_toast_key(notice) else {
+        // Выбор субтитров тоста не даёт: результат виден сам (субтитры на кадре), а
+        // сессия такого слова не рождает.
+        return;
+    };
+    notifications.notify_transient_replacing(key, notice.toast_text(), now);
+}
+
+/// Ключ плашки слова о вариантах (`None` — тоста нет).
+const fn page_variant_toast_key(notice: &PageVariantNotice) -> Option<TransientReplaceKey> {
+    let kind = match notice {
+        PageVariantNotice::Selected { kind, .. } | PageVariantNotice::Switching { kind } => *kind,
+        PageVariantNotice::Refused {
+            subject: PageVariantSubject::Menu(kind),
+            ..
+        } => *kind,
+        PageVariantNotice::NextEpisodeRequested
+        | PageVariantNotice::Refused {
+            subject: PageVariantSubject::NextEpisode,
+            ..
+        } => return Some(TransientReplaceKey::PageNextEpisode),
+    };
+    match kind {
+        PageVariantKind::Audio => Some(TransientReplaceKey::AudioTrack),
+        PageVariantKind::Quality => Some(TransientReplaceKey::PageQuality),
+        PageVariantKind::Subtitles => None,
     }
 }
 

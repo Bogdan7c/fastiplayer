@@ -23,6 +23,20 @@ use super::resource_requests::PageProtocol;
 /// сказать `page_navigation` (равенство закреплено тестом).
 pub(crate) const NEXT_EPISODE_OFFERED_SINCE: ProtocolVersion = ProtocolVersion::V1_7;
 
+/// С какой версии протокола страница сама сообщает исход выбора зрителя
+/// (`variant_outcome`, 15c2). Равенство со сторожем протокола закреплено тестом.
+pub(crate) const VARIANT_OUTCOME_EXPECTED_SINCE: ProtocolVersion = ProtocolVersion::V1_8;
+
+/// Сообщит ли страница исход выбора зрителя (чистый вопрос о версии).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VariantOutcomeReporting {
+    /// Общая версия 1.8 и новее: на каждый выбор зрителя придёт `variant_outcome`.
+    PageReports,
+    /// Исхода не будет: страница ещё не подключилась или экстеншен старше 1.8. Плеер ведёт
+    /// себя как в 1.7 (сразу «Audio: …»).
+    PageStaysSilent,
+}
+
 /// Можно ли по версии протокола просить следующую серию (чистый вопрос).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NextEpisodePermission {
@@ -65,6 +79,18 @@ impl PageOutbound {
                 NextEpisodePermission::Allowed
             }
             PageProtocol::Agreed(_) => NextEpisodePermission::ProtocolTooOld,
+        }
+    }
+
+    /// Пришлёт ли страница исход выбора зрителя (по общей версии протокола).
+    pub(crate) const fn variant_outcome_reporting(&self) -> VariantOutcomeReporting {
+        match self.page_protocol {
+            PageProtocol::Agreed(version) if version.includes(VARIANT_OUTCOME_EXPECTED_SINCE) => {
+                VariantOutcomeReporting::PageReports
+            }
+            PageProtocol::NotAttachedYet | PageProtocol::Agreed(_) => {
+                VariantOutcomeReporting::PageStaysSilent
+            }
         }
     }
 
@@ -156,6 +182,37 @@ mod tests {
     #[test]
     fn the_constant_matches_the_page_navigation_message() {
         assert_eq!(NEXT_EPISODE_OFFERED_SINCE, PAGE_NAVIGATION_INTRODUCED_IN);
+    }
+
+    #[test]
+    fn the_outcome_gate_matches_the_protocol_message() {
+        assert_eq!(
+            VARIANT_OUTCOME_EXPECTED_SINCE,
+            browser_bridge_protocol::session::VARIANT_OUTCOME_INTRODUCED_IN
+        );
+    }
+
+    #[test]
+    fn the_page_reports_outcomes_only_from_1_8_on() {
+        let before_attach = PageOutbound::new(Box::new(RecordingSender::default()));
+        assert_eq!(
+            before_attach.variant_outcome_reporting(),
+            VariantOutcomeReporting::PageStaysSilent
+        );
+        for (version, expected) in [
+            (
+                ProtocolVersion::V1_7,
+                VariantOutcomeReporting::PageStaysSilent,
+            ),
+            (ProtocolVersion::V1_8, VariantOutcomeReporting::PageReports),
+        ] {
+            let (_sender, outbound) = attached(version);
+            assert_eq!(
+                outbound.variant_outcome_reporting(),
+                expected,
+                "{version:?}"
+            );
+        }
     }
 
     #[test]

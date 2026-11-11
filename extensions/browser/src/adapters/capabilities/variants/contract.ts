@@ -62,10 +62,11 @@ export interface PageVariantDescription {
  * Чем кончилось действие адаптера:
  * - `done` — кнопка нажата или функция сайта отработала;
  * - `no_such_variant` — такого пункта (или следующей серии) на странице уже нет;
+ * - `no_such_episode` — ТОЛЬКО «у выбранной озвучки нет текущей серии» (решение 295): пункт есть, страница на месте;
  * - `person_only` — сайт принимает только настоящую мышь (как YouTube, решение 207): нажать может человек;
  * - `failed` — страница повела себя не так, как адаптер ожидал (функция бросила, рука не ответила).
  */
-export type VariantActionOutcome = "done" | "no_such_variant" | "person_only" | "failed";
+export type VariantActionOutcome = "done" | "no_such_variant" | "no_such_episode" | "person_only" | "failed";
 
 /** Взгляд на DOM для вариантов: тот же, что у читателей рекламы, плюс чтение атрибута и «нажатие как человек». */
 export interface VariantPageView extends AdPageView {

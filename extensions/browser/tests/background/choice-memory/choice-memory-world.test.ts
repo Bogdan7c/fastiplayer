@@ -90,6 +90,8 @@ describe("запись через весь фон", () => {
     await eventually(() => storedSeries(world) !== undefined, "запись в хранилище");
     assert.deepEqual(world.variantMirror.commands.map((entry) => entry.command), [{ kind: "select", variant_kind: "audio", variant_id: "dub-b" }]);
     assert.equal(storedSeries(world)?.audio, "Dub B");
+    // А выбор зрителя в том же мире сообщён плееру (15c2).
+    assert.deepEqual(sentOfType(world, "variant_outcome").map((message) => message.outcome), ["done"]);
     // В хранилище нет ни сайта, ни сериала открытым текстом.
     assert.ok(!JSON.stringify(world.choiceStorage.values.get(REMEMBERED_CHOICES_KEY)).includes("example"));
   });
@@ -129,6 +131,9 @@ describe("применение через весь фон", () => {
     world.handoffs.variantWatchReport(TAB, 0, report(episode("1", "dub-a")));
     await eventually(() => world.variantMirror.commands.length > 0, "команда памяти странице");
     assert.deepEqual(world.variantMirror.commands, [{ tabId: TAB, frameId: 0, command: { kind: "select", variant_kind: "audio", variant_id: "dub-b" } }]);
+    // Выбор памяти плееру не сообщается (15c2): зритель его не просил.
+    await settle();
+    assert.deepEqual(sentOfType(world, "variant_outcome"), []);
   });
 
   it("часы «0 / waiting» до показа кадра — не начало серии; кадр на 20-й минуте — только качество (решение 287)", async () => {

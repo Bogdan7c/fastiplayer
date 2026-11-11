@@ -12,6 +12,9 @@
 //!    ± 1 с (решение 280) → кадры растут;
 //! 4. MPRIS Next → страница открыла серию 2 в той же озвучке → кадры растут.
 //!
+//! Прогон «нет серии» (15c2, `series/missing_episode.rs`): у новой озвучки нет текущей серии —
+//! страница остаётся, плеер получает исход `no_such_episode` и показывает причину.
+//!
 //! Прогон «сломанный адаптер» (`&adapter=broken`): плеер страницы бросает, адаптер падает, видео
 //! играет обычным перехватом, меню вариантов у плеера нет.
 //!
@@ -19,10 +22,12 @@
 //! ищутся по ВСЕМУ журналу ([`wait_for_lines_anywhere`]), а курсор нужен только росту кадров.
 
 mod judge;
+mod missing_episode;
 
 use std::time::{Duration, Instant};
 
 use self::judge::{BrokenAdapterEvidence, VariantsEvidence, judge_broken_adapter, judge_variants};
+use self::missing_episode::{MISSING_EPISODE_CHOICE, drive_missing_episode};
 use super::capture::{MIN_PRESENTED_FRAMES, judge_early_report};
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
@@ -86,7 +91,7 @@ pub(super) fn page_ids() -> Vec<&'static str> {
     vec![SERIES_PAGE]
 }
 
-/// Оба прогона, каждый в свежем окружении.
+/// Три прогона, каждый в свежем окружении.
 pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     if !filter.admits(SERIES_PAGE) {
         return Vec::new();
@@ -98,10 +103,24 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
     });
     let variants_elapsed = started.elapsed();
     let started = Instant::now();
+    let missing_choice =
+        PlayerTestVariables::default().with_page_variant_choices(MISSING_EPISODE_CHOICE);
+    let missing_episode = stand.with_environment_for_player_test(missing_choice, |environment| {
+        drive_missing_episode(stand, environment, browser)
+    });
+    let missing_episode_elapsed = started.elapsed();
+    let started = Instant::now();
     let broken =
         stand.with_environment(|environment| drive_broken_adapter(stand, environment, browser));
     vec![
         StepResult::new("series", browser, SERIES_PAGE, variants, variants_elapsed),
+        StepResult::new(
+            "series-missing-episode",
+            browser,
+            SERIES_PAGE,
+            missing_episode,
+            missing_episode_elapsed,
+        ),
         StepResult::new(
             "series-broken-adapter",
             browser,

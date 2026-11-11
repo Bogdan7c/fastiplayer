@@ -73,12 +73,12 @@ export async function switchFolderDub(input: FolderDubSwitch): Promise<VariantAc
   }
   if (season === undefined) {
     await restorePageMenu(input);
-    return "no_such_variant";
+    return "no_such_episode"; // у озвучки нет этого сезона - значит нет и серии (решение 295)
   }
   const episode = await openAndFind(input, season, roles.episodeDepth, playing.episode.label);
   if (episode === "timeout" || episode === undefined) {
     await restorePageMenu(input);
-    return episode === "timeout" ? "failed" : "no_such_variant";
+    return episode === "timeout" ? "failed" : "no_such_episode";
   }
   input.view.pressLikePerson(episode.element);
   return "done";

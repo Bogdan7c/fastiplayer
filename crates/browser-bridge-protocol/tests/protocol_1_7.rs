@@ -98,7 +98,8 @@ fn protocol_1_7_adds_exactly_the_documented_messages() {
         .introduced_in(),
         ProtocolVersion::V1_7
     );
-    assert_eq!(ProtocolVersion::V1_7, CURRENT_PROTOCOL_VERSION);
+    // С 1.8 crate говорит на более новой версии, а 1.7 в неё входит.
+    assert!(CURRENT_PROTOCOL_VERSION.includes(ProtocolVersion::V1_7));
 }
 
 #[test]

@@ -24,6 +24,10 @@ pub(crate) enum TransientReplaceKey {
     /// Субтитры потока (HLS/DASH) недоступны: свой ключ, чтобы не вытеснять плашку сбоя
     /// скачивания web-субтитров и не вытесняться ею.
     StreamSubtitles,
+    /// Смена качества на странице («Switching quality…» → «Quality: 720p» или причина отказа).
+    PageQuality,
+    /// «Next episode» страницы и отказ открыть следующую серию.
+    PageNextEpisode,
 }
 
 impl NotificationCenter {

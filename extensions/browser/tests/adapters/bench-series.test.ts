@@ -13,9 +13,10 @@ import { createFakeClock, flushPromises } from "../background/support.ts";
 import { createFakeVariantView, FakeNode } from "./fake-ad-dom.ts";
 
 /** Фикстура: устройство `series.html` стенда без личных данных — корень с меткой, ключи, кнопки озвучек. */
-function benchSeriesPage(options: { selectedDub: "dub-a" | "dub-b"; episode: string; marker?: boolean }) {
+function benchSeriesPage(options: { selectedDub: "dub-a" | "dub-b"; episode: string; marker?: boolean; dubBEpisodes?: string }) {
   const dubA = new FakeNode("button", { text: "Dub A", attributes: { "data-dub": "dub-a", "aria-pressed": String(options.selectedDub === "dub-a") } });
-  const dubB = new FakeNode("button", { text: "Dub B", attributes: { "data-dub": "dub-b", "aria-pressed": String(options.selectedDub === "dub-b") } });
+  const dubBEpisodes = options.dubBEpisodes === undefined ? {} : { "data-dub-episodes": options.dubBEpisodes };
+  const dubB = new FakeNode("button", { text: "Dub B", attributes: { "data-dub": "dub-b", "aria-pressed": String(options.selectedDub === "dub-b"), ...dubBEpisodes } });
   const markerAttributes = options.marker === false ? {} : { "data-fastiplayer-bench-series": "", "data-series-key": "bench-series", "data-episode-key": options.episode };
   const controls = new FakeNode("div", { id: "controls", attributes: markerAttributes }).add(dubA, dubB);
   const root = new FakeNode("body").add(new FakeNode("video", { id: "v" }), controls);
@@ -146,6 +147,15 @@ describe("адаптер стенда «сериал»: действия", () =>
     assert.equal(await adapter.select("audio", "dub-z"), "no_such_variant");
     assert.equal(await adapter.select("audio", '"], button, [data-dub="dub-a'), "no_such_variant");
     assert.deepEqual([page.dubA.clicks, page.dubB.clicks], [0, 1]);
+  });
+
+  it("у озвучки нет текущей серии (data-dub-episodes) — no_such_episode без нажатия; есть серия — нажатие", async () => {
+    const missing = benchSeriesPage({ selectedDub: "dub-a", episode: "1", dubBEpisodes: "2 3" });
+    assert.equal(await adapterFor(missing.root, fakePagePlayer().window).adapter.select("audio", "dub-b"), "no_such_episode");
+    assert.deepEqual([missing.dubA.clicks, missing.dubB.clicks], [0, 0], "страница осталась как была");
+    const present = benchSeriesPage({ selectedDub: "dub-a", episode: "2", dubBEpisodes: "2 3" });
+    assert.equal(await adapterFor(present.root, fakePagePlayer().window).adapter.select("audio", "dub-b"), "done");
+    assert.deepEqual([present.dubA.clicks, present.dubB.clicks], [0, 1]);
   });
 
   it("качество — вызов функции страницы с ключом; страница сказала «нет такого» — no_such_variant", async () => {

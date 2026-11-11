@@ -15,8 +15,10 @@
 // Команды плеера:
 // - `select_variant` идёт во фрейм, который прислал меню этого вида, и только если пункт в этом меню есть;
 // - `next_episode` — во фрейм, который сказал «следующая серия есть».
-// Исход команды (`person_only`, `no_such_variant`, `failed`) — строка в журнал разработчика: подсказку
-// зрителю для `person_only` даст сессия 15 вместе с YouTube.
+// Исход команды — строка в журнал разработчика, а выбор ЗРИТЕЛЯ (не памяти) ещё и слово плееру:
+// - `variant_outcome` (протокол 1.8, 15c2) — чем кончился выбор или Next, только плееру ≥ 1.8. Отказ до
+//   страницы (пункта нет в последнем меню, следующей серии нет) тоже исход `failed`: плеер ждёт ответа.
+//   Выбор памяти выбора плееру не сообщается.
 //
 // Наблюдатель (память выбора, 14b2) узнаёт от зеркала то же, что видит плеер, плюс ключи сериала и серии и
 // пометку «Auto», и исход каждой команды выбора с её происхождением (зритель или сама память). Свой выбор
@@ -30,10 +32,12 @@ import {
   type PageSessionMessage,
   type ProtocolVersion,
   type VariantMenu,
+  type VariantRequest,
 } from "../../protocol/index.ts";
 import type { PageVariantKind, VariantActionOutcome, VariantCommand, VariantWatchReport } from "../../shared/variant-watch-contract.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import { createTimerSlot } from "../host-link/timer-slot.ts";
+import { protocolOutcomeOf } from "./variant-outcome-report.ts";
 import { createVariantFrameSummary } from "./variant-frame-summary.ts";
 import { normalizeVariantMenus, type NormalizedVariantMenus } from "./variant-menu-normalize.ts";
 
@@ -204,12 +208,24 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
     return frameId === undefined || option === undefined ? undefined : { frameId, label: option.label };
   }
 
+  /**
+   * Сказать плееру, чем кончился выбор зрителя. Условия проверяются в момент отправки, а не запроса: пока фрейм
+   * работал, сеанс мог кончиться, и тогда говорить некому. Плееру старше 1.8 исход неизвестен: молчим.
+   */
+  function reportViewerOutcome(request: VariantRequest, outcome: VariantActionOutcome): void {
+    if (!running) return;
+    if (!versionIncludes(dependencies.agreedProtocol(), pageSessionIntroducedIn("variant_outcome"))) return;
+    dependencies.send({ type: "variant_outcome", request, outcome: protocolOutcomeOf(outcome) });
+  }
+
   /** Выбор пункта: команда во фрейм меню, наблюдателю — начало и исход. */
   function select(kind: PageVariantKind, variantId: string, origin: VariantSelectionOrigin, place: { readonly frameId: number; readonly label: string }): void {
     dependencies.observer?.selectionStarted(kind, origin);
-    void command(place.frameId, { kind: "select", variant_kind: kind, variant_id: variantId }, `select_variant ${kind}`).then((outcome) =>
-      dependencies.observer?.selectionFinished(kind, origin, outcome, place.label),
-    );
+    void command(place.frameId, { kind: "select", variant_kind: kind, variant_id: variantId }, `select_variant ${kind}`).then((outcome) => {
+      dependencies.observer?.selectionFinished(kind, origin, outcome, place.label);
+      // Память выбора нажимает сама, зрителю об этом не сообщаем.
+      if (origin === "viewer") reportViewerOutcome({ kind: "select_variant", menu: kind, variant_id: variantId }, outcome);
+    });
   }
 
   return {
@@ -232,6 +248,7 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
       // Пункт должен быть в последнем меню, которое видел плеер: устаревший выбор не нажимает чужое.
       if (place === undefined) {
         dependencies.note(`select_variant ignored: no such ${kind} option in the last menu`);
+        reportViewerOutcome({ kind: "select_variant", menu: kind, variant_id: variantId }, "failed");
         return;
       }
       select(kind, variantId, "viewer", place);
@@ -247,9 +264,10 @@ export function createSessionVariantMirror(dependencies: SessionVariantMirrorDep
       if (!running) return;
       if (sent.nextEpisodeFrame === undefined) {
         dependencies.note("next_episode ignored: the page offers no next episode");
+        reportViewerOutcome({ kind: "next_episode" }, "failed");
         return;
       }
-      void command(sent.nextEpisodeFrame, { kind: "next" }, "next_episode");
+      void command(sent.nextEpisodeFrame, { kind: "next" }, "next_episode").then((outcome) => reportViewerOutcome({ kind: "next_episode" }, outcome));
     },
     stop() {
       running = false;

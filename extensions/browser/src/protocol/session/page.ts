@@ -45,6 +45,7 @@ import {
   type SubtitleChoice,
   subtitleChoiceCodec,
 } from "./page-subtitles.ts";
+import { type VariantOutcome, type VariantRequest, variantOutcomeCodec, variantRequestCodec } from "./variant-outcome.ts";
 import { type VariantMenu, variantMenuCodec, validateVariantMenu } from "./variants.ts";
 
 /** Конец удаляемого промежутка буфера. */
@@ -151,7 +152,9 @@ export type PageSessionMessage =
   /** Протокол 1.7 (сессия 14a): есть ли на странице следующая серия. Вне поколений, последнее слово главнее. */
   | { readonly type: "page_navigation"; readonly next_episode: NextEpisodeAvailability }
   /** Протокол 1.7 (сессия 14a): запомненный экстеншеном выбор субтитров для этой серии. Вне поколений. */
-  | { readonly type: "subtitle_preference"; readonly choice: SubtitleChoice };
+  | { readonly type: "subtitle_preference"; readonly choice: SubtitleChoice }
+  /** Протокол 1.8 (сессия 15c2): чем кончился выбор зрителя на странице. Вне поколений (`variant-outcome.ts`). */
+  | { readonly type: "variant_outcome"; readonly request: VariantRequest; readonly outcome: VariantOutcome };
 
 const removalEndCodec: Codec<RemovalEnd> = taggedUnion<RemovalEnd, "kind">("kind", {
   at: { time_us: mediaTimeCodec },
@@ -232,6 +235,7 @@ export const pageSessionCodec: TaggedUnionCodec<PageSessionMessage> = taggedUnio
   },
   page_navigation: { next_episode: nextEpisodeAvailabilityCodec },
   subtitle_preference: { choice: subtitleChoiceCodec },
+  variant_outcome: { request: variantRequestCodec, outcome: variantOutcomeCodec },
 });
 
 /** Проверки между полями: удаляемый промежуток непуст, меню корректно. */

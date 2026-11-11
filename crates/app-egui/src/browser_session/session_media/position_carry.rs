@@ -93,6 +93,8 @@ pub(crate) enum CarryEnd {
     SwitchedInPlace,
     /// Страница ушла с T и после повтора: остаёмся там, где страница.
     PageInsisted,
+    /// Страница отказала в выборе (`variant_outcome`, 1.8): смены не будет, возвращать некуда.
+    PageRefusedSelection,
 }
 
 /// Попросили ли страницу перемотаться к T.
@@ -424,6 +426,15 @@ fn switched_in_place(origin: ShownTrackLayout, now_shown: ShownTrackLayout) -> b
     }
 }
 
+/// Взвёл ли выбор зрителя возврат на секунду.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CarryArming {
+    /// Возврат взведён на секунду зрителя.
+    Armed,
+    /// Ещё ничего не показано: возвращать некуда, прежнее состояние возврата не тронуто.
+    NothingShown,
+}
+
 impl SessionMedia {
     /// Та же медиа-часть с другим сроком возврата (процесс берёт его из config-а).
     pub(crate) fn with_position_carry_policy(mut self, policy: PositionCarryPolicy) -> Self {
@@ -433,7 +444,10 @@ impl SessionMedia {
 
     /// Зритель выбрал вариант: запомнить его секунду. Секунда — то, что видит зритель:
     /// цель ждущего поколения (спиннер у цели), иначе часы показанного медиа.
-    pub(super) fn arm_position_carry(&mut self, now: Instant) {
+    ///
+    /// Возвращает, взведён ли возврат: выбор до первого показа возврата не взводит, и тогда он
+    /// не становится владельцем возврата (отказ такого выбора не должен снять чужой возврат, 15c2).
+    pub(super) fn arm_position_carry(&mut self, now: Instant) -> CarryArming {
         let shown_position = self.last_observation.as_ref().and_then(|observation| {
             self.loaded
                 .as_ref()
@@ -442,10 +456,11 @@ impl SessionMedia {
         });
         let Some(target) = self.awaited_generation_target().or(shown_position) else {
             debug!("Variant selected before anything was shown; no position to return to");
-            return;
+            return CarryArming::NothingShown;
         };
         let origin_tracks = self.playback.shown_track_layout();
         self.variants.carry.arm(target, now, origin_tracks);
+        CarryArming::Armed
     }
 
     /// Новое ждущее поколение: если возврат ждёт и рекламы нет — поставить его на T.

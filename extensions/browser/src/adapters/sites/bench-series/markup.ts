@@ -15,6 +15,11 @@ export const BENCH_SERIES_MARKUP = {
   dubButtonSelector: "[data-dub]",
   dubKeyAttribute: "data-dub",
   pressedAttribute: "aria-pressed",
+  /**
+   * Необязательный список ключей серий, которые есть у озвучки, через пробел (`data-dub-episodes="2 3"`).
+   * Нет атрибута - озвучка есть во всех сериях. Так стенд изображает озвучку без текущей серии (решение 295).
+   */
+  dubEpisodesAttribute: "data-dub-episodes",
   /** Объект плеера страницы в её окне и его функции (MAIN-мир). */
   playerObject: "fastiplayerBenchSeries",
   playerFunctions: {

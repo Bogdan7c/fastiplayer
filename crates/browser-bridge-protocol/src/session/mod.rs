@@ -49,6 +49,7 @@ pub mod page_navigation;
 pub mod page_reopen;
 pub mod page_subtitles;
 pub mod player;
+pub mod variant_outcome;
 pub mod variants;
 
 pub use ad_state::{
@@ -70,6 +71,7 @@ pub use page_subtitles::{
 pub use player::{
     BufferIntake, ClockSequence, ClockState, PlayerSessionMessage, ResumeState, StreamRejection,
 };
+pub use variant_outcome::{VARIANT_OUTCOME_INTRODUCED_IN, VariantOutcome, VariantRequest};
 pub use variants::{VariantKind, VariantMenu, VariantOption, VariantSelection};
 
 /// Почему сеанс закрыт — код закрытия WebSocket.

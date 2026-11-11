@@ -7,8 +7,9 @@ import { VARIANT_WATCH_LEASE_MS, VARIANT_WATCH_RENEW_MS } from "../../src/backgr
 import { VARIANT_REPORT_SILENCE_MS } from "../../src/background/handoff/variant-frame-summary.ts";
 import { createVariantWatchReportListener } from "../../src/background/handoff/variant-watch-listener.ts";
 import { translatePlayerMessage } from "../../src/background/handoff/player-message-translator.ts";
-import { PROTOCOL_VERSION_1_6, type PageSessionMessage, type VariantMenu } from "../../src/protocol/index.ts";
-import { VARIANT_WATCH_REPORT_KIND, type PageVariantDescription, type VariantWatchReport } from "../../src/shared/variant-watch-contract.ts";
+import { protocolOutcomeOf } from "../../src/background/handoff/variant-outcome-report.ts";
+import { PROTOCOL_VERSION_1_6, PROTOCOL_VERSION_1_7, type PageSessionMessage, type VariantMenu } from "../../src/protocol/index.ts";
+import { VARIANT_WATCH_REPORT_KIND, type PageVariantDescription, type VariantActionOutcome, type VariantWatchReport } from "../../src/shared/variant-watch-contract.ts";
 import { PLAYING_VIDEO, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
 import { flushPromises, grantFor } from "./support.ts";
 
@@ -273,6 +274,127 @@ describe("команды плеера", () => {
       command: { kind: "select_variant", variantKind: "audio", variantId: "dub-b" },
     });
     assert.deepEqual(translatePlayerMessage({ type: "next_episode" }, undefined), { kind: "site_adapter", command: { kind: "next_episode" } });
+  });
+});
+
+const outcomes = (world: World) => sent(world, "variant_outcome").map((message) => ({ request: message.request, outcome: message.outcome }));
+const selectAudioDubB = { kind: "select_variant", menu: "audio", variant_id: "dub-b" } as const;
+
+describe("исход выбора зрителя плееру (протокол 1.8, 15c2)", () => {
+  it("исход адаптера -> слово протокола: no_such_variant уходит как failed, остальные как есть", () => {
+    const expected: Record<VariantActionOutcome, string> = {
+      done: "done",
+      no_such_episode: "no_such_episode",
+      person_only: "person_only",
+      no_such_variant: "failed",
+      failed: "failed",
+    };
+    for (const [adapterOutcome, protocolOutcome] of Object.entries(expected)) {
+      assert.equal(protocolOutcomeOf(adapterOutcome as VariantActionOutcome), protocolOutcome, adapterOutcome);
+    }
+  });
+
+  it("каждый исход выбора доходит до плеера с точным запросом; no_such_variant приходит как failed", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    const cases: [VariantActionOutcome, string][] = [
+      ["done", "done"],
+      ["no_such_episode", "no_such_episode"],
+      ["person_only", "person_only"],
+      ["failed", "failed"],
+      ["no_such_variant", "failed"],
+    ];
+    for (const [adapterOutcome, expected] of cases) {
+      world.variantMirror.behavior.outcome = adapterOutcome;
+      world.sockets.last().receive({ type: "select_variant", kind: "audio", variant_id: "dub-b" });
+      await flushPromises();
+      assert.deepEqual(outcomes(world).at(-1), { request: selectAudioDubB, outcome: expected }, adapterOutcome);
+    }
+    assert.equal(outcomes(world).length, cases.length);
+  });
+
+  it("выбор качества и субтитров тоже отвечает: запрос несёт своё меню", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(WITH_SUBTITLES));
+    world.sockets.last().receive({ type: "select_variant", kind: "quality", variant_id: "video-720" });
+    world.sockets.last().receive({ type: "select_variant", kind: "subtitles", variant_id: "x-de" });
+    await flushPromises();
+    assert.deepEqual(outcomes(world), [
+      { request: { kind: "select_variant", menu: "quality", variant_id: "video-720" }, outcome: "done" },
+      { request: { kind: "select_variant", menu: "subtitles", variant_id: "x-de" }, outcome: "done" },
+    ]);
+  });
+
+  it("отказ доставки во фрейм — failed; сеанс живёт", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    world.variantMirror.behavior.outcome = new Error("frame is gone");
+    world.sockets.last().receive({ type: "select_variant", kind: "audio", variant_id: "dub-b" });
+    await flushPromises();
+    assert.deepEqual(outcomes(world), [{ request: selectAudioDubB, outcome: "failed" }]);
+    assert.deepEqual(world.ended, []);
+  });
+
+  it("пункта нет в последнем меню (устаревший выбор) — плеер получает failed, ничего не нажато", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    world.sockets.last().receive({ type: "select_variant", kind: "audio", variant_id: "dub-z" });
+    await flushPromises();
+    assert.deepEqual(world.variantMirror.commands, []);
+    assert.deepEqual(outcomes(world), [{ request: { kind: "select_variant", menu: "audio", variant_id: "dub-z" }, outcome: "failed" }]);
+    assert.ok(world.adMirror.notes.some((note) => /select_variant ignored/u.test(note)), "заметка в журнале осталась");
+  });
+
+  it("Next: исход страницы уходит плееру; нет следующей серии — failed без обращения к странице", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.sockets.last().receive({ type: "next_episode" });
+    await flushPromises();
+    assert.deepEqual(world.variantMirror.commands, []);
+    assert.deepEqual(outcomes(world), [{ request: { kind: "next_episode" }, outcome: "failed" }]);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    world.variantMirror.behavior.outcome = "person_only";
+    world.sockets.last().receive({ type: "next_episode" });
+    await flushPromises();
+    assert.deepEqual(outcomes(world).at(-1), { request: { kind: "next_episode" }, outcome: "person_only" });
+    world.variantMirror.behavior.outcome = "done";
+    world.sockets.last().receive({ type: "next_episode" });
+    await flushPromises();
+    assert.deepEqual(outcomes(world).at(-1), { request: { kind: "next_episode" }, outcome: "done" });
+    assert.equal(outcomes(world).length, 3);
+  });
+
+  it("общая версия 1.7: исход не шлётся (ни успех, ни отказ), всё прочее как раньше", async () => {
+    const world = setup();
+    world.door.nextOutcome = (request) => grantFor(request, "started", PROTOCOL_VERSION_1_7);
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    assert.equal(menus(world).length, 2, "меню по-прежнему уходит");
+    assert.deepEqual(sent(world, "page_navigation"), [{ type: "page_navigation", next_episode: "available" }]);
+    world.sockets.last().receive({ type: "select_variant", kind: "audio", variant_id: "dub-b" });
+    world.sockets.last().receive({ type: "select_variant", kind: "audio", variant_id: "dub-z" });
+    world.sockets.last().receive({ type: "next_episode" });
+    await flushPromises();
+    assert.equal(world.variantMirror.commands.length, 2, "страница нажата как раньше");
+    assert.deepEqual(outcomes(world), []);
+    assert.deepEqual(world.ended, []);
+  });
+
+  it("сеанс кончился, пока фрейм работал — ответ фрейма плееру не шлётся", async () => {
+    const world = setup();
+    await startHandoff(world);
+    world.handoffs.variantWatchReport(TAB, 0, report(SERIES));
+    const socket = world.sockets.last();
+    socket.receive({ type: "select_variant", kind: "audio", variant_id: "dub-b" });
+    socket.receive({ type: "return_to_page", position_us: 0, resume: "paused" });
+    world.framePorts.last().deliver({ kind: "handoff_ended", cause: "returned" });
+    await flushPromises();
+    assert.equal(world.variantMirror.commands.length, 1, "команда фрейму уйти успела");
+    assert.deepEqual(outcomes(world), []);
   });
 });
 

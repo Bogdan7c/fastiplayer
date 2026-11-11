@@ -1,5 +1,5 @@
 //! Варианты страницы в переходнике (14a): `variant_menu_changed` (протокол 1.0),
-//! `page_navigation` и `subtitle_preference` (1.7) идут главному циклу уведомлением
+//! `page_navigation` и `subtitle_preference` (1.7), `variant_outcome` (1.8) идут главному циклу уведомлением
 //! [`IntakeNotice::PageVariants`].
 //!
 //! Вынесено из `translator.rs` (предел 800 строк): там осталась одна строка делегирования.
@@ -15,10 +15,10 @@ use tracing::warn;
 
 use super::stream_port::StreamFactory;
 use super::{IntakeNotice, ProtocolTranslator};
-use crate::browser_session::page_variants::PageVariantUpdate;
+use crate::browser_session::page_variants::{PageVariantOutcomeWord, PageVariantUpdate};
 
 impl<F: StreamFactory> ProtocolTranslator<F> {
-    /// `variant_menu_changed`, `page_navigation` или `subtitle_preference` → уведомление
+    /// `variant_menu_changed`, `page_navigation`, `subtitle_preference` или `variant_outcome` → уведомление
     /// главному циклу.
     pub(super) fn forward_page_variants(
         &mut self,
@@ -34,8 +34,11 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             PageSessionMessage::SubtitlePreference { choice } => {
                 PageVariantUpdate::SubtitlePreference(choice)
             }
+            PageSessionMessage::VariantOutcome { request, outcome } => {
+                PageVariantUpdate::Outcome(PageVariantOutcomeWord { request, outcome })
+            }
             _ => {
-                // Сюда приходят только три вида сообщений (так сопоставлен вызов).
+                // Сюда приходят только четыре вида сообщений (так сопоставлен вызов).
                 warn!("A page message that is not about page variants reached their forwarding");
                 self.counters.ignored_messages += 1;
                 return;

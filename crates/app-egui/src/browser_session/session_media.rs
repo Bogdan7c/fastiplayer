@@ -98,6 +98,7 @@ mod page_clock;
 mod page_quality;
 mod page_reopen;
 mod page_subtitles;
+mod page_variant_outcome;
 mod page_variants;
 mod position_carry;
 mod resource_requests;

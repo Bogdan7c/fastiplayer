@@ -39,7 +39,7 @@ test("в 1.7 ровно три новых сообщения; экстеншен
   assert.deepEqual(pageSessionIntroducedIn("page_navigation"), PROTOCOL_VERSION_1_7);
   assert.deepEqual(pageSessionIntroducedIn("subtitle_preference"), PROTOCOL_VERSION_1_7);
   assert.deepEqual(playerSessionIntroducedIn("subtitle_choice"), PROTOCOL_VERSION_1_7);
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_7);
+  assert.equal(versionIncludes(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_7), true, "1.7 входит в текущую версию");
   // Сообщения 1.0 про варианты не менялись.
   assert.deepEqual(pageSessionIntroducedIn("variant_menu_changed"), { major: 1, minor: 0 });
   assert.deepEqual(playerSessionIntroducedIn("select_variant"), { major: 1, minor: 0 });

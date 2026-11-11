@@ -77,6 +77,7 @@ pub(crate) use self::live_window::LiveWindowTold;
 pub(crate) use self::page_reopen::ReopenRequestOutcome;
 pub(crate) use self::page_variants::{
     NextEpisodePermission, NextEpisodeSendOutcome, SelectVariantSendOutcome,
+    VariantOutcomeReporting,
 };
 pub(crate) use self::page_view::{PageViewPermission, ShowPageRequestOutcome};
 pub(crate) use self::resource_requests::{ResourceQueueOutcome, ResourceRequestPermission};

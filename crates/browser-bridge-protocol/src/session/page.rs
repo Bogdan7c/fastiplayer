@@ -17,6 +17,9 @@ use crate::session::page_subtitles::{
     PageSubtitleLanguage, PageSubtitleOrigin, PageSubtitleTrackId, SUBTITLE_CHOICE_INTRODUCED_IN,
     SubtitleChoice, SubtitleFormatHint,
 };
+use crate::session::variant_outcome::{
+    VARIANT_OUTCOME_INTRODUCED_IN, VariantOutcome, VariantRequest,
+};
 use crate::session::variants::VariantMenu;
 use crate::stream::{RangeRequestId, SeekId, SourceBufferIndex, StreamGeneration};
 use crate::strict_shape::{strict_label, strict_object};
@@ -392,6 +395,14 @@ pub enum PageSessionMessage {
         /// Что выбрано.
         choice: SubtitleChoice,
     },
+    /// Что страница сделала с выбором зрителя (протокол 1.8, сессия 15c2): ответ ровно
+    /// на одну просьбу `select_variant` или `next_episode`. Вне поколений.
+    VariantOutcome {
+        /// На какую просьбу ответ.
+        request: VariantRequest,
+        /// Что сделала страница.
+        outcome: VariantOutcome,
+    },
 }
 
 impl PageSessionMessage {
@@ -412,6 +423,7 @@ impl PageSessionMessage {
             | Self::SubtitleTrackOffered { .. }
             | Self::PageNavigation { .. }
             | Self::SubtitlePreference { .. }
+            | Self::VariantOutcome { .. }
             | Self::SeekStarted { .. } => StreamScope::Unbound,
             Self::GenerationStarted { generation }
             | Self::FileSourceAdded { generation }
@@ -462,6 +474,7 @@ impl PageSessionMessage {
             Self::SubtitleTrackOffered { .. } => PAGE_SUBTITLES_INTRODUCED_IN,
             Self::PageNavigation { .. } => PAGE_NAVIGATION_INTRODUCED_IN,
             Self::SubtitlePreference { .. } => SUBTITLE_CHOICE_INTRODUCED_IN,
+            Self::VariantOutcome { .. } => VARIANT_OUTCOME_INTRODUCED_IN,
             Self::Attach { .. }
             | Self::GenerationStarted { .. }
             | Self::FileSourceAdded { .. }
@@ -527,6 +540,7 @@ impl ProtocolMessage for PageSessionMessage {
         "subtitle_track_offered",
         "page_navigation",
         "subtitle_preference",
+        "variant_outcome",
     ];
 
     fn validate(&self) -> Result<(), ValueViolation> {

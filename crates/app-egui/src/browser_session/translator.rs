@@ -426,7 +426,8 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             }
             variants @ (PageSessionMessage::VariantMenuChanged { .. }
             | PageSessionMessage::PageNavigation { .. }
-            | PageSessionMessage::SubtitlePreference { .. }) => {
+            | PageSessionMessage::SubtitlePreference { .. }
+            | PageSessionMessage::VariantOutcome { .. }) => {
                 self.forward_page_variants(&session, variants, out);
             }
             // `attach` до приёмников не доходит (его съедает сервер).

@@ -265,7 +265,7 @@ describe("PlayerJS: сериал Ashdi `?multivoice` — озвучки-папк
     const page = ashdiSeriesPage({ dubs: ASHDI_DUBS, playing: { dub: 0, season: 1, episode: 0 } });
     const { adapter } = adapterFor(page, "ashdi.vip");
     const before = await adapter.describe();
-    assert.equal(await adapter.select("audio", optionIdOf(before, "audio", "Цікава Ідея")), "no_such_variant");
+    assert.equal(await adapter.select("audio", optionIdOf(before, "audio", "Цікава Ідея")), "no_such_episode");
     assert.ok(!page.presses.some((press) => press.startsWith("episode:")), "играющую серию не трогали");
     assert.deepEqual(page.playing, { dub: 0, season: 1, episode: 0 });
     page.flush();

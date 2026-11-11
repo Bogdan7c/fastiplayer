@@ -30,10 +30,12 @@ use crate::page_variants::{
 use crate::viewer_transport::ViewerTransportIntent;
 
 /// Секунда зрителя в миг выбора.
-const VIEWER_SECOND: Duration = Duration::from_secs(5);
+pub(super) const VIEWER_SECOND: Duration = Duration::from_secs(5);
 
 /// Поколение 1 показано на `VIEWER_SECOND`, общая версия `version`.
-fn watching_harness(version: ProtocolVersion) -> (Harness, SessionRef, PushedStreamWriter) {
+pub(super) fn watching_harness(
+    version: ProtocolVersion,
+) -> (Harness, SessionRef, PushedStreamWriter) {
     let (mut harness, current, writer) = loaded_harness();
     harness.media.on_session_attached(&current, version);
     harness.player.show_load(
@@ -47,7 +49,7 @@ fn watching_harness(version: ProtocolVersion) -> (Harness, SessionRef, PushedStr
     (harness, current, writer)
 }
 
-fn menu_notice(session: &SessionRef, kind: VariantKind, ids: &[&str]) -> IntakeNotice {
+pub(super) fn menu_notice(session: &SessionRef, kind: VariantKind, ids: &[&str]) -> IntakeNotice {
     let options = ids
         .iter()
         .enumerate()
@@ -76,7 +78,10 @@ fn menu_notice(session: &SessionRef, kind: VariantKind, ids: &[&str]) -> IntakeN
     }
 }
 
-fn navigation_notice(session: &SessionRef, availability: NextEpisodeAvailability) -> IntakeNotice {
+pub(super) fn navigation_notice(
+    session: &SessionRef,
+    availability: NextEpisodeAvailability,
+) -> IntakeNotice {
     IntakeNotice::PageVariants {
         session: session.clone(),
         update: PageVariantUpdate::Navigation(availability),
@@ -98,7 +103,11 @@ fn ad_showing() -> PageAdState {
 }
 
 /// Выбор пункта `index` по меню, которое сейчас видит окно.
-fn current_choice(harness: &Harness, kind: PageVariantKind, index: usize) -> PageVariantChoice {
+pub(super) fn current_choice(
+    harness: &Harness,
+    kind: PageVariantKind,
+    index: usize,
+) -> PageVariantChoice {
     harness
         .media
         .page_variant_facts()
@@ -108,7 +117,7 @@ fn current_choice(harness: &Harness, kind: PageVariantKind, index: usize) -> Pag
 }
 
 /// Сообщения странице без часов и буфера.
-fn commands_to_page(harness: &mut Harness) -> Vec<PlayerSessionMessage> {
+pub(super) fn commands_to_page(harness: &mut Harness) -> Vec<PlayerSessionMessage> {
     harness
         .page
         .take_sent()
@@ -122,7 +131,7 @@ fn commands_to_page(harness: &mut Harness) -> Vec<PlayerSessionMessage> {
         .collect()
 }
 
-fn select(kind: VariantKind, id: &str) -> PlayerSessionMessage {
+pub(super) fn select(kind: VariantKind, id: &str) -> PlayerSessionMessage {
     PlayerSessionMessage::SelectVariant {
         kind,
         variant_id: VariantId::new(id).expect("id"),
@@ -130,7 +139,7 @@ fn select(kind: VariantKind, id: &str) -> PlayerSessionMessage {
 }
 
 /// Зритель выбирает дубляж «dub» в меню озвучек; очередь уходит странице.
-fn viewer_selects_dub(harness: &mut Harness) {
+pub(super) fn viewer_selects_dub(harness: &mut Harness) {
     let choice = current_choice(harness, PageVariantKind::Audio, 1);
     harness.media.on_viewer_transport(
         ViewerTransportIntent::SelectPageVariant(choice),
@@ -247,7 +256,7 @@ fn during_an_ad_the_selection_is_refused_like_a_seek() {
 }
 
 /// Зритель выбирает строку `index` меню субтитров страницы.
-fn viewer_selects_subtitle_line(harness: &mut Harness, index: usize) {
+pub(super) fn viewer_selects_subtitle_line(harness: &mut Harness, index: usize) {
     let choice = current_choice(harness, PageVariantKind::Subtitles, index);
     harness.media.on_viewer_transport(
         ViewerTransportIntent::SelectPageVariant(choice),
@@ -425,7 +434,10 @@ fn during_an_ad_next_does_not_skip_the_episode() {
 // ---- возврат на секунду (решение 280) ------------------------------------------------
 
 /// Поколение 2 (данные только в начале длинного ролика) открывает страница.
-fn page_opens_generation_2(harness: &mut Harness, current: &SessionRef) -> PushedStreamWriter {
+pub(super) fn page_opens_generation_2(
+    harness: &mut Harness,
+    current: &SessionRef,
+) -> PushedStreamWriter {
     let (writer, notice) = generation_with_head(current, 2, PushedDuration::Finite(LONG_CLIP));
     harness.media.on_intake(vec![notice], None);
     writer
@@ -517,7 +529,7 @@ fn an_ad_generation_in_between_starts_by_itself_and_the_film_gets_the_second() {
 }
 
 /// Выбор, затем `forget` одним из путей, затем поколение 2: никакой перемотки к T.
-fn assert_no_carry_after(harness: &mut Harness, current: &SessionRef) {
+pub(super) fn assert_no_carry_after(harness: &mut Harness, current: &SessionRef) {
     commands_to_page(harness);
     let _second = page_opens_generation_2(harness, current);
     harness.drive_for(Duration::from_millis(50));

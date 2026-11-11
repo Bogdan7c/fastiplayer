@@ -87,3 +87,63 @@ fn the_subtitle_preference_reaches_the_main_loop_as_a_page_variant_word() {
     assert_eq!(translator.counters().page_variant_words, 1);
     assert_eq!(translator.counters().ignored_messages, 0);
 }
+
+/// Исход выбора 1.8 (15c2) идёт тем же путём: одно уведомление в порядке провода, с тем же
+/// запросом и исходом, что прислала страница.
+#[test]
+fn a_variant_outcome_reaches_the_main_loop_as_a_page_variant_word_in_wire_order() {
+    use crate::browser_session::page_variants::PageVariantOutcomeWord;
+    use browser_bridge_protocol::session::{VariantOutcome, VariantRequest};
+    use browser_bridge_protocol::text::VariantId;
+
+    let (mut translator, _log, _failure) = fake_translator();
+    let select = VariantRequest::SelectVariant {
+        menu: VariantKind::Audio,
+        variant_id: VariantId::new("dub-b").expect("id"),
+    };
+    let notices = run(
+        &mut translator,
+        [
+            started(1, 1),
+            message(
+                1,
+                PageSessionMessage::VariantOutcome {
+                    request: select.clone(),
+                    outcome: VariantOutcome::NoSuchEpisode,
+                },
+            ),
+            message(
+                1,
+                PageSessionMessage::VariantOutcome {
+                    request: VariantRequest::NextEpisode {},
+                    outcome: VariantOutcome::Done,
+                },
+            ),
+        ],
+    );
+    let variant_words: Vec<Seen> = seen(&notices)
+        .into_iter()
+        .filter(|word| matches!(word, Seen::PageVariants(..)))
+        .collect();
+    assert_eq!(
+        variant_words,
+        vec![
+            Seen::PageVariants(
+                1,
+                PageVariantUpdate::Outcome(PageVariantOutcomeWord {
+                    request: select,
+                    outcome: VariantOutcome::NoSuchEpisode,
+                })
+            ),
+            Seen::PageVariants(
+                1,
+                PageVariantUpdate::Outcome(PageVariantOutcomeWord {
+                    request: VariantRequest::NextEpisode {},
+                    outcome: VariantOutcome::Done,
+                })
+            ),
+        ]
+    );
+    assert_eq!(translator.counters().page_variant_words, 2);
+    assert_eq!(translator.counters().ignored_messages, 0);
+}
