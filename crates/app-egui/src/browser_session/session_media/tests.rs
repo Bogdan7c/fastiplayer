@@ -6,13 +6,13 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use browser_bridge_protocol::session::player::ClockState;
+use browser_bridge_protocol::session::player::{ClockState, StreamRejection};
 use browser_bridge_protocol::{MediaTime, PlayerSessionMessage, SessionKey};
 use browser_bridge_session::{
     ActiveFarewellOutcome, CloseOutcome, FarewellError, ReplacedFarewellOutcome, SendToPageError,
     SessionEndReason, SessionInstance,
 };
-use player_core::PlaybackState;
+use player_core::{PlaybackState, PreparedMedia};
 use pushed_media_source::{
     LaneId, PushedContainer, PushedDuration, PushedSourcePolicy, PushedStreamWriter, pushed_stream,
 };
@@ -22,7 +22,7 @@ use crate::browser_session::intake_notice::GenerationSource;
 use crate::browser_session::outbound::{PENDING_RETRY_INTERVAL, PageSender};
 use crate::browser_session::playback::live_window::LiveWindowObservation;
 use crate::browser_session::playback::{
-    BrowserPlaybackFault, FaultAnnouncement, LoadFault, MediaLoadTicketIssuer,
+    BrowserPlaybackFault, FaultAnnouncement, LoadFault, LoadStart, MediaLoadTicketIssuer,
 };
 use crate::browser_session::window::WindowCommandRefusal;
 

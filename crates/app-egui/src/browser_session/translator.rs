@@ -26,38 +26,33 @@
 //!   успевшей сама закончить поток, но только до конца самой короткой дорожки
 //!   (решение 133); честный `endOfStream` страницы — по-прежнему `end_of_stream`.
 
-use browser_bridge_protocol::session::page::{PagePlaybackRequest, RemovalEnd, SeekCause};
 use browser_bridge_protocol::session::player::StreamRejection;
-use browser_bridge_protocol::{
-    MediaDuration, MediaTime, PageSessionMessage, SessionCloseReason, SourceBufferIndex,
-    StreamGeneration,
-};
+use browser_bridge_protocol::{PageSessionMessage, SessionCloseReason, StreamGeneration};
 use browser_bridge_session::SessionRef;
 use pushed_media_source::RangeRequestIds;
-use pushed_media_source::{
-    AppendOutcome, LaneId, PageRemovedRange, PageRemovedRangeEnd, PushedContainer, PushedDuration,
-    PushedStreamError, TimestampOffset,
-};
+use pushed_media_source::{AppendOutcome, PushedContainer, PushedStreamError, TimestampOffset};
 use tracing::{debug, error, info, warn};
 
 use super::intake_notice::{
     GenerationHandoff, GenerationSource, IntakeNotice, PageIntent, PageLinkChange,
 };
-use super::rejection::{
-    FailureResponse, response_to_stream_failure, response_to_unsupported_media_type,
-};
+use super::rejection::{response_to_stream_failure, response_to_unsupported_media_type};
 use super::stream_queue::{OwnedChunk, SessionInput};
 
 mod counters;
+mod failure_response;
 mod file_generation;
 mod hls_generation;
 mod page_link;
+mod page_seek;
 mod page_subtitles;
 mod page_variants;
+mod wire_convert;
 
 pub(crate) use self::counters::TranslatorCounters;
 
 use self::file_generation::SealOccasion;
+use self::wire_convert::{lane_of, page_intent, page_removed_range, pushed_duration};
 pub(crate) mod file_port;
 pub(crate) mod stream_port;
 
@@ -435,56 +430,6 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
         }
     }
 
-    /// Перемотка: страница сама (`page_seek`) или по нашей команде (`player_seek`).
-    fn apply_seek_started(
-        &mut self,
-        session: &SessionRef,
-        target: MediaTime,
-        cause: SeekCause,
-        out: &mut Vec<IntakeNotice>,
-    ) {
-        match cause {
-            SeekCause::PageSeek {} => {
-                self.note_page_seek_in_wire_order(target);
-                out.push(IntakeNotice::PageIntent {
-                    session: session.clone(),
-                    intent: PageIntent::FollowPageSeek(target),
-                });
-            }
-            SeekCause::PlayerSeek { seek_id } => out.push(IntakeNotice::PlayerSeekAcknowledged {
-                session: session.clone(),
-                seek_id,
-                target,
-            }),
-        }
-    }
-
-    /// Перемотка страницей → источнику, строго в порядке кадров на проводе.
-    ///
-    /// Вызов обязан остаться ЗДЕСЬ, на потоке приёма: источник должен узнать о
-    /// перемотке раньше байтов новой точки, которые идут следом в той же очереди,
-    /// и раньше, чем главный цикл скомандует плееру `seek` к той же цели (тогда
-    /// источник не попросит страницу перемотаться второй раз). Поколения нет или от
-    /// него отказались — сообщать некому, перемотка плеера всё равно пройдёт.
-    fn note_page_seek_in_wire_order(&mut self, target: MediaTime) {
-        let Some(InstanceState {
-            phase:
-                InstancePhase::Open(Some(GenerationState {
-                    stream: GenerationStream::Live(writer),
-                    ..
-                })),
-            ..
-        }) = self.instance.as_mut()
-        else {
-            debug!(
-                target_us = target.as_micros(),
-                "Page seek without a live stream; nothing to tell the source"
-            );
-            return;
-        };
-        writer.note_page_seek(media_time_as_duration(target));
-    }
-
     // ---- поколения --------------------------------------------------------
 
     /// Новое поколение: старый писатель бросается, новый поток — главному циклу.
@@ -663,74 +608,6 @@ impl<F: StreamFactory> ProtocolTranslator<F> {
             out.push(IntakeNotice::BytesAppended { session });
         }
     }
-
-    // ---- ответы на ошибки -------------------------------------------------
-
-    /// Ответ на ошибку входа, если вход не устарел (у устаревшего поколения ответа нет).
-    fn respond_unless_stale(
-        &mut self,
-        session: &SessionRef,
-        generation: StreamGeneration,
-        response: FailureResponse,
-        out: &mut Vec<IntakeNotice>,
-    ) {
-        match self.route(generation) {
-            GenerationRoute::Live(_) => self.apply_response(session, generation, response, out),
-            GenerationRoute::Rejected => self.counters.rejected_generation_inputs += 1,
-            GenerationRoute::Stale => self.counters.stale_inputs += 1,
-            GenerationRoute::Violation | GenerationRoute::NotSegments => {
-                self.request_close(session, SessionCloseReason::ProtocolViolation, out);
-            }
-        }
-    }
-
-    /// Исполняет ответ: отказ от поколения (ровно один) или закрытие сеанса.
-    fn apply_response(
-        &mut self,
-        session: &SessionRef,
-        generation: StreamGeneration,
-        response: FailureResponse,
-        out: &mut Vec<IntakeNotice>,
-    ) {
-        match response {
-            FailureResponse::RejectGeneration(reason) => {
-                if let Some(InstanceState {
-                    phase: InstancePhase::Open(Some(state)),
-                    ..
-                }) = self.instance.as_mut()
-                    && state.number == generation
-                    && !matches!(state.stream, GenerationStream::Rejected)
-                {
-                    // Писатель бросается: мёртвый поток ничего больше не примет.
-                    state.stream = GenerationStream::Rejected;
-                    out.push(IntakeNotice::Reject {
-                        session: session.clone(),
-                        generation,
-                        reason,
-                    });
-                }
-            }
-            FailureResponse::CloseSession(reason) => self.request_close(session, reason, out),
-        }
-    }
-
-    /// Просит закрыть экземпляр; дальше его вход выбрасывается до `Ended`.
-    fn request_close(
-        &mut self,
-        session: &SessionRef,
-        reason: SessionCloseReason,
-        out: &mut Vec<IntakeNotice>,
-    ) {
-        if let Some(active) = self.instance.as_mut()
-            && matches!(active.phase, InstancePhase::Open(_))
-        {
-            active.phase = InstancePhase::Closing;
-            out.push(IntakeNotice::CloseSession {
-                session: session.clone(),
-                reason,
-            });
-        }
-    }
 }
 
 /// Чем кончилась операция над писателем поколения.
@@ -754,46 +631,6 @@ enum InstanceVerdict {
     Closing,
     /// Старый экземпляр.
     Stale,
-}
-
-/// SourceBuffer протокола → полоса источника (тот же номер).
-const fn lane_of(source_buffer: SourceBufferIndex) -> LaneId {
-    LaneId::new(source_buffer.get())
-}
-
-/// Время протокола (целые мкс) → время источника.
-const fn media_time_as_duration(time: MediaTime) -> std::time::Duration {
-    std::time::Duration::from_micros(time.as_micros())
-}
-
-/// Стёртый диапазон `remove(start, end)` протокола → диапазон источника. Время
-/// протокола — уже время показа после `timestampOffset`, как у полки источника.
-const fn page_removed_range(start: MediaTime, end: RemovalEnd) -> PageRemovedRange {
-    let end = match end {
-        RemovalEnd::At { time_us } => PageRemovedRangeEnd::At(media_time_as_duration(time_us)),
-        RemovalEnd::EndOfTimeline {} => PageRemovedRangeEnd::EndOfTimeline,
-    };
-    PageRemovedRange::new(media_time_as_duration(start), end)
-}
-
-/// Длительность протокола → длительность источника.
-const fn pushed_duration(duration: MediaDuration) -> PushedDuration {
-    match duration {
-        MediaDuration::Unknown {} => PushedDuration::Unknown,
-        MediaDuration::Live {} => PushedDuration::Live,
-        MediaDuration::Finite { duration_us } => {
-            PushedDuration::Finite(std::time::Duration::from_micros(duration_us.as_micros()))
-        }
-    }
-}
-
-/// `page_playback` → намерение для плеера.
-const fn page_intent(request: PagePlaybackRequest) -> PageIntent {
-    match request {
-        PagePlaybackRequest::Play {} => PageIntent::Play,
-        PagePlaybackRequest::Pause {} => PageIntent::Pause,
-        PagePlaybackRequest::SetRate { rate } => PageIntent::SetRate(rate),
-    }
 }
 
 #[cfg(test)]
