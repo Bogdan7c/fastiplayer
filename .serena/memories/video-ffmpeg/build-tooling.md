@@ -24,6 +24,9 @@
 ## Старый скрипт
 - `scripts/tooling/build-ffmpeg-lgpl.sh` (FFmpeg 8.1.1 shared в `target/fastiplayer-ffmpeg/<version>`, без SHA-256 и без dav1d) обычной сборкой не используется; оставлен для `system-ffmpeg` со своим prefix-ом (`FFMPEG_DIR`/`PKG_CONFIG_PATH`). README tooling помечен.
 
+## Раскладка в target/<profile>/lib — только атомарно (2026-11-11, 16a моста)
+- `app-egui/build.rs` `copy_file` кладёт `.so` и лицензии во временный `.<имя>.staging-<pid>` рядом и `rename` поверх. НЕ `fs::copy` в цель: обрезка того же inode под работающим плеером из `target/` (стенд, ручной запуск, rust-analyzer у Serena перезапускает build-скрипты) сбрасывает исправленные загрузчиком страницы (`.dynamic`/GOT) — плеер падал SIGSEGV в `dlopen` драйвера VA-API на смене поколения (`_dl_lookup_map` → soname `libavcodec_fastiplayer`, `d_ptr` = значение из файла). Плавающий «сбой» стенда — сначала `coredumpctl list` (ptrace к плееру стенда закрыт `ptrace_scope=1`, дамп разбирается `coredumpctl debug`/gdb с debuginfod).
+
 ## Тесты
 - `cargo test -p ffmpeg-vendor` — политика: SHA-256 (FIPS-векторы, подмена, отсутствие), LGPL/переносимость configure, allowlist декодеров, суффикс, static PIC dav1d, soname-фильтр.
 - `cargo test -p video-ffmpeg --features vendored-ffmpeg`: probe на закреплённых версиях; `tests/av1_software_decode.rs` — фикстура `tests/fixtures/av1/testsrc2-160x90-10frames.ivf` (generate.sh, libaom): все 10 кадров декодируются без GPU; ignored-тест (Vulkan) доводит первый и последний AV1-кадр до WGPU submit/release. Общий WGPU-стенд — `tests/support/wgpu_acceptance.rs` (его же использует `vertical_seek_wgpu.rs`).
