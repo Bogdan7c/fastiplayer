@@ -9,6 +9,8 @@
 //! поколение не показано, странице идут часы «0 / жду», как у ставящегося поколения.
 
 use super::*;
+use browser_bridge_protocol::ProtocolVersion;
+
 use crate::browser_session::outbound::CLOCK_INTERVAL;
 
 /// Подаёт в поток целый ролик фикстуры (видео + звук), длительность и конец потока —
@@ -135,5 +137,150 @@ fn a_new_source_without_a_target_gives_no_farewell_position() {
     assert!(
         harness.closer.farewells.borrow().is_empty(),
         "a farewell carried the old generation's position into the new source"
+    );
+}
+
+// ---- номер поколения в часах (протокол 1.10, 16a2) ------------------------------------
+
+/// Тики часов, ушедшие странице: (номер поколения в поле, позиция, состояние).
+fn numbered_clocks(messages: &[PlayerSessionMessage]) -> Vec<(Option<u32>, u64, ClockState)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            PlayerSessionMessage::Clock {
+                generation,
+                position_us,
+                state,
+                ..
+            } => Some((
+                generation.map(StreamGeneration::get),
+                position_us.as_micros(),
+                *state,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Один тик (проход через интервал часов после `after`); возвращает ушедшие тики.
+fn one_tick(harness: &mut Harness, after: Instant) -> Vec<(Option<u32>, u64, ClockState)> {
+    harness.media.drive(after + CLOCK_INTERVAL);
+    numbered_clocks(&harness.page.take_sent())
+}
+
+/// Правило 2 описывает ЖДУЩЕЕ поколение: пока плеер ещё играет поколение 1, «0 / жду» нового
+/// источника несёт номер 2; до объявления и после показа — номер того, что показано.
+#[test]
+fn a_1_10_page_hears_which_generation_each_clock_describes() {
+    let (mut harness, current, _first_writer) = loaded_harness();
+    harness
+        .media
+        .on_session_attached(&current, ProtocolVersion::V1_10);
+    let first_load = harness.player.load_ticket(0);
+    harness
+        .player
+        .show_load(first_load, Duration::from_secs(30), PlaybackState::Playing);
+    let start = Instant::now() + Duration::from_secs(1);
+    assert_eq!(
+        one_tick(&mut harness, start),
+        vec![(Some(1), 30_000_000, ClockState::Playing)]
+    );
+
+    let (mut second_writer, second) = stream_generation(&current, 2, false);
+    harness.media.on_intake(vec![second], None);
+    assert_eq!(
+        one_tick(&mut harness, start + CLOCK_INTERVAL),
+        vec![(Some(2), 0, ClockState::Waiting)],
+        "the new source's waiting clock must name the new generation"
+    );
+
+    deliver_fixture_clip(&mut second_writer);
+    harness.drive_until_loaded();
+    harness.page.take_sent();
+    let second_load = harness.player.load_ticket(1);
+    harness.player.show_load(
+        second_load,
+        Duration::from_millis(40),
+        PlaybackState::Playing,
+    );
+    assert_eq!(
+        one_tick(&mut harness, start + Duration::from_secs(10)),
+        vec![(Some(2), 40_000, ClockState::Playing)]
+    );
+}
+
+/// «Жду в цели» рождается двумя дорогами — номер у каждой свой: перемотка ЗАГРУЖЕННОГО
+/// поколения без ответа плеера — номер загруженного (1), цель зрителя у ЖДУЩЕГО поколения —
+/// номер ждущего (2).
+#[test]
+fn waiting_at_a_target_names_the_generation_that_waits() {
+    let (mut harness, current, _first_writer) = loaded_harness();
+    harness
+        .media
+        .on_session_attached(&current, ProtocolVersion::V1_10);
+    let first_load = harness.player.load_ticket(0);
+    harness
+        .player
+        .show_load(first_load, Duration::from_secs(30), PlaybackState::Playing);
+    let start = Instant::now() + Duration::from_secs(1);
+
+    // Загруженное поколение: перемотка страницы отдана, плеер ещё не ответил.
+    harness.player.seek_answers.set(FakeSeekAnswers::Withheld);
+    let target = MediaTime::from_micros(5_000_000).expect("time");
+    harness.media.on_intake(
+        vec![intent(&current, PageIntent::FollowPageSeek(target))],
+        None,
+    );
+    assert_eq!(
+        one_tick(&mut harness, start),
+        vec![(Some(1), 5_000_000, ClockState::Waiting)]
+    );
+    harness.player.answer_seek();
+
+    // Ждущее поколение: зритель перемотал, пока оно не открылось, — его цель ждут.
+    let (_second_writer, second) = stream_generation(&current, 2, false);
+    harness.media.on_intake(vec![second], None);
+    harness.media.on_viewer_transport(
+        crate::viewer_transport::ViewerTransportIntent::Seek(Duration::from_secs(8)),
+        start,
+    );
+    assert_eq!(
+        one_tick(&mut harness, start + CLOCK_INTERVAL),
+        vec![(Some(2), 8_000_000, ClockState::Waiting)]
+    );
+}
+
+/// Пока в плеере ничего нет, часы описывают открывающееся поколение (второе место отправки,
+/// `tell_page_while_nothing_is_loaded`).
+#[test]
+fn the_opening_clock_names_the_opening_generation() {
+    let mut harness = Harness::new();
+    let current = session(1);
+    harness.media.on_session_opened(&current);
+    harness
+        .media
+        .on_session_attached(&current, ProtocolVersion::V1_10);
+    let (_writer, first) = stream_generation(&current, 1, false);
+    let start = MediaTime::from_micros(200_000).expect("time");
+    harness.media.on_intake(
+        vec![first, intent(&current, PageIntent::FollowPageSeek(start))],
+        None,
+    );
+    assert_eq!(
+        one_tick(&mut harness, Instant::now() + Duration::from_secs(1)),
+        vec![(Some(1), 200_000, ClockState::Waiting)]
+    );
+}
+
+/// Страница 1.9 номера не знает: те же часы без поля.
+#[test]
+fn a_1_9_page_hears_the_same_clock_without_the_generation() {
+    let (mut harness, _writers) = new_source_without_target_awaits_data();
+    harness
+        .media
+        .on_session_attached(&session(1), ProtocolVersion::V1_9);
+    assert_eq!(
+        one_tick(&mut harness, Instant::now() + Duration::from_secs(1)),
+        vec![(None, 0, ClockState::Waiting)]
     );
 }

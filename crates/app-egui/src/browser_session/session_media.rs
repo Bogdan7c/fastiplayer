@@ -29,7 +29,9 @@
 //!   загрузка начинается так, как хочет страница ([`LoadStart`](super::playback::LoadStart)); после перемотки
 //!   плеер приводится к «играть/пауза» (перемотка после `Ended` в плеере кончается
 //!   паузой — поэтому `play()` идёт следом, если страница играет; ядро принимает
-//!   `play` и во время перемотки — проверено тестом настоящего плеера);
+//!   `play` и во время перемотки — проверено тестом настоящего плеера); `play` страницы у
+//!   доигравшего медиа плееру не уходит — только воля, иначе ядро повторило бы прошлую
+//!   серию с начала (16a2, [`page_play_after_end`]);
 //! - правилом «согласовать после установки»: плеер ставит медиа асинхронно, а
 //!   установка сбрасывает скорость на 1× и берёт «играть/пауза» из загрузки. Команды,
 //!   отданные страницей, пока медиа ставилось, достались прежнему медиа. Поэтому,
@@ -70,7 +72,7 @@ use self::generation_feed::{FeedReport, LoadedFeed, PendingFeed};
 use self::generation_placement::GenerationPlacement;
 use self::generation_rejection::ViewerAwareness;
 use self::generation_start::GenerationStart;
-use self::page_clock::{LoadedMediaShown, PageClockSource, PageStartWord};
+use self::page_clock::{LoadedClockWord, LoadedMediaShown, PageClock, PageStartWord};
 use self::page_reopen::PageReopen;
 use self::seek_handover::UnansweredSeek;
 use super::intake_notice::{GenerationHandoff, IntakeNotice, PageEpisodeWord, PageIntent};
@@ -94,6 +96,7 @@ mod live_hls;
 mod next_episode_wait;
 mod open_pending;
 mod page_clock;
+mod page_play_after_end;
 mod page_quality;
 mod page_reopen;
 mod page_retitle;
@@ -262,6 +265,9 @@ pub(crate) struct SessionMedia {
     next_episode_wait: self::next_episode_wait::NextEpisodeWait,
     /// Смены заголовка вкладки посреди сеанса (16a, [`page_retitle`]).
     page_retitles: self::page_retitle::PageRetitles,
+    /// Команды транспорта плееру после последнего наблюдения (16a2, [`page_play_after_end`]):
+    /// «у конца» устаревшего наблюдения не мешает `play` страницы.
+    transport_since_observation: self::page_play_after_end::TransportSinceObservation,
 }
 
 impl SessionMedia {
@@ -298,6 +304,7 @@ impl SessionMedia {
             variants: self::page_variants::SessionPageVariants::new(),
             next_episode_wait: Default::default(),
             page_retitles: Default::default(),
+            transport_since_observation: Default::default(),
         }
     }
 
@@ -358,6 +365,8 @@ impl SessionMedia {
         self.poll_pending(now);
         self.settle_position_carry(now);
         let observation = self.playback.pump(now);
+        // Команды, отданные до этого шага, наблюдение уже видит (`page_play_after_end`).
+        self.note_fresh_observation();
         self.report_to_page(&observation, now);
         self.offer_downloaded_range(&observation);
         // Доигрываем: страницы нет, ей ничего не шлём (ни запросов байтов, ни часов).
@@ -515,6 +524,7 @@ impl SessionMedia {
         } else {
             self.command("pause", |playback| playback.pause());
         }
+        self.note_play_state_commanded();
     }
 
     fn close(&self, session: &SessionRef, reason: SessionCloseReason) {
@@ -538,8 +548,9 @@ impl SessionMedia {
 
     fn report_to_page(&mut self, observation: &PlaybackObservation, now: Instant) {
         self.seek_answers_seen = observation.seek_answers;
-        let awaited_target = self.awaited_generation_target();
-        let new_source = self.new_source_stance();
+        // Слово ждущего поколения часам (правила 1–2 `page_clock`) — до заимствования
+        // загруженного: оно читает ждущее поколение и ворота.
+        let pending_clock = self.pending_clock_word();
         let Some(loaded) = self.loaded.as_mut() else {
             // В плеере пока ничего нет, но страница уже ждёт: ей нужны часы (решение 180).
             self.tell_page_while_nothing_is_loaded(observation, now);
@@ -617,13 +628,24 @@ impl SessionMedia {
             .as_ref()
             .and_then(LoadedGeneration::unanswered_seek_target);
         // Окно эфира — по часам без долга перемотки: она того же поколения (`live_hls`).
-        let live_window_clock = PageClockSource::choose(awaited_target, new_source, loaded_shown);
+        let live_window_clock = PageClock::choose(
+            pending_clock,
+            LoadedClockWord {
+                generation,
+                shown: loaded_shown,
+            },
+        );
         let loaded_shown = unanswered_seek.map_or(loaded_shown, LoadedMediaShown::SeekNotAnswered);
-        let clock_source = PageClockSource::choose(awaited_target, new_source, loaded_shown);
-        self.outbound
-            .tick_clock(&clock_source.page_view_of(observation), now);
+        let clock = PageClock::choose(
+            pending_clock,
+            LoadedClockWord {
+                generation,
+                shown: loaded_shown,
+            },
+        );
+        clock.tell(&mut self.outbound, observation, now);
         if page_present {
-            self.report_live_window(generation, live_window_clock, observation, now);
+            self.report_live_window(generation, live_window_clock.source, observation, now);
         }
     }
 

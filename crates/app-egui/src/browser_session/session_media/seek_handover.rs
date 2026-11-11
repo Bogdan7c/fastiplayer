@@ -88,6 +88,8 @@ impl SessionMedia {
             warn!(%command_error, command = what, "Browser session player command failed");
             return;
         }
+        // Наблюдение прошлого прохода (например, «у конца») больше не про этот плеер.
+        self.note_seek_commanded();
         let answers_when_sent = self.seek_answers_seen;
         if let Some(loaded) = self.loaded.as_mut() {
             loaded.unanswered_seek = Some(UnansweredSeek {

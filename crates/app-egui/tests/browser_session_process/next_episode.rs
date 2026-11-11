@@ -34,39 +34,42 @@ const HELLO_1_9: &str = r#"{"type":"hello","protocol":{"major":1,"minor":9},"sof
 const HELLO_1_8: &str = r#"{"type":"hello","protocol":{"major":1,"minor":8},"software_version":"0.1.0","capabilities":[]}"#;
 
 /// Слово страницы «ждём следующую серию» (срок экстеншена — решение 308).
-const AWAITING_NEXT_EPISODE: &str = r#"{"type":"awaiting_next_episode","patience_ms":60000}"#;
+pub(super) const AWAITING_NEXT_EPISODE: &str =
+    r#"{"type":"awaiting_next_episode","patience_ms":60000}"#;
 
 /// Строки окна о надписи ожидания (договор со стендом моста).
-const WAITING_SHOWN: &str = "Browser window tells the viewer: waiting for the next episode";
-const WAITING_CLEARED: &str = "Browser window tells the viewer: the waiting notice is cleared";
+pub(super) const WAITING_SHOWN: &str =
+    "Browser window tells the viewer: waiting for the next episode";
+pub(super) const WAITING_CLEARED: &str =
+    "Browser window tells the viewer: the waiting notice is cleared";
 
 /// Длительность серии 1 (`video-64-6s.mp4`, `audio-6s.mp4`) и серии 2 (четыре фрагмента
 /// `video-96-6s.mp4` по 1,2 с и `audio-44k-stereo-4800ms.mp4`).
-const FIRST_EPISODE_US: u64 = 6_000_000;
-const SECOND_EPISODE_US: u64 = 4_800_000;
+pub(super) const FIRST_EPISODE_US: u64 = 6_000_000;
+pub(super) const SECOND_EPISODE_US: u64 = 4_800_000;
 /// Фрагментов видео серии 2 (0–4,8 с).
 const SECOND_EPISODE_VIDEO_FRAGMENTS: usize = 4;
 /// Допуск длительности, которую называет плеер (кадр и хвост AAC-кодера).
-const DURATION_SLACK_US: u64 = 100_000;
+pub(super) const DURATION_SLACK_US: u64 = 100_000;
 
 /// Кадров серии 2 (25 к/с) и сколько из них окно обязано показать после смены: запас на
 /// установку поколения и первые кадры на занятой машине.
-const SECOND_EPISODE_FRAMES: u64 = SECOND_EPISODE_US / 40_000;
-const SECOND_EPISODE_FRAMES_AT_LEAST: u64 = SECOND_EPISODE_FRAMES - 40;
+pub(super) const SECOND_EPISODE_FRAMES: u64 = SECOND_EPISODE_US / 40_000;
+pub(super) const SECOND_EPISODE_FRAMES_AT_LEAST: u64 = SECOND_EPISODE_FRAMES - 40;
 /// Сколько звука серии 2 обязано уйти в выход после смены (из 4,8 с; замер — 4,83 с).
 /// Порог выше 4,41 с: столько насчитал бы счётчик, если бы кадры 44,1 кГц ушли в прежний
 /// выход 48 кГц без пересборки (частота выхода не та, что у звука серии).
-const SECOND_EPISODE_AUDIO_MS_AT_LEAST: u64 = 4_600;
+pub(super) const SECOND_EPISODE_AUDIO_MS_AT_LEAST: u64 = 4_600;
 
 /// Серия 1 целиком и конец её потока: страница докачала ролик, плеер доиграет до `ended`.
-fn first_episode_to_the_end() -> Vec<Message> {
+pub(super) fn first_episode_to_the_end() -> Vec<Message> {
     let mut messages = six_seconds_downloaded();
     messages.push(Message::text(r#"{"type":"end_of_stream","generation":1}"#));
     messages
 }
 
 /// Серия 2 — поколение 2 с другой спецификацией (см. описание модуля) и концом потока.
-fn second_episode_with_another_spec() -> Vec<Message> {
+pub(super) fn second_episode_with_another_spec() -> Vec<Message> {
     let audio = split_fmp4("audio-44k-stereo-4800ms.mp4");
     let video = split_fmp4("video-96-6s.mp4");
     let mut page = PageSourceBuffers::new(2);
@@ -128,7 +131,10 @@ fn mpris_metadata(bus: &PrivateBusWithBrowserSession) -> String {
 }
 
 /// Ждёт, пока MPRIS назовёт длительность около `expected_us`; возвращает названную.
-fn wait_for_mpris_length_near(bus: &PrivateBusWithBrowserSession, expected_us: u64) -> u64 {
+pub(super) fn wait_for_mpris_length_near(
+    bus: &PrivateBusWithBrowserSession,
+    expected_us: u64,
+) -> u64 {
     let deadline = Instant::now() + WAIT;
     loop {
         let length = mpris_length_us(bus);

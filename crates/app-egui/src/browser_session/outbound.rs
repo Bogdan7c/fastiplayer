@@ -66,6 +66,7 @@ use self::live_window::LiveWindowCadence;
 use self::resource_requests::{PageProtocol, ResourceRequestCounters};
 use super::playback::PlaybackObservation;
 
+mod clock_generation;
 mod live_window;
 mod page_reopen;
 mod page_variants;
@@ -398,7 +399,16 @@ impl PageOutbound {
     }
 
     /// Тик часов, если пора: уходит сразу, при полной очереди — выбрасывается.
-    pub(crate) fn tick_clock(&mut self, observation: &PlaybackObservation, now: Instant) {
+    ///
+    /// `described` — поколение, которое описывает тик (выбирает медиа-часть по правилам
+    /// `session_media::page_clock`); странице 1.10+ оно уходит полем `generation`
+    /// ([`clock_generation`]).
+    pub(crate) fn tick_clock(
+        &mut self,
+        observation: &PlaybackObservation,
+        described: StreamGeneration,
+        now: Instant,
+    ) {
         if !self.clock.take_due(now) {
             return;
         }
@@ -407,8 +417,7 @@ impl PageOutbound {
             position_us: clock_position(observation.page_clock_position()),
             state: page_clock_state(observation),
             rate: clock_rate(observation.rate),
-            // Номер поколения в часах (протокол 1.10) ставит пакет P2 сессии 16a2.
-            generation: None,
+            generation: self.clock_generation_field(described),
         };
         self.next_clock_sequence = self.next_clock_sequence.wrapping_add(1);
         match self.deliver(&message) {

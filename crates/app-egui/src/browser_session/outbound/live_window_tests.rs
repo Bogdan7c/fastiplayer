@@ -367,7 +367,7 @@ fn a_window_does_not_touch_the_clock_or_the_buffer_state() {
         seek_answers: crate::browser_session::playback::PlayerSeekAnswers::default(),
         live_window: dvr(10, 1, 9),
     };
-    outbound.tick_clock(&observation, now);
+    outbound.tick_clock(&observation, StreamGeneration::FIRST, now);
     assert!(
         matches!(
             page.take_sent().as_slice(),

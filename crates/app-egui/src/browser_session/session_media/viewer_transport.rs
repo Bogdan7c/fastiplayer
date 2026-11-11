@@ -48,6 +48,7 @@ use tracing::debug;
 
 use super::SessionMedia;
 use super::generation_placement::PendingAim;
+use super::page_play_after_end::ShownMediaEnd;
 use super::position_carry::CarryEnd;
 use super::viewer_click_claim::ViewerClickClaim;
 use crate::ad_plate::AdPlateAction;
@@ -296,12 +297,20 @@ impl SessionMedia {
 
     /// Страница сказала «играть/пауза»: следовать, принять как подтверждение воли
     /// зрителя (без команды плееру) или отбросить как устаревшее.
+    ///
+    /// `play` страницы у доигравшего медиа плееру не уходит — только воля (16a2,
+    /// [`super::page_play_after_end`]): ядро повторило бы прошлую серию с начала.
     pub(super) fn follow_page_play(&mut self, page: PlayWill) {
         match self.viewer_will.judge_page_play(page) {
-            PageEcho::Follow => {
-                self.page_wants_play = page.wants_play();
-                self.apply_page_play_state();
-            }
+            PageEcho::Follow => match (page, self.shown_media_end()) {
+                (PlayWill::Play, ShownMediaEnd::PlayedToEnd) => {
+                    self.keep_page_play_for_what_comes_next();
+                }
+                (PlayWill::Play | PlayWill::Pause, _) => {
+                    self.page_wants_play = page.wants_play();
+                    self.apply_page_play_state();
+                }
+            },
             echo @ (PageEcho::ConfirmsViewer | PageEcho::StaleAgainstViewer) => {
                 debug!(?echo, ?page, "Page play state not applied to the player");
             }

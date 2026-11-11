@@ -908,3 +908,12 @@ mod page_subtitle_preference;
 // же окне, надпись ожидания, заголовок вкладки, код 4011.
 #[path = "browser_session_process/next_episode.rs"]
 mod next_episode;
+
+// Сессия 16a2: `play` страницы после конца серии не повторяет её с начала (оба порядка
+// живого журнала: до объявления новой серии и после него с `page_seek{0}`).
+#[path = "browser_session_process/page_play_after_end.rs"]
+mod page_play_after_end;
+
+// Сессия 16a2: номер поколения в часах (протокол 1.10) — MSE, файл, HLS; страница 1.9 без поля.
+#[path = "browser_session_process/clock_generation.rs"]
+mod clock_generation;

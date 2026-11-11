@@ -783,6 +783,7 @@ mod live_hls;
 mod live_scrub_real_player;
 mod next_episode_wait;
 mod opening_clock;
+mod page_play_after_end;
 mod page_quality;
 mod page_reopen;
 mod page_subtitle_choice;

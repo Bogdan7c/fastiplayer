@@ -111,9 +111,9 @@ fn clock_ticks_four_times_a_second_with_position_state_and_rate_in_protocol_unit
         1.5,
     );
 
-    outbound.tick_clock(&playing, start);
-    outbound.tick_clock(&playing, start + Duration::from_millis(100));
-    outbound.tick_clock(&playing, start + Duration::from_millis(249));
+    outbound.tick_clock(&playing, generation(1), start);
+    outbound.tick_clock(&playing, generation(1), start + Duration::from_millis(100));
+    outbound.tick_clock(&playing, generation(1), start + Duration::from_millis(249));
     assert_eq!(
         page.take_sent(),
         vec![clock(0, 1_234_567, ClockState::Playing, 1500)]
@@ -121,7 +121,7 @@ fn clock_ticks_four_times_a_second_with_position_state_and_rate_in_protocol_unit
     assert_eq!(outbound.next_clock_at(), Some(start + CLOCK_INTERVAL));
 
     let waiting = observation(Duration::from_secs(2), PlaybackState::Buffering, 1.0);
-    outbound.tick_clock(&waiting, start + CLOCK_INTERVAL);
+    outbound.tick_clock(&waiting, generation(1), start + CLOCK_INTERVAL);
     assert_eq!(
         page.take_sent(),
         vec![clock(1, 2_000_000, ClockState::Waiting, 1000)]
@@ -141,7 +141,7 @@ fn clock_waits_at_the_seek_target_while_the_player_seeks() {
         seek_target: Some(target),
         ..observation(old_place, PlaybackState::Scrubbing, 1.0)
     };
-    outbound.tick_clock(&seeking, start);
+    outbound.tick_clock(&seeking, generation(1), start);
     assert_eq!(
         page.take_sent(),
         vec![clock(0, 4_000_000_000, ClockState::Waiting, 1000)]
@@ -149,7 +149,7 @@ fn clock_waits_at_the_seek_target_while_the_player_seeks() {
 
     // После коммита цели нет — снова позиция плеера.
     let landed = observation(target, PlaybackState::Playing, 1.0);
-    outbound.tick_clock(&landed, start + CLOCK_INTERVAL);
+    outbound.tick_clock(&landed, generation(1), start + CLOCK_INTERVAL);
     assert_eq!(
         page.take_sent(),
         vec![clock(1, 4_000_000_000, ClockState::Playing, 1000)]
@@ -159,7 +159,7 @@ fn clock_waits_at_the_seek_target_while_the_player_seeks() {
         seek_target: Some(target),
         ..observation(old_place, PlaybackState::Paused, 1.0)
     };
-    outbound.tick_clock(&paused, start + CLOCK_INTERVAL * 2);
+    outbound.tick_clock(&paused, generation(1), start + CLOCK_INTERVAL * 2);
     assert_eq!(
         page.take_sent(),
         vec![clock(2, 9_016_000_000, ClockState::Paused, 1000)]
@@ -178,7 +178,7 @@ fn clock_waits_at_the_target_while_a_seek_lands_in_the_end_of_stream_drain() {
         seek_target: Some(target),
         ..observation(Duration::ZERO, PlaybackState::Draining, 1.0)
     };
-    outbound.tick_clock(&landing, start);
+    outbound.tick_clock(&landing, generation(1), start);
     assert_eq!(
         page.take_sent(),
         vec![clock(0, 597_000_000, ClockState::Waiting, 1000)]
@@ -186,7 +186,7 @@ fn clock_waits_at_the_target_while_a_seek_lands_in_the_end_of_stream_drain() {
 
     // Коммит: цели нет, тот же `Draining` — снова честный хвост ролика.
     let tail = observation(target, PlaybackState::Draining, 1.0);
-    outbound.tick_clock(&tail, start + CLOCK_INTERVAL);
+    outbound.tick_clock(&tail, generation(1), start + CLOCK_INTERVAL);
     assert_eq!(
         page.take_sent(),
         vec![clock(1, 597_000_000, ClockState::Playing, 1000)]
@@ -199,8 +199,8 @@ fn clock_sequence_wraps_around_instead_of_stopping() {
     outbound.next_clock_sequence = u32::MAX;
     let start = Instant::now();
     let ended = observation(Duration::from_millis(400), PlaybackState::Ended, 1.0);
-    outbound.tick_clock(&ended, start);
-    outbound.tick_clock(&ended, start + CLOCK_INTERVAL);
+    outbound.tick_clock(&ended, generation(1), start);
+    outbound.tick_clock(&ended, generation(1), start + CLOCK_INTERVAL);
     assert_eq!(
         page.take_sent(),
         vec![
@@ -216,15 +216,15 @@ fn clock_tick_refused_by_a_full_queue_is_dropped_and_replaced_by_the_next_one() 
     let start = Instant::now();
     let playing = observation(Duration::from_secs(1), PlaybackState::Playing, 1.0);
     page.refuse_next(SendToPageError::QueueFull);
-    outbound.tick_clock(&playing, start);
+    outbound.tick_clock(&playing, generation(1), start);
     // Устаревший тик не повторяется ни отправкой отложенного, ни до срока.
     assert!(!outbound.has_pending());
     outbound.flush(start);
-    outbound.tick_clock(&playing, start + Duration::from_millis(10));
+    outbound.tick_clock(&playing, generation(1), start + Duration::from_millis(10));
     assert!(page.take_sent().is_empty());
 
     let later = observation(Duration::from_millis(1250), PlaybackState::Playing, 1.0);
-    outbound.tick_clock(&later, start + CLOCK_INTERVAL);
+    outbound.tick_clock(&later, generation(1), start + CLOCK_INTERVAL);
     assert_eq!(
         page.take_sent(),
         vec![clock(1, 1_250_000, ClockState::Playing, 1000)]
@@ -377,6 +377,7 @@ fn events_wait_for_a_reconnecting_page_and_clock_ticks_do_not() {
     page.refuse_next(SendToPageError::NoAttachedSession);
     outbound.tick_clock(
         &observation(Duration::from_secs(1), PlaybackState::Playing, 1.0),
+        generation(1),
         start,
     );
     assert!(page.take_sent().is_empty());

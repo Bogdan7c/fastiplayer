@@ -31,14 +31,14 @@ const FILE_FRAMES: u64 = 100;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Отвечает на `fetch_range` байтами файла, как это делает background экстеншена.
-struct FilePage {
+pub(super) struct FilePage {
     bytes: Vec<u8>,
     /// Все полученные запросы: (номер, смещение, длина).
     requests: Vec<(u32, u64, u64)>,
 }
 
 impl FilePage {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             bytes: std::fs::read(FILE_FIXTURE).expect("file fixture"),
             requests: Vec::new(),
@@ -89,7 +89,7 @@ impl FilePage {
 
     /// Отвечает на запросы байтов, пока плеер не доиграет файл; возвращает всё, что
     /// страница получила по дороге.
-    fn serve_until_ended(
+    pub(super) fn serve_until_ended(
         &mut self,
         socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     ) -> Vec<PlayerSessionMessage> {

@@ -45,8 +45,10 @@ impl SessionMedia {
         );
         if self.page_wants_play && observation.state == PlaybackState::Paused {
             self.command("play after install", |playback| playback.play());
+            self.note_play_state_commanded();
         } else if !self.page_wants_play && player_plays {
             self.command("pause after install", |playback| playback.pause());
+            self.note_play_state_commanded();
         }
     }
 }

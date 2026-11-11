@@ -4,6 +4,11 @@
 //! отличит часы прежнего источника от часов нового. Поэтому медиа-часть обязана слать
 //! только те часы, которые относятся к источнику, где СЕЙЧАС стоит элемент страницы.
 //!
+//! **Номер поколения (протокол 1.10, 16a2).** Выбор ниже называет и поколение, которое
+//! описывает тик ([`PageClock`]): правила 1–2 — ждущее, правила 3–5 — загруженное (вариант
+//! «жду в цели» рождается обеими дорогами, поэтому номер идёт рядом с ним). Странице 1.10+
+//! номер уходит полем `generation` (`outbound::clock_generation`), странице 1.9 — нет.
+//!
 //! **Корень дефекта, который закрывает модуль.** Новый `MediaSource` страницы без её
 //! перемотки (реклама посреди фильма, пересоздание плеера) — новое поколение без цели:
 //! оно начнётся с первого момента, где есть данные всех полос (правило 03e). Пока его
@@ -57,6 +62,8 @@
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
+use browser_bridge_protocol::StreamGeneration;
+
 use super::SessionMedia;
 use super::generation_placement::clock_while_generation_awaits;
 use super::generation_start::GenerationStart;
@@ -102,28 +109,6 @@ pub(super) enum PageClockSource {
 }
 
 impl PageClockSource {
-    /// Выбор по порядку правил модуля.
-    pub(super) const fn choose(
-        awaited_target: Option<Duration>,
-        new_source: NewSourceStance,
-        loaded: LoadedMediaShown,
-    ) -> Self {
-        if let Some(target) = awaited_target {
-            return Self::AwaitingDataAtTarget(target);
-        }
-        if matches!(new_source, NewSourceStance::AwaitingDataWithoutTarget) {
-            return Self::NewSourceAwaitingData;
-        }
-        match loaded {
-            LoadedMediaShown::Shown => Self::ShownGeneration,
-            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target))
-            | LoadedMediaShown::SeekNotAnswered(target) => Self::AwaitingDataAtTarget(target),
-            LoadedMediaShown::StillInstalling(GenerationStart::FirstCommonData) => {
-                Self::InstallingGeneration
-            }
-        }
-    }
-
     /// Наблюдение, которое уйдёт странице часами (показанное — как есть, без копии).
     pub(super) fn page_view_of(
         self,
@@ -138,6 +123,106 @@ impl PageClockSource {
             }
             Self::ShownGeneration => Cow::Borrowed(observation),
         }
+    }
+}
+
+/// Что ждущее поколение говорит часам (правила 1–2 модуля, первое подходящее).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PendingClockWord {
+    /// Правила 1–2 не действуют: ждущего поколения нет, или страница сама назвала ему
+    /// старт, а данных у цели не ждут (смена качества до открытия: часы — загруженного).
+    Silent,
+    /// Правило 1: ждущее поколение ждёт данных у цели.
+    AwaitsDataAtTarget {
+        /// Номер ждущего поколения (его и описывает тик).
+        generation: StreamGeneration,
+        /// Где страница его ждёт.
+        target: Duration,
+    },
+    /// Правило 2: новый источник без цели ещё не отдан плееру.
+    AwaitsDataWithoutTarget(StreamGeneration),
+}
+
+impl PendingClockWord {
+    /// Слово ждущего поколения `generation`: цель главнее «нового источника без цели».
+    pub(super) const fn of(
+        generation: StreamGeneration,
+        awaited_target: Option<Duration>,
+        new_source: NewSourceStance,
+    ) -> Self {
+        if let Some(target) = awaited_target {
+            return Self::AwaitsDataAtTarget { generation, target };
+        }
+        match new_source {
+            NewSourceStance::AwaitingDataWithoutTarget => Self::AwaitsDataWithoutTarget(generation),
+            NewSourceStance::NoneOrTargeted => Self::Silent,
+        }
+    }
+}
+
+/// Загруженное поколение для часов (правила 3–5 модуля).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LoadedClockWord {
+    /// Номер загруженного поколения.
+    pub(super) generation: StreamGeneration,
+    /// Что из него сейчас показывает плеер.
+    pub(super) shown: LoadedMediaShown,
+}
+
+/// Часы странице на этот проход: что сказать и про какое поколение (номер уходит
+/// странице 1.10+ полем `generation`, `PageOutbound::tick_clock`).
+///
+/// «Жду в цели» рождается и у ждущего поколения (правило 1), и у загруженного (правила 3
+/// и 5), поэтому номер идёт рядом с источником, а не выводится из него.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PageClock {
+    /// Что сказать.
+    pub(super) source: PageClockSource,
+    /// Какое поколение описывает тик.
+    pub(super) generation: StreamGeneration,
+}
+
+impl PageClock {
+    /// Выбор по порядку правил модуля: слово ждущего поколения главнее загруженного.
+    pub(super) const fn choose(pending: PendingClockWord, loaded: LoadedClockWord) -> Self {
+        match pending {
+            PendingClockWord::AwaitsDataAtTarget { generation, target } => Self {
+                source: PageClockSource::AwaitingDataAtTarget(target),
+                generation,
+            },
+            PendingClockWord::AwaitsDataWithoutTarget(generation) => Self {
+                source: PageClockSource::NewSourceAwaitingData,
+                generation,
+            },
+            PendingClockWord::Silent => Self {
+                source: Self::loaded_source(loaded.shown),
+                generation: loaded.generation,
+            },
+        }
+    }
+
+    /// Правила 3–5: часы загруженного поколения.
+    const fn loaded_source(shown: LoadedMediaShown) -> PageClockSource {
+        match shown {
+            LoadedMediaShown::Shown => PageClockSource::ShownGeneration,
+            LoadedMediaShown::StillInstalling(GenerationStart::PageSeekedTo(target))
+            | LoadedMediaShown::SeekNotAnswered(target) => {
+                PageClockSource::AwaitingDataAtTarget(target)
+            }
+            LoadedMediaShown::StillInstalling(GenerationStart::FirstCommonData) => {
+                PageClockSource::InstallingGeneration
+            }
+        }
+    }
+
+    /// Тик этих часов странице (ритм и номера — у `PageOutbound::tick_clock`).
+    pub(super) fn tell(
+        self,
+        outbound: &mut crate::browser_session::outbound::PageOutbound,
+        observation: &PlaybackObservation,
+        now: Instant,
+    ) {
+        outbound.tick_clock(&self.source.page_view_of(observation), self.generation, now);
     }
 }
 
@@ -169,16 +254,32 @@ impl SessionMedia {
     ///
     /// Ждущее поколение — всегда текущего сеанса (`on_session_opened` сбрасывает его, чужие
     /// уведомления отсекаются), поэтому часы чужого сеанса отсюда не уйдут.
-    fn clock_source_while_nothing_is_loaded(&self) -> Option<PageClockSource> {
+    fn clock_while_nothing_is_loaded(&self) -> Option<PageClock> {
         let pending = self.pending.as_ref()?;
+        // Тик описывает ждущее поколение: другого в плеере нет.
+        let generation = pending.generation;
         match (pending.placement.named_start(), self.page_start_word) {
-            (GenerationStart::PageSeekedTo(target), _) => {
-                Some(PageClockSource::AwaitingDataAtTarget(target))
-            }
-            (GenerationStart::FirstCommonData, PageStartWord::Said) => {
-                Some(PageClockSource::NewSourceAwaitingData)
-            }
+            (GenerationStart::PageSeekedTo(target), _) => Some(PageClock {
+                source: PageClockSource::AwaitingDataAtTarget(target),
+                generation,
+            }),
+            (GenerationStart::FirstCommonData, PageStartWord::Said) => Some(PageClock {
+                source: PageClockSource::NewSourceAwaitingData,
+                generation,
+            }),
             (GenerationStart::FirstCommonData, PageStartWord::NotSaid) => None,
+        }
+    }
+
+    /// Слово ждущего поколения часам этого прохода (правила 1–2 модуля).
+    pub(super) fn pending_clock_word(&self) -> PendingClockWord {
+        match self.pending.as_ref() {
+            Some(pending) => PendingClockWord::of(
+                pending.generation,
+                self.awaited_generation_target(),
+                self.new_source_stance(),
+            ),
+            None => PendingClockWord::Silent,
         }
     }
 
@@ -195,57 +296,18 @@ impl SessionMedia {
         if self.drain.is_some() {
             return;
         }
-        if let Some(clock_source) = self.clock_source_while_nothing_is_loaded() {
-            self.outbound
-                .tick_clock(&clock_source.page_view_of(observation), now);
+        if let Some(clock) = self.clock_while_nothing_is_loaded() {
+            clock.tell(&mut self.outbound, observation, now);
         }
     }
 
     /// Идут ли часы странице: есть загруженное поколение или открывающемуся есть что
     /// сказать. Владелец срока следующего пробуждения — `next_wake_at`.
     pub(super) fn page_clock_runs(&self) -> bool {
-        self.loaded.is_some() || self.clock_source_while_nothing_is_loaded().is_some()
+        self.loaded.is_some() || self.clock_while_nothing_is_loaded().is_some()
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TARGET: Duration = Duration::from_secs(12);
-
-    /// Порядок правил: цель главнее нового источника, новый источник главнее показанного.
-    #[test]
-    fn the_rules_apply_in_order() {
-        use LoadedMediaShown::{SeekNotAnswered, Shown, StillInstalling};
-        use NewSourceStance::{AwaitingDataWithoutTarget, NoneOrTargeted};
-        let without_target = StillInstalling(GenerationStart::FirstCommonData);
-        let at_target = StillInstalling(GenerationStart::PageSeekedTo(TARGET));
-        assert_eq!(
-            PageClockSource::choose(Some(TARGET), AwaitingDataWithoutTarget, Shown),
-            PageClockSource::AwaitingDataAtTarget(TARGET)
-        );
-        assert_eq!(
-            PageClockSource::choose(None, AwaitingDataWithoutTarget, Shown),
-            PageClockSource::NewSourceAwaitingData
-        );
-        assert_eq!(
-            PageClockSource::choose(None, NoneOrTargeted, Shown),
-            PageClockSource::ShownGeneration
-        );
-        assert_eq!(
-            PageClockSource::choose(None, NoneOrTargeted, without_target),
-            PageClockSource::InstallingGeneration
-        );
-        // Ставящееся поколение с целью: страница ждёт его там, а не в нуле.
-        assert_eq!(
-            PageClockSource::choose(None, NoneOrTargeted, at_target),
-            PageClockSource::AwaitingDataAtTarget(TARGET)
-        );
-        // Показанное поколение с перемоткой без ответа: страница уже на цели.
-        assert_eq!(
-            PageClockSource::choose(None, NoneOrTargeted, SeekNotAnswered(TARGET)),
-            PageClockSource::AwaitingDataAtTarget(TARGET)
-        );
-    }
-}
+#[path = "page_clock_tests.rs"]
+mod tests;
