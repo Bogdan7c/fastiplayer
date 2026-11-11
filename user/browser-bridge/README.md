@@ -20,7 +20,7 @@
 - **15a2 — DONE** (10 ноября, решения 292–293, [results/15a2.md](results/15a2.md)): владелец увидел, что у окна на YouTube нет кнопки CC — 15a пропустила субтитры из плана 15. Теперь в нашем меню CC — субтитры ролика и автоперевод на все языки, выбор просит YouTube включить язык, YouTube качает сам. Владелец проверил вместе с 15a: «вроде ютюб работает».
 - **15b — DONE** (10 ноября, решения 294–298, [results/15b.md](results/15b.md), итог 15 — [results/15.md](results/15.md)): адаптер PlayerJS — озвучки, качество и Next в нашем окне на Tortuga и Ashdi (у сериала Ashdi смена озвучки — три нажатия за зрителя, нет серии — остаёмся), осторожно на незнакомых сайтах; таблица совместимости `docs/browser-bridge/compatibility.md`. Сценарий владельца агент прогнал в его Firefox — всё прошло, владелец закрыл часть.
 - **15c разделена на 15c1/15c2** (решение 300). **15c1 — DONE** (11 ноября, решение 299, [results/15c1.md](results/15c1.md)): опрос вкладки по одному фрейму без ожидания загрузки — на klonua в Chromium передача работает (корень — ленивый фрейм трейлера, которого Chromium ждал вечно), стенд `frame-never-loads`.
-- **15c2 — агентская часть DONE** (11 ноября, решения 298, 301, [results/15c2.md](results/15c2.md), итог 15c — [results/15c.md](results/15c.md)): протокол 1.8 `variant_outcome`. Окно пишет «Switching audio on the page…», потом «Audio: …» или причину («This dub has no such episode — pick an earlier episode on the page»); после отказа видео не прыгает. Стенд `series-missing-episode` и живой klonua в Chromium и Firefox. **Ждёт проверки владельцем.**
+- **15c2 — DONE, вся 15c закрыта** (11 ноября, решения 298, 301, [results/15c2.md](results/15c2.md), итог 15c — [results/15c.md](results/15c.md)): протокол 1.8 `variant_outcome`. Окно пишет «Switching audio on the page…», потом «Audio: …» или причину («This dub has no such episode — pick an earlier episode on the page»); после отказа видео не прыгает. Стенд `series-missing-episode` и живой klonua в Chromium и Firefox. Владелец проверил и принял: «Готово, принимаю».
 - **Где что лежит:**
   - все решения владельца с номерами — [decisions.md](decisions.md), сводка действующих — ниже;
   - хроника статусов по сессиям — [history.md](history.md);
@@ -246,7 +246,7 @@ DRM в план не входит и не войдёт: страницы с за
 
 ### Открыто и отложено
 - Автоопределение кодеков по железу — отложено владельцем (190, 264). Качество — кнопка «1080p» сделана в 13c (267); список качеств в её меню — адаптеры 14; подъём окна по «Change quality on the page» на KDE Wayland — 17 (278).
-- Проверка владельцем 15c2 на klonua (298, 301). MSE в воркере из файла (192).
+- MSE в воркере из файла (192).
 - Сессия 16b: ленты коротких видео (226).
 - Сессия 17: замер resize против `wp_viewporter`, бэкенды столов, кнопка «Go to page», подъём окна (76, 78, 208, 216); 17 и 19: бэкенды wlroots/Hyprland/COSMIC/niri (126).
 - Сессии 19–20: «Наклейка», дырка над кнопкой пропуска, листание ленты из окна (207, 227).
@@ -318,7 +318,7 @@ DRM в план не входит и не войдёт: страницы с за
 | 15a2 | [Субтитры YouTube в меню CC](15a2-youtube-subtitles-menu.md) | DONE ([results/15a2.md](results/15a2.md)) | 15a |
 | 15b | [PlayerJS и таблица совместимости](15b-ukrainian-site-adapters.md) | DONE ([results/15b.md](results/15b.md)) | 15a2 |
 | 15c1 | [Опрос вкладки не ждёт зависший фрейм](15c-frame-survey-hung-frame.md) | DONE ([results/15c1.md](results/15c1.md)) | 15b |
-| 15c2 | [Подсказка при отказе выбора](15c2-variant-outcome-hint.md) | агентская часть DONE ([results/15c2.md](results/15c2.md)), ждёт проверки владельцем | 15c1 |
+| 15c2 | [Подсказка при отказе выбора](15c2-variant-outcome-hint.md) | DONE ([results/15c2.md](results/15c2.md), итог [results/15c.md](results/15c.md)) | 15c1 |
 | 16 | [Следующая серия и навигация — **веха M3**](16-next-episode-navigation.md) | Переход серии без разрыва окна, одностраничные сайты, live | 15 |
 | 16b | [Ленты коротких видео](16b-short-video-feeds.md) | Окно идёт за лентой: Instagram Reels, YouTube Shorts, TikTok (решения 226, 227) | 16 |
 | 17 | [Управление окном и PiP](17-window-placement-pip.md) | Нейтральный crate размещения окна, мини-окно PiP | 00b, 16 |
