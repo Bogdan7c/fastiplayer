@@ -59,6 +59,12 @@ pub(crate) fn config_for(profile: PlayerConfigProfile) -> Option<AppConfig> {
             config.network.reconnect_wait_ms = SHORT_NETWORK_RETRY_MS;
             Some(config)
         }
+        PlayerConfigProfile::RememberedFullscreen => {
+            let mut config = AppConfig::default();
+            // Окно браузерного режима читает это поле при создании (`apply_remembered_fullscreen`).
+            config.browser_session.window.fullscreen = true;
+            Some(config)
+        }
     }
 }
 
@@ -151,6 +157,19 @@ mod tests {
             Some(&VideoCodec::H264)
         );
         // Рендер остаётся прежним: ограничение даёт только список кодеков.
+        assert_eq!(loaded.config.render.profile, RenderProfile::Auto);
+    }
+
+    #[test]
+    fn remembered_fullscreen_profile_is_read_back_by_the_production_loader() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), PlayerConfigProfile::RememberedFullscreen)
+            .expect("write")
+            .expect("path");
+        let loaded = load_from_path(&path).expect("production loader accepts the file");
+        assert!(loaded.config.browser_session.window.fullscreen);
+        // Остальное окно не тронуто: профиль отличается от умолчаний ровно одним полем.
+        assert!(!AppConfig::default().browser_session.window.fullscreen);
         assert_eq!(loaded.config.render.profile, RenderProfile::Auto);
     }
 

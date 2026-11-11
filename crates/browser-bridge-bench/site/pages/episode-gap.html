@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>episode-gap</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>episode-gap</h1>
+
+<script type="module">
+// Сериальный сайт с паузой между сериями (сессия 16a, решения 303, 306, 307). Серия 1 доиграла,
+// страница сняла источник (как делают настоящие сайты) и поставила серию 2 НЕ сразу:
+//  * `next=delayed&delay_ms=<мс>` — через `delay_ms` (дольше прежнего допуска 5 с, короче 60 с
+//    ожидания экстеншена): новый MediaSource на том же элементе, плеер обязан дождаться;
+//  * `next=never` — вторая серия так и не приходит: через 60 с экстеншен кончает сеанс честным
+//    «The page didn't start the next episode».
+// `hidden=1` — стенд спрятал эту вкладку (таймеры страницы в скрытой вкладке тикают реже): страница
+// только пропускает проверку «пульс страницы не провалился», остальное то же.
+// Страница сама меняет `document.title` по серии, как делают сайты. Метки журнала для робота:
+// `episode-1-ended` (с видимостью вкладки), `episode-1-source-removed` (с неё отсчитывается срок
+// «не началась») и `episode-2-attached`.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, waitFor, sleep } from '../lib/bench-checks.js';
+import { BenchPlayer, loadCatalog, standardRefs } from '../lib/bench-player.js';
+import { mountVideo, requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Ассет серий: 30 с, робот перематывает плеер к концу серии 1 (MPRIS Seek). */
+const EPISODE_ASSET = 'h264-aac';
+/** Заголовки серий: сайт меняет их сам. */
+const EPISODE_TITLES = { 1: 'Gap Series - Episode 1', 2: 'Gap Series - Episode 2' };
+/** Обычный режим: серия 1 стартует за столько секунд до конца, чтобы дойти до `ended` в бюджете. */
+const PLAIN_SECONDS_BEFORE_END = 4;
+/** Обычный режим: пауза до серии 2, мс (в режиме передачи её задаёт робот через `delay_ms`). */
+const PLAIN_DELAY_MS = 1000;
+/** Бюджет страницы в обычном режиме, мс (режим передачи берёт общий). */
+const PLAIN_PAGE_BUDGET_MS = 40000;
+/** Сколько обычный режим ждёт конца серии 1 и появления серии 2, мс (кроме паузы). */
+const PLAIN_STEP_WAIT_MS = 15000;
+/** Итоговые проверки окна под тенью, которые без источника нечему доказывать (как `source-withdrawn`). */
+const SOURCE_GONE_FINISH_CHECKS = ['page-clock-advances', 'page-buffer-keeps-filling', 'page-sees-playback-not-pause'];
+
+/** Останавливает движок страницы и оставляет элемент БЕЗ источника. */
+async function withdrawSource(player, video) {
+  await player.destroy();
+  video.srcObject = null;
+  video.removeAttribute('src');
+  video.load();
+}
+
+await runScenario('episode-gap', async (ctx) => {
+  const query = ctx.params.raw;
+  const nextMode = query.get('next') ?? 'delayed';
+  const delayMs = Number(query.get('delay_ms') ?? PLAIN_DELAY_MS);
+  const tabHidden = query.get('hidden') === '1';
+  if (!['delayed', 'never'].includes(nextMode) || !Number.isFinite(delayMs) || delayMs < 0) {
+    throw new Error(`bad page query: next=${nextMode}, delay_ms=${query.get('delay_ms')}`);
+  }
+  const catalog = await loadCatalog();
+  const refs = standardRefs(catalog, EPISODE_ASSET);
+  requireMimeSupport(catalog, refs);
+  const video = mountVideo();
+  const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+  const durationS = catalog.assets[EPISODE_ASSET].duration_s;
+  const flow = { removed: false, attached: false };
+
+  // Серия 1 кончилась: сайт меняет заголовок, снимает источник и (если ставит) ставит серию 2 позже.
+  async function onEpisodeEnded() {
+    ctx.log(`episode-1-ended visibility=${document.visibilityState}`);
+    document.title = EPISODE_TITLES[2];
+    await withdrawSource(player, video);
+    flow.removed = true;
+    ctx.log('episode-1-source-removed');
+    if (nextMode === 'never') return;
+    await sleep(delayMs);
+    await player.newGeneration({ refs, positionS: 0, autoplay: true });
+    flow.attached = true;
+    ctx.log('episode-2-attached');
+  }
+  video.addEventListener('ended', () => {
+    onEpisodeEnded().catch((error) => ctx.check('episode-flow-completed', false, `${error?.name}: ${error?.message}`));
+  }, { once: true });
+
+  document.title = EPISODE_TITLES[1];
+  // В режиме передачи серия 1 идёт с нуля, к концу её ведёт робот; в обычном — стартует у самого конца.
+  await player.start({ refs, positionS: ctx.params.handoff ? 0 : durationS - PLAIN_SECONDS_BEFORE_END });
+  await checkPlaying(ctx, video, 'episode-1-playing');
+
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, { video, player, refs, catalog }, {}, {
+      // Серия 2 — единственный лишний MediaSource, и только если страница вообще её ставит.
+      expectedExtraGenerations: nextMode === 'delayed' ? 1 : 0,
+      skipFinishChecks: nextMode === 'never' ? SOURCE_GONE_FINISH_CHECKS
+        : (tabHidden ? ['page-alive-under-shadow'] : []),
+    });
+    await player.destroy();
+    return;
+  }
+  const removed = await waitFor(() => flow.removed, PLAIN_STEP_WAIT_MS);
+  ctx.check('episode-1-ended-and-source-removed', removed && !video.hasAttribute('src') && video.srcObject === null,
+    `removed=${flow.removed}, src=${video.getAttribute('src')}, title=${document.title}`);
+  ctx.check('title-follows-the-episode', document.title === EPISODE_TITLES[2], `title=${document.title}`);
+  if (nextMode === 'never') {
+    await sleep(delayMs);
+    ctx.check('no-second-episode', !flow.attached && player.generations === 1, `attached=${flow.attached}, generations=${player.generations}`);
+    return;
+  }
+  const attached = await waitFor(() => flow.attached, delayMs + PLAIN_STEP_WAIT_MS);
+  ctx.check('episode-2-attached-after-the-gap', attached && player.generations === 2, `attached=${flow.attached}, generations=${player.generations}`);
+  await checkPlaying(ctx, video, 'episode-2-playing');
+  await player.destroy();
+}, { budgetMs: new URLSearchParams(location.search).get('mode') === 'handoff' ? undefined : PLAIN_PAGE_BUDGET_MS });
+</script>
+</body>
+</html>

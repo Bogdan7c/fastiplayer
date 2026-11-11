@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>episode-spa-away</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>episode-spa-away</h1>
+
+<script type="module">
+// Одностраничный сайт уводит зрителя со страницы просмотра (сессия 16a, решение 309): адрес меняется
+// через `history.pushState` (страница НЕ перезагружается), источник снят, ничего нового не поставлено.
+// Продукт не должен выдавать это за «страница забрала видео» (4009): вкладка ушла со страницы
+// просмотра, плеер говорит, что вкладки-источника больше нет (`tab_gone`).
+// Действие `spa-away` делает робот, когда видео уже в плеере.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying, sleep } from '../lib/bench-checks.js';
+import { startAsset, observeHandoff } from '../lib/scenario-kit.js';
+
+/** Новый путь адреса: другая «страница» сайта, не страница просмотра. */
+const AWAY_PATH = '/watch/next-episode';
+/** Обычный режим: сколько страница ждёт перед уходом, мс. */
+const PLAIN_PAUSE_MS = 1500;
+/** Итоговые проверки окна под тенью, которые без источника нечему доказывать (как `source-withdrawn`). */
+const SOURCE_GONE_FINISH_CHECKS = ['page-clock-advances', 'page-buffer-keeps-filling', 'page-sees-playback-not-pause'];
+
+/** Останавливает движок страницы и оставляет элемент БЕЗ источника. */
+async function withdrawSource(player, video) {
+  await player.destroy();
+  video.srcObject = null;
+  video.removeAttribute('src');
+  video.load();
+}
+
+await runScenario('episode-spa-away', async (ctx) => {
+  const session = await startAsset(ctx, 'h264-aac');
+  const { video, player } = session;
+  // Метка переживает только то, что страницу НЕ перезагружали.
+  window.__spaMarker = Math.random();
+  const marker = window.__spaMarker;
+  const startPath = location.pathname;
+
+  /** Уход: новый адрес без перезагрузки, затем снятие источника, ничего нового. */
+  async function leaveForAnotherPage(check) {
+    history.pushState({ away: true }, '', `${AWAY_PATH}${location.search}`);
+    document.title = 'Home';
+    await withdrawSource(player, video);
+    ctx.log('spa-away-done');
+    check('url-changed-without-reload', location.pathname === AWAY_PATH && startPath !== AWAY_PATH && window.__spaMarker === marker,
+      `path=${location.pathname}, markerKept=${window.__spaMarker === marker}`);
+    check('nothing-attached-after-leaving', player.generations === 1 && !video.hasAttribute('src') && video.srcObject === null,
+      `generations=${player.generations}, src=${video.getAttribute('src')}`);
+  }
+
+  await checkPlaying(ctx, video, 'playing');
+  if (ctx.params.handoff) {
+    await observeHandoff(ctx, session, {
+      'spa-away': (hookCtx) => leaveForAnotherPage((name, ok, detail) => hookCtx.check(name, ok, detail)),
+    }, { skipFinishChecks: SOURCE_GONE_FINISH_CHECKS });
+    return;
+  }
+  await sleep(PLAIN_PAUSE_MS);
+  await leaveForAnotherPage((name, ok, detail) => ctx.check(name, ok, detail));
+});
+</script>
+</body>
+</html>

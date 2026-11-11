@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|page-subtitles|quality|series|entries|page-return|tab-return|auto-handoff|blocker-matrix|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|page-subtitles|quality|series|episodes|entries|page-return|tab-return|auto-handoff|blocker-matrix|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -110,6 +110,9 @@ fn run(invocation: Invocation) -> ExitCode {
                 Command::SeriesMemory => {
                     results.extend(scenarios::run_series_memory(&stand, browser, &pages));
                 }
+                Command::Episodes => {
+                    results.extend(scenarios::run_episodes(&stand, browser, &pages));
+                }
                 Command::Entries => {
                     results.extend(scenarios::run_entries(&stand, browser, &pages));
                 }
@@ -167,6 +170,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::Quality,
             Command::Series,
             Command::SeriesMemory,
+            Command::Episodes,
             Command::Entries,
             Command::PageReturn,
             Command::TabReturn,
@@ -204,6 +208,7 @@ mod tests {
                 Command::Quality,
                 Command::Series,
                 Command::SeriesMemory,
+                Command::Episodes,
                 Command::Entries,
                 Command::PageReturn,
                 Command::TabReturn,

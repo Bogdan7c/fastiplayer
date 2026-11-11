@@ -7,8 +7,8 @@ use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
     attack_page_ids, auto_handoff_page_ids, capture_page_ids, end_page_ids, entries_page_ids,
-    page_return_page_ids, page_subtitles_page_ids, player_command_page_ids, quality_page_ids,
-    series_memory_page_ids, series_page_ids, tab_return_page_ids,
+    episodes_page_ids, page_return_page_ids, page_subtitles_page_ids, player_command_page_ids,
+    quality_page_ids, series_memory_page_ids, series_page_ids, tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -28,6 +28,7 @@ pub enum Command {
     Quality,
     Series,
     SeriesMemory,
+    Episodes,
     Entries,
     PageReturn,
     TabReturn,
@@ -82,6 +83,7 @@ impl Command {
                 | Self::Quality
                 | Self::Series
                 | Self::SeriesMemory
+                | Self::Episodes
                 | Self::Entries
                 | Self::PageReturn
                 | Self::TabReturn
@@ -104,6 +106,7 @@ impl Command {
             Self::Quality => filter.matches_any_of(quality_page_ids()),
             Self::Series => filter.matches_any_of(series_page_ids()),
             Self::SeriesMemory => filter.matches_any_of(series_memory_page_ids()),
+            Self::Episodes => filter.matches_any_of(episodes_page_ids()),
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
@@ -198,8 +201,11 @@ Commands:
   series-memory     the extension's choice memory (per site + series): a dub picked on the page
                     is remembered, applied once after a browser restart on the same profile,
                     erased by forget; in a private window the memory is read but never written
+  episodes          a gap between episodes (16a): the next episode comes after ~20 s, the window
+                    stays fullscreen and waits, hidden tab too; no next episode ends the session
+                    after ~60 s; a single-page site that left says 'source tab closed'
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, page-subtitles, quality, series, series-memory, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -209,7 +215,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, attacks, entries, page-return, tab-return, auto-handoff, all);
+                                      player-commands, attacks, episodes, entries, page-return, tab-return, auto-handoff, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -420,6 +426,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "quality" => Ok(Command::Quality),
         "series" => Ok(Command::Series),
         "series-memory" => Ok(Command::SeriesMemory),
+        "episodes" => Ok(Command::Episodes),
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
         "tab-return" => Ok(Command::TabReturn),

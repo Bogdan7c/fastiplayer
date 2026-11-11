@@ -18,6 +18,7 @@ mod codec_cases;
 mod codecs;
 mod context;
 mod entries;
+mod episodes;
 mod evidence;
 mod extension_status;
 mod handoff_run;
@@ -200,6 +201,17 @@ pub fn run_series(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> V
 /// Идентификаторы страниц `series` (для проверки `--page` в командной строке).
 pub fn series_page_ids() -> Vec<&'static str> {
     series::page_ids()
+}
+
+/// Пауза между сериями и уход одностраничника (16a, решения 303-309): серия 2 приходит через ~20 с,
+/// не приходит вовсе, вкладка спрятана, сайт ушёл `pushState`-ом (все строки или строки выбранных `--page`).
+pub fn run_episodes(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
+    episodes::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `episodes` (для проверки `--page` в командной строке).
+pub fn episodes_page_ids() -> Vec<&'static str> {
+    episodes::page_ids()
 }
 
 /// Сценарии `series-memory-*` (сессия 14b2): память выбора зрителя — перезапуск браузера на том же

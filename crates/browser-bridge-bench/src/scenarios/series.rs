@@ -132,7 +132,7 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
 }
 
 /// Ждёт, пока во ВСЁМ журнале плеера будет не меньше `count` строк с `needle`; возвращает их.
-fn wait_for_lines_anywhere(
+pub(super) fn wait_for_lines_anywhere(
     player_log: &mut PlayerLog,
     needle: &str,
     count: usize,

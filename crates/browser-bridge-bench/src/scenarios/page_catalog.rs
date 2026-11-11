@@ -98,6 +98,9 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("series"),
     page("series-variants"),
     page("spa-navigation"),
+    // 16a, решения 303–309: пауза между сериями и уход одностраничника (сценарий `episodes`).
+    page("episode-gap"),
+    page("episode-spa-away"),
     page("pip"),
     // 09c: главное видео на паузе, рядом играют баннер и превью (сценарий `capture`).
     page("banner-with-main"),
