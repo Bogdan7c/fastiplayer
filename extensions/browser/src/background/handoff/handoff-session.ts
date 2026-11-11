@@ -33,6 +33,10 @@
 // Возврат страницы (сессия 11b2, решения 240–241; владелец стадии — page-return/session-page-return.ts):
 // уход страницы, которую можно вернуть, — фаза `page_away` и `page_left`, связь держим. По `reopen_page`
 // страница открывается заново, тень встаёт тем же переездом (`moving`), но в другой вкладке.
+//
+// Смена серии на той же странице (сессия 16a; владелец правил — episode-change/): серия доиграла, а следующая
+// не пришла за 60 с — 4011 (старому плееру 4009); пока ждём — `awaiting_next_episode`; заголовок вкладки —
+// `page_title_changed`; одностраничник сменил адрес, а видео пропало — `tab_gone{navigated_away}` (решение 42).
 
 import type {
   HandOffTabOutcome,
@@ -81,7 +85,9 @@ import { judgeHeldVideo } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
 import type { ChosenVideo } from "./video-choice.ts";
-import { createVideoRelocation } from "./video-relocation.ts";
+import { createVideoRelocation, type NextVideoWait } from "./video-relocation.ts";
+import { createSessionEpisodeChange } from "./episode-change/session-episode-change.ts";
+import { endAfterSourceLoss, sourceLossOfExpiredWait, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
 import { describeRefusal, describeSocketEnd, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
 import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
@@ -103,7 +109,7 @@ export function startHandoffSession(
   const relocation = createVideoRelocation({
     scheduler: dependencies.scheduler,
     armFrames: (leaseMs) => dependencies.armNextVideo(presence.tabId(), leaseMs),
-    onWaitExpired: () => endForNoNextVideo(),
+    onWaitExpired: (wait) => endForNoNextVideo(wait),
   });
   // Адаптеры сайтов (09d, 14b): реклама и меню вариантов — аренда наблюдения во фреймах, сводки, команды плеера.
   const siteAdapters = createSessionSiteAdapters({
@@ -158,6 +164,15 @@ export function startHandoffSession(
     finish: (end) => finish(end),
   });
   const { endForLostFramePort, leavePage, notifyTabRemoved } = pageLeave;
+  // Смена серии на той же странице (16a): заголовок и адрес вкладки, «ждём следующую серию» — episode-change/.
+  const episodeChange = createSessionEpisodeChange({
+    watchTabUpdates: dependencies.watchTabUpdates,
+    currentTabId: () => presence.tabId(),
+    openedPage: { title: target.page.title, url: target.tabUrl },
+    agreedProtocol: () => agreedProtocol,
+    playerHearsPage: () => socketAttached && acceptsStream() && !pageReturn.isReturning(),
+    send: (message) => socket?.enqueue({ kind: "message", message }),
+  });
   let phase: SessionPhase = "opening";
   let place: SessionPlace = { frameId: target.frameId, beginRequestId: target.beginRequestId, fileAddressRule: target.fileAddressRule };
   // Видео, на которое идёт тень сейчас: его признаки войдут в силу с `handoff_began{started}`.
@@ -207,6 +222,7 @@ export function startHandoffSession(
     if (phase === "finished") return;
     phase = "finished";
     stopPageSide();
+    episodeChange.stop();
     // Открытие страницы отменяется, открытая нами вкладка закрывается (11b2).
     pageReturn.cancel();
     releaseDemand();
@@ -390,14 +406,27 @@ export function startHandoffSession(
     shownRef = null;
     silenceWatch.stop();
     beginTimer.cancel();
-    relocation.videoLeft();
+    const wait = relocation.videoLeft();
     forwardStreamEvent({ kind: "page_playback", request: { kind: "pause" } });
+    // Серия доиграла, страница ставит следующую новым элементом или файлом (Tortuga): плееру — «ждём» (16a).
+    if (wait === "after_episode_end") episodeChange.nextEpisodeWaitBegan();
   }
 
-  /** Следующего видео нет дольше предела: страница видео не поставила, честный конец (решение 179). */
-  function endForNoNextVideo(): void {
+  /**
+   * Следующего видео нет дольше предела (решения 179, 307, 42): посреди ролика — «страница забрала видео»,
+   * после конца серии — «не поставила следующую», адрес вкладки сменился — уход одностраничника.
+   */
+  function endForNoNextVideo(wait: NextVideoWait): void {
+    if (phase !== "active" && phase !== "between_videos") return;
     if (phase === "active") tryPostToPage(END_WITHOUT_PLAYER);
-    if (phase === "active" || phase === "between_videos") endOnPageSide("page_took_video_back", { kind: "page_took_video_back" });
+    endByPageSideStep(endAfterSourceLoss(sourceLossOfExpiredWait(wait), { pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol }));
+  }
+
+  /** Конец по стороне страницы: очередь и код причины или, если одностраничник ушёл без видео, `tab_gone{navigated_away}`. */
+  function endByPageSideStep(lossEnd: SourceLossEnd): void {
+    if (lossEnd.kind === "end_on_page_side") return endOnPageSide(lossEnd.closeReason, lossEnd.end);
+    socket?.sendTabGoneAndClose("navigated_away");
+    finish({ kind: "page_gone", reason: "navigated_away" });
   }
 
   function heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply {
@@ -478,6 +507,10 @@ export function startHandoffSession(
         // это внутреннее дело экстеншена. Вне `active` сторож не слушает, пульс ничего не меняет.
         silenceWatch.notePulse();
         return;
+      case "next_episode_wait_began":
+        // Тень ждёт следующую серию (16a). Странице не верим на слово: только если и наши часы видели конец серии.
+        if (phase === "active" && relocation.episodeEnded()) episodeChange.nextEpisodeWaitBegan();
+        return;
       case "file_source":
         startSourceFromPage({ form: "file", url: event.url, referrer: referrerOf(event) });
         return;
@@ -520,6 +553,7 @@ export function startHandoffSession(
     shownRef = incomingRef;
     silenceWatch.start();
     relocation.videoStarted(incomingVideo);
+    episodeChange.videoBegan();
     siteAdapters.videoStarted();
     resolveOutcome({ kind: "started", player_window: playerWindow });
   }
@@ -532,10 +566,11 @@ export function startHandoffSession(
     // В `moving` это прежняя тень: мы сами её сняли. В `between_videos` тени уже нет.
     if (phase !== "active") return;
     // Тень сняла страница сама: правило — session-end-rules.ts (переезд, поломка плеера сайта, вина страницы).
-    const step = stepAfterPageEndedShadow(cause, relocation.nextVideoExpectedAfterLoss(), agreedProtocol);
+    const facts = { nextVideoExpected: relocation.nextVideoExpectedAfterLoss(), pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol };
+    const step = stepAfterPageEndedShadow(cause, facts);
     if (step.kind === "wait_for_next_video") waitForNextVideo();
     else if (step.kind === "leave_page") leavePage(step.reason);
-    else endOnPageSide(step.closeReason, step.end);
+    else endByPageSideStep(step);
   }
 
   function forwardStreamEvent(event: StreamPageEvent): void {
@@ -547,7 +582,11 @@ export function startHandoffSession(
     }
     // Новое поколение MSE после файла или HLS (находка 12 ревью 09b): загрузчик прошлого источника
     // больше не нужен — его текущие запросы обрываются, а не докачивают ненужное.
-    if (translated.items.some(startsGeneration)) feeds.endGeneration();
+    // Новое поколение — новая серия на экране плеера (16a): опорный адрес и «ждём следующую» — заново.
+    if (translated.items.some(startsGeneration)) {
+      feeds.endGeneration();
+      episodeChange.videoBegan();
+    }
     for (const item of translated.items) socket.enqueue(item);
   }
 
@@ -581,6 +620,7 @@ export function startHandoffSession(
     switch (started.kind) {
       case "started":
         for (const item of started.items) socket.enqueue(item);
+        episodeChange.videoBegan();
         return;
       case "stream_problem":
         return rejectPageStream(started.problem);

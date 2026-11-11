@@ -145,7 +145,7 @@ const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
   "untracked_worker_media_source",
   "started_before_script",
 ];
-const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood", "page_player_failed"];
+const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood", "page_player_failed", "next_episode_not_started"];
 const HLS_STREAM_KINDS: readonly HlsStreamKind[] = ["vod", "live"];
 
 // ------------------------------------------------------------------ примитивы
@@ -342,6 +342,8 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
     }
     case "shadow_alive":
       return hasExactKeys(value, ["kind"]) ? { kind: "shadow_alive" } : undefined;
+    case "next_episode_wait_began":
+      return hasExactKeys(value, ["kind"]) ? { kind: "next_episode_wait_began" } : undefined;
     case "handoff_ended": {
       const cause = value["cause"];
       return hasExactKeys(value, ["kind", "cause"]) && isOneOf(cause, HANDOFF_END_CAUSES) ? { kind: "handoff_ended", cause } : undefined;
@@ -468,6 +470,7 @@ const PAGE_EVENT_BUDGET_KINDS: readonly PageEventBudgetKind[] = [
   "file_source",
   "hls_source",
   "shadow_alive",
+  "next_episode_wait",
   "subtitle",
   "malformed",
 ];

@@ -20,6 +20,7 @@ import type { RangeFetch } from "./range-fetcher.ts";
 import type { AfterPreviousSession } from "./session-contract.ts";
 import type { WebSocketFactory } from "./session-socket.ts";
 import type { ChosenVideo } from "./video-choice.ts";
+import type { WatchTabUpdates } from "./episode-change/session-episode-change.ts";
 
 /** Что сеансу нужно от связи с посредником (HostLink). */
 export interface SessionDoor {
@@ -36,6 +37,11 @@ export interface HandoffSessionDependencies {
   readonly tabExists: (tabId: number) => Promise<boolean>;
   /** `tabs.get`: заголовок и адрес; `undefined` — вкладки нет. */
   readonly describeTab: (tabId: number) => Promise<TabDescription | undefined>;
+  /**
+   * Новости о заголовке и адресе вкладок (`tabs.onUpdated`, сессия 16a): сеанс подписывается на время своей
+   * жизни и сам выбирает свою вкладку. Ответ — отписка.
+   */
+  readonly watchTabUpdates: WatchTabUpdates;
   /** Сеть браузера для байтов файла `<video src>` (сессия 09b; в продукте — `fetch` фона). */
   readonly fetchRange: RangeFetch;
   /** Referer закачки файла (решение 202): правило браузера на время одного запроса. */

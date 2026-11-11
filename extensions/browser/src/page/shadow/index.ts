@@ -15,7 +15,9 @@
 // Пока тень жива, на тиках часов она шлёт пульс `shadow_alive` (решение 180). Снятый источник —
 // пауза решения (до EMPTY_SOURCE_GRACE_MS); если страница честно забрала видео (чужой источник,
 // пусто дольше допуска, элемент убран из документа), тень снимется сама и пошлёт
-// handoff_ended{element_released}.
+// handoff_ended{element_released}. Сессия 16a: источник снят после конца серии (часы плеера сказали
+// `ended`) — тень шлёт next_episode_wait_began и ждёт NEXT_EPISODE_WAIT_MS; не дождалась —
+// handoff_ended{next_episode_not_started}.
 
 export { captureElementOriginals, type ElementOriginals } from "./originals.ts";
 export type { ShadowEnvironment } from "./shadow-environment.ts";

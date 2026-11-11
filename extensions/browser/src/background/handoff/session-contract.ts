@@ -15,6 +15,11 @@ export type HandoffSessionEnd =
   | { readonly kind: "page_not_returned"; readonly reason: PageReopenFailure }
   /** Страница сама забрала видео, вкладка на месте (`handoff_ended{element_released}`, 4009). */
   | { readonly kind: "page_took_video_back" }
+  /**
+   * Серия доиграла, а следующую страница не поставила за `NEXT_EPISODE_WAIT_MS` (16a, решение 307): 4011 с
+   * плеером 1.9+, со старым — 4009 (`closeReasonForUnstartedNextEpisode`).
+   */
+  | { readonly kind: "next_episode_not_started" }
   /** Страница сняла тень сама без нашей просьбы — сбой внутри страницы (4003, Д-6). */
   | { readonly kind: "page_side_failure" }
   /** Тень замолчала дольше предела пульса (4003, решение 180). */

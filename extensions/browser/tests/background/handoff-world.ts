@@ -22,6 +22,7 @@ import { memoryStore } from "./auto-handoff-lists-fake-dom.ts";
 import type { HandOffTabOutcome, PageEvent, VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import type { LocalAddressSetting } from "../../src/shared/local-address-setting.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
+import type { TabUpdate } from "../../src/background/handoff/episode-change/session-episode-change.ts";
 import { createFakeClock, createFakeDoor, flushPromises, recordFramePorts, recordSockets } from "./support.ts";
 
 export const TAB = 12;
@@ -153,6 +154,8 @@ export function setup(
   let tabExistsQuestions = 0;
   const storeFailures: unknown[] = [];
   const settingFailures: unknown[] = [];
+  // Подписчики на новости о вкладках (`tabs.onUpdated`, 16a): сценарий шлёт им смену заголовка и адреса.
+  const tabUpdateListeners = new Set<(update: TabUpdate) => void>();
   const sessionRules = createFakeSessionRules();
   const requestRules = createSessionRules({
     api: sessionRules.api,
@@ -184,6 +187,10 @@ export function setup(
     extensionVersion: WORLD_EXTENSION_VERSION,
     describeTab: () =>
       Promise.resolve(tabAlive ? { title: "Серія 3\nОзвучка", url: tabUrl, windowId: options.tabWindowId, incognito: options.incognito ?? false } : undefined),
+    watchTabUpdates: (listener) => {
+      tabUpdateListeners.add(listener);
+      return () => void tabUpdateListeners.delete(listener);
+    },
     pageReopen: options.pageReopen ?? NO_PAGE_REOPEN,
     pageTabReveal: options.pageTabReveal ?? NO_PAGE_TAB_REVEAL,
     tabExists: () => {
@@ -220,6 +227,13 @@ export function setup(
     forbidSurveys: (error: Error) => void (surveyError = error),
     closeTab: () => void (tabAlive = false),
     navigateTab: (url: string) => void (tabUrl = url),
+    /** Браузер сообщил новость о вкладке (`tabs.onUpdated`): заголовок и/или адрес. */
+    updateTab: (update: { readonly tabId?: number; readonly title?: string; readonly url?: string }) => {
+      if (update.url !== undefined) tabUrl = update.url;
+      for (const listener of [...tabUpdateListeners]) listener({ tabId: update.tabId ?? TAB, title: update.title, url: update.url });
+    },
+    /** Сколько сеансов сейчас подписаны на новости о вкладках. */
+    tabUpdateSubscribers: () => tabUpdateListeners.size,
   };
 }
 

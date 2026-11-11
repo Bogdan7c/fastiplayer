@@ -24,6 +24,7 @@ import { browserPageTabReveal } from "./page-tab-reveal-browser.ts";
 import { browserPageReopen } from "./page-return/browser-page-reopen.ts";
 import { variantMirrorBrowser } from "./variant-watch-browser.ts";
 import { createVariantWatchReportListener } from "./variant-watch-listener.ts";
+import { browserTabUpdates } from "./episode-change/browser-tab-updates.ts";
 
 /** Случайных байт в метке жизни фона (6 байт = 8 символов base64url). */
 const BACKGROUND_NONCE_BYTES = 6;
@@ -134,6 +135,8 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
         (tab) => ({ title: tab.title, url: tab.url, windowId: tab.windowId, incognito: tab.incognito }),
         () => undefined,
       ),
+    // Заголовок и адрес вкладки сеанса (16a): на время каждого сеанса, без новых прав (см. модуль).
+    watchTabUpdates: browserTabUpdates,
     pageReopen: browserPageReopen,
     pageTabReveal: browserPageTabReveal,
     choiceMemory,

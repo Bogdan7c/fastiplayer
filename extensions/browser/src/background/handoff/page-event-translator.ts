@@ -48,7 +48,7 @@ export type TranslationResult =
  */
 export type StreamPageEvent = Exclude<
   PageEvent,
-  { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" } | { kind: "file_source" } | { kind: "hls_source" } | { kind: "next_video_held" } | { kind: "subtitle_document" } | { kind: "subtitle_track_source" }
+  { kind: "handoff_began" } | { kind: "handoff_ended" } | { kind: "shadow_alive" } | { kind: "next_episode_wait_began" } | { kind: "file_source" } | { kind: "hls_source" } | { kind: "next_video_held" } | { kind: "subtitle_document" } | { kind: "subtitle_track_source" }
 >;
 
 /** Перевод `file_source`: сообщения поколения-файла и его номер (для загрузчика диапазонов). */

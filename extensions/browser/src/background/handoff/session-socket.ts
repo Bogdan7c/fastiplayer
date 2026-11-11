@@ -48,9 +48,11 @@ export const NORMAL_CLOSE_CODE = 1000;
  * (сессия 09a2): у плеера окно уже открыто, и молчаливое 1000 погасило бы его без объяснения.
  * - `page_took_video_back` (4009, решение 179) — страница честно забрала видео, вкладка на месте;
  * - `protocol_violation` (4003, как решение 132) — сбой на стороне страницы или тень замолчала:
- *   плеер покажет «Stream error — video returned to the page».
+ *   плеер покажет «Stream error — video returned to the page»;
+ * - `next_episode_not_started` (4011, сессия 16a, решение 307) — серия доиграла, а следующую страница не
+ *   поставила в срок; только плееру 1.9+ (`closeReasonForUnstartedNextEpisode`), старому — 4009.
  */
-export type QueueDeliveringCloseReason = Extract<SessionCloseReason, "page_took_video_back" | "protocol_violation">;
+export type QueueDeliveringCloseReason = Extract<SessionCloseReason, "page_took_video_back" | "protocol_violation" | "next_episode_not_started">;
 
 /** Та часть WebSocket, которой пользуется сеанс (в тестах — фейк). */
 export interface SessionWebSocket {

@@ -292,6 +292,8 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
       case "hls_source":
       case "shadow_alive":
         return event.kind;
+      case "next_episode_wait_began":
+        return "next_episode_wait";
       // Оба события субтитров страницы (13b2) делят один вид бюджета: он считает события, а байты документов
       // считает счётчик копий MAIN-мира и потолки сеанса в фоне.
       case "subtitle_document":

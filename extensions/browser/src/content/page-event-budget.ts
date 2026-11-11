@@ -27,6 +27,7 @@ import { createTokenBucket, type MillisecondClock, type TokenBucket } from "../s
  * - `page_playback`: 5/с в записях (старт плеера).
  * - `player_seek_applied`: ответ на перемотку плеера, плеер шлёт их не чаще своих перемоток.
  * - `file_source`, `hls_source` и `shadow_alive`: раз на передачу и раз в секунду по договору.
+ * - `next_episode_wait` (16a): раз на ожидание следующей серии, то есть раз на серию.
  * - `subtitle` (13b2): события `subtitle_document` и `subtitle_track_source` приходят пачкой в начале
  *   передачи (склад до 32 документов плюс объявление каждой `<track>`, осматривается до 128 дорожек), потом
  *   редко (скачанный плеером документ, рост дорожки раз в 5 с). Пачка в 160 событий проходит одним проходом,
@@ -43,6 +44,7 @@ export const PAGE_EVENT_LIMITS_PER_SECOND: Readonly<Record<PageEventBudgetKind, 
   file_source: 16,
   hls_source: 16,
   shadow_alive: 16,
+  next_episode_wait: 16,
   subtitle: 256,
   malformed: 256,
 };

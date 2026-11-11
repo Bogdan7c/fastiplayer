@@ -35,7 +35,7 @@ import type { ShadowTimeSource } from "./shadow-time-source.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
 import { returnRealElement, type RealReturnPorts } from "./real-element-return.ts";
 import type { FileStopMoment, ShadowEnvironment } from "./shadow-environment.ts";
-import { SourceTransitionWatch } from "./source-transitions.ts";
+import { endCauseOfRelease, SourceTransitionWatch } from "./source-transitions.ts";
 import { deliverViewerMediaKey, type ViewerMediaKeyPorts } from "./viewer-media-key.ts";
 
 const MICROS_PER_SECOND = 1_000_000;
@@ -110,7 +110,8 @@ export class ShadowController implements ShadowBehavior {
     this.#originals = env.originals;
     this.#registry = registry;
     this.#queue = new EventDispatchQueue(element, env.originals);
-    this.#sourceWatch = new SourceTransitionWatch(element, env.originals, env.isMediaSourceObjectUrl);
+    // «Серия доиграла» знает модель часов (16a): сторож спрашивает её в момент снятия источника.
+    this.#sourceWatch = new SourceTransitionWatch(element, env.originals, env.isMediaSourceObjectUrl, () => this.#timeline.ended);
     // Снимок файла — до любых наших действий с элементом (пауза, шлагбаум, снятие источника).
     this.#file = source === "media_source" ? null : new FileShadowLifecycle(this.#fileSnapshot(interruptedFile), this.#fileHost());
 
@@ -216,9 +217,10 @@ export class ShadowController implements ShadowBehavior {
     this.#attempt(`apply ${command.kind}`, () => {
       const nowMs = this.#env.now();
       switch (command.kind) {
-        case "clock":
-          if (this.#sourceWatch.onClockTick(nowMs) === "release_to_page") {
-            this.#releaseToPage();
+        case "clock": {
+          const transition = this.#sourceWatch.onClockTick(nowMs);
+          if (transition !== "keep_shadow") {
+            this.#releaseToPage(endCauseOfRelease(transition));
             return;
           }
           this.#timeline.onClock(this.#timeSource.pageTickOf(command), nowMs);
@@ -226,6 +228,7 @@ export class ShadowController implements ShadowBehavior {
           // Пульс — последним: если отправка оборвёт передачу, после него тень уже ничего не делает.
           if (this.#pulse.onClockTick(nowMs)) this.#emit({ kind: "shadow_alive" });
           return;
+        }
         case "play":
         case "pause":
           // Решение 194: зритель нажал play/pause — странице это приходит как медиаклавиша.
@@ -341,7 +344,7 @@ export class ShadowController implements ShadowBehavior {
     if (this.#file?.pageRewroteSource === true) {
       // Страница уже поставила другой файл, а тень об этом ещё не знает: ответ старого ролика был бы
       // ложью (и перемоткой закончившейся рекламы на начало у плеера).
-      this.#attempt("page rewrote the file source", () => this.#releaseToPage());
+      this.#attempt("page rewrote the file source", () => this.#releaseToPage("element_released"));
       return SERVE_AS_PLAIN_ELEMENT;
     }
     const PagePromise = this.#originals.PromiseConstructor;
@@ -552,11 +555,15 @@ export class ShadowController implements ShadowBehavior {
   #handleSourceReset(effect: LoadAlgorithmEffect): void {
     if (!this.#active) return;
     const nowMs = this.#env.now();
-    if (this.#sourceWatch.onSourceReset(nowMs) === "release_to_page") {
-      this.#releaseToPage();
+    // Сторож спрашивает «серия доиграла?» ДО повтора алгоритма загрузки: тот сбросит `ended` модели.
+    const decision = this.#sourceWatch.onSourceReset(nowMs);
+    if (decision === "release_to_page") {
+      this.#releaseToPage("element_released");
       return;
     }
     this.#repeatLoadAlgorithm(effect, nowMs);
+    // Последним: если отправка оборвёт передачу, тень уже повторила всё, что сделал браузер.
+    if (decision === "await_next_episode") this.#emit({ kind: "next_episode_wait_began" });
   }
 
   /** Тень повторяет то, что браузер сделал с настоящим элементом: сброс часов и скорость. */
@@ -573,13 +580,14 @@ export class ShadowController implements ShadowBehavior {
   /**
    * Страница бросила элемент (убрала источник или поставила не-MSE): тень уходит, элемент снова
    * настоящий. Стандарт уже поставил его на паузу без события `pause` и отверг ожидающие
-   * `play()` — тень делает то же со своими обещаниями.
+   * `play()` — тень делает то же со своими обещаниями. Причина — для фона: `next_episode_not_started`
+   * значит «серия доиграла, следующей нет» (16a), а не «страница забрала видео».
    */
-  #releaseToPage(): void {
+  #releaseToPage(cause: Extract<HandoffEndCause, "element_released" | "next_episode_not_started">): void {
     this.#file?.beforeRelease();
     this.#detach();
     this.#settlePendingPlays("reject");
-    this.#finish("element_released");
+    this.#finish(cause);
   }
 
   /** Снимок файла: с элемента или (новая передача посреди возврата) у прежней тени. */
@@ -598,7 +606,7 @@ export class ShadowController implements ShadowBehavior {
       stopCommands: () => {
         this.#active = false;
       },
-      releaseToPage: () => this.#releaseToPage(),
+      releaseToPage: () => this.#releaseToPage("element_released"),
       detach: () => this.#detach(),
       reportReturned: () => this.#finish("returned"),
       returnRealElement: (plan: ReturnPlan) => returnRealElement(this.#realReturnPorts(), plan.position, plan.resumePlaying, plan.pageSawPlaying),
