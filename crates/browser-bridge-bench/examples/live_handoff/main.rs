@@ -62,12 +62,17 @@
 //! снимки невидимого экрана (до клика, после клика и каждые 15 с после передачи) копируются в каталог:
 //! по первому снимку находят точку кнопки play, по остальным видно окно плеера. Только `--display virtual`.
 //!
+//! Замер срока после конца серии (16a): `--hide-tab-after <с>` — через столько секунд после передачи помощник
+//! открывает пустую вкладку поверх страницы, и та становится скрытой (`tab_hiding.rs`). Строки журнала
+//! печатаются с секундой от передачи.
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
 mod frame_survey_probe;
 mod page_scroll;
 mod playerjs_page;
+mod tab_hiding;
 mod youtube_page;
 
 use std::fs;
@@ -93,6 +98,7 @@ use page_scroll::scroll_page_to;
 use playerjs_page::{
     PlayerJsPick, parse_playerjs_pick, pick_on_playerjs_page, report_playerjs_page,
 };
+use tab_hiding::{TabHiding, parse_after_seconds};
 use youtube_page::{
     YoutubeQualityStep, ask_youtube_quality, parse_youtube_quality, report_youtube_page,
 };
@@ -221,6 +227,8 @@ struct Arguments {
     frame_survey_probe: bool,
     /// Перед кликом прокрутить страницу к элементу по селектору (`--scroll-to`, 15c), `None` — не крутить.
     scroll_to: Option<String>,
+    /// Через сколько после передачи скрыть вкладку страницы (`--hide-tab-after`, 16a), `None` — не скрывать.
+    hide_tab_after: Option<Duration>,
 }
 
 /// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
@@ -295,6 +303,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut youtube_report_every = None;
     let mut frame_survey_probe = false;
     let mut scroll_to = None;
+    let mut hide_tab_after = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -329,22 +338,15 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .map_err(|error| format!("--seconds: {error}"))?;
             }
             ("--tab-return-after", _) => {
-                let after: u64 = value
-                    .parse()
-                    .map_err(|error| format!("--tab-return-after: {error}"))?;
-                tab_return_after = Some(Duration::from_secs(after));
+                tab_return_after = Some(parse_after_seconds(&name, &value)?)
             }
             ("--wait", _) => {
                 wait_seconds = value.parse().map_err(|error| format!("--wait: {error}"))?;
             }
             ("--click-at", _) => click_at = Some(parse_point(&value)?),
             ("--screenshots", _) => screenshots = Some(PathBuf::from(value)),
-            ("--seek-after", _) => {
-                let after: u64 = value
-                    .parse()
-                    .map_err(|error| format!("--seek-after: {error}"))?;
-                seek_after = Some(Duration::from_secs(after));
-            }
+            ("--seek-after", _) => seek_after = Some(parse_after_seconds(&name, &value)?),
+            ("--hide-tab-after", _) => hide_tab_after = Some(parse_after_seconds(&name, &value)?),
             ("--youtube-quality", _) => youtube_qualities.push(parse_youtube_quality(&value)?),
             // Форму проверяет сам плеер при старте: неверная строка — его ошибка в журнале, а не тихий пропуск.
             ("--select-variant", _) => page_variant_choices = Some(value),
@@ -363,12 +365,7 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--frame-survey-probe", "once") => frame_survey_probe = true,
             ("--scroll-to", _) => scroll_to = Some(value),
             ("--playerjs-pick", _) => playerjs_pick = Some(parse_playerjs_pick(&value)?),
-            ("--next-after", _) => {
-                let after = value
-                    .parse()
-                    .map_err(|error| format!("--next-after: {error}"))?;
-                next_after.push(Duration::from_secs(after));
-            }
+            ("--next-after", _) => next_after.push(parse_after_seconds(&name, &value)?),
             ("--seek-by", _) => {
                 seek_by = Some(
                     value
@@ -412,6 +409,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         youtube_report_every,
         frame_survey_probe,
         scroll_to,
+        hide_tab_after,
     })
 }
 
@@ -692,6 +690,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let mut quality_steps = arguments.youtube_qualities.iter().peekable();
     let mut pick_pending = arguments.playerjs_pick.as_ref();
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
+    let mut tab_hiding = TabHiding::planned(handed_off_at, arguments.hide_tab_after);
     while started && Instant::now() < deadline {
         if let Some(shots) = &screenshots
             && Instant::now() >= next_screenshot
@@ -699,6 +698,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             shots.take("after-hand-off");
             next_screenshot = Instant::now() + SCREENSHOT_EVERY;
         }
+        tab_hiding.poll(browser.as_mut(), Instant::now());
         if !tab_closed && tab_return_at.is_some_and(|at| Instant::now() >= at) {
             tab_closed = true;
             close_tab_and_ask_back(browser.as_mut(), &tab, &control);
@@ -743,7 +743,8 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         for line in read_new_lines(environment.player_log(), &mut offset) {
             // `FASTIPLAYER_LIVE_ALL_LINES=1`: весь журнал плеера, для разбора.
             if verbose || INTERESTING_LINES.iter().any(|needle| line.contains(needle)) {
-                println!("{line}");
+                // Секунда от передачи: по ней считают задержки страницы (замер 16a).
+                println!("[{:>7.1} s] {line}", handed_off_at.elapsed().as_secs_f64());
             }
             if line.contains("Ad plate") {
                 offer_waiting = line.contains(SKIP_OFFER);

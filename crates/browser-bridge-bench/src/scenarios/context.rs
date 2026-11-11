@@ -19,6 +19,19 @@ use crate::site::{SiteError, StandSite, StandSiteConfig};
 
 /// Фильтр журнала плеера внутри стенда: `info` содержит сводки воспроизведения.
 const PLAYER_RUST_LOG: &str = "info";
+/// Переменная, которой человек расширяет фильтр журнала плеера для разбора сбоя
+/// (например `info,video_vaapi=debug`). Пустая или не заданная — обычный `info`.
+const PLAYER_RUST_LOG_OVERRIDE_VARIABLE: &str = "FASTIPLAYER_BENCH_PLAYER_LOG";
+
+/// Фильтр журнала плеера для прогона: переопределение человека или умолчание стенда.
+///
+/// Судьи стенда читают строки уровня `info` (сводки, концы сеанса), поэтому переопределение
+/// должно их сохранить; это ответственность человека, который разбирает сбой.
+fn player_rust_log(override_value: Option<String>) -> String {
+    override_value
+        .filter(|filter| !filter.trim().is_empty())
+        .unwrap_or_else(|| PLAYER_RUST_LOG.to_owned())
+}
 
 /// Ошибка сценария: любая ошибка модулей стенда, приведённая к одному типу.
 #[derive(Debug, thiserror::Error)]
@@ -123,7 +136,7 @@ impl Stand {
             display: self.settings.display,
             player_bin_dir: self.settings.player_bin_dir.clone(),
             player_config,
-            player_rust_log: PLAYER_RUST_LOG.to_owned(),
+            player_rust_log: player_rust_log(std::env::var(PLAYER_RUST_LOG_OVERRIDE_VARIABLE).ok()),
             work_root: self.settings.work_root.clone(),
             desktop,
             player_test_variables,
@@ -257,5 +270,29 @@ impl Stand {
             ));
         }
         verdict
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PLAYER_RUST_LOG, player_rust_log};
+
+    #[test]
+    fn without_an_override_the_player_logs_at_the_bench_default() {
+        assert_eq!(player_rust_log(None), PLAYER_RUST_LOG);
+    }
+
+    #[test]
+    fn a_blank_override_keeps_the_bench_default() {
+        // Пустая строка дала бы плееру фильтр «только ошибки», и судьи не увидели бы сводок.
+        assert_eq!(player_rust_log(Some("  ".to_owned())), PLAYER_RUST_LOG);
+    }
+
+    #[test]
+    fn an_override_reaches_the_player_as_written() {
+        assert_eq!(
+            player_rust_log(Some("info,video_vaapi=debug".to_owned())),
+            "info,video_vaapi=debug"
+        );
     }
 }

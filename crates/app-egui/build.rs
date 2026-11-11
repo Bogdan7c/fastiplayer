@@ -149,15 +149,49 @@ fn profile_directory() -> Result<PathBuf, String> {
         })
 }
 
-/// Копирует один файл, сохраняя оба пути в тексте ошибки.
+/// Кладёт копию файла на место цели целиком и сразу: сначала во временный файл
+/// рядом, потом `rename` поверх цели. Оба пути — в тексте ошибки.
+///
+/// Почему не `fs::copy` прямо в цель: он обрезает и переписывает тот же файл
+/// (тот же inode). Если в этот момент работает плеер из `target/<profile>`
+/// (стенд моста, ручной запуск, rust-analyzer перезапускает build-скрипты),
+/// ядро при обрезке сбрасывает даже исправленные загрузчиком страницы
+/// библиотеки, и они перечитываются из нового файла без поправок. Плеер падает
+/// на следующем `dlopen` (так падала смена поколения на стенде, сессия 16a,
+/// решение 309). `rename` меняет только запись каталога: работающий процесс
+/// держит старый inode, новый запуск берёт новый файл.
 fn copy_file(from_path: &Path, to_path: &Path) -> Result<(), String> {
-    fs::copy(from_path, to_path)
-        .map(|_copied_bytes| ())
-        .map_err(|error| {
-            format!(
-                "copy {} to {}: {error}",
-                from_path.display(),
-                to_path.display()
-            )
-        })
+    let describe = |action: &str, error: std::io::Error| {
+        format!(
+            "{action} {} to {}: {error}",
+            from_path.display(),
+            to_path.display()
+        )
+    };
+    let staging_path = staging_path_for(to_path)?;
+    fs::copy(from_path, &staging_path).map_err(|error| describe("copy (staging)", error))?;
+    fs::rename(&staging_path, to_path).map_err(|error| {
+        // Недоделанная копия не должна остаться рядом с бинарём: удаляем её.
+        // Главной ошибкой остаётся сбой подмены, сбой уборки — предупреждение cargo.
+        if let Err(cleanup_error) = fs::remove_file(&staging_path) {
+            println!(
+                "cargo:warning=could not remove {}: {cleanup_error}",
+                staging_path.display()
+            );
+        }
+        describe("replace", error)
+    })
+}
+
+/// Временный путь рядом с целью: тот же каталог (значит, та же файловая
+/// система, и `rename` атомарен), скрытое имя с номером процесса сборки, чтобы
+/// две параллельные сборки не писали в один временный файл.
+fn staging_path_for(to_path: &Path) -> Result<PathBuf, String> {
+    let file_name = to_path
+        .file_name()
+        .ok_or_else(|| format!("no file name in {}", to_path.display()))?;
+    let mut staging_name = std::ffi::OsString::from(".");
+    staging_name.push(file_name);
+    staging_name.push(format!(".staging-{}", process::id()));
+    Ok(to_path.with_file_name(staging_name))
 }
