@@ -107,7 +107,7 @@ enum RowKind {
     /// Страница играет несколько секунд, потом вход: плеер стартует с текущей секунды.
     LateStart(CapturePage),
     /// Выбор другого видео в попапе, когда главное уже в плеере.
-    Choice(&'static str),
+    Choice(choice_row::FilmStart),
     /// Отказ текстом: попап остаётся, сеанса нет.
     Refusal(refusal_rows::RefusalRow),
     /// Вопрос про локальный адрес: Allow или Don't allow настоящими клавишами.
@@ -146,7 +146,13 @@ const ROWS: &[Row] = &[
     },
     Row {
         page_id: "banner-with-main",
-        kind: RowKind::Choice("banner-with-main"),
+        kind: RowKind::Choice(choice_row::FilmStart::RightAfterBannerEnd),
+    },
+    // 16a2: тот же выбор, но фильм стартует с запозданием после конца баннера (дефект
+    // «новое видео получило старое ended»).
+    Row {
+        page_id: "banner-with-main",
+        kind: RowKind::Choice(choice_row::FilmStart::SecondAfterBannerEnd),
     },
     refusal("banner-autoplay", refusal_rows::RefusalRow::NO_VIDEO),
     refusal("drm-clearkey", refusal_rows::RefusalRow::PROTECTED),
@@ -253,7 +259,7 @@ fn subject(entry: Entry, row: &Row) -> String {
     let rule = match row.kind {
         RowKind::Start(_) => "start",
         RowKind::LateStart(_) => "start-after-playing",
-        RowKind::Choice(_) => "choose-another-video",
+        RowKind::Choice(film_start) => film_start.rule_name(),
         RowKind::Refusal(refusal) => refusal.name(),
         RowKind::Consent(decision) => decision.name(),
         RowKind::BrowserPage => "tab-not-scriptable",
@@ -291,8 +297,8 @@ fn run_row(stand: &Stand, browser: BrowserKind, entry: Entry, row: Row) -> StepR
             RowKind::LateStart(page) => {
                 start_rows::run_late_start(stand, environment, browser, entry, page)
             }
-            RowKind::Choice(page_id) => {
-                choice_row::run(stand, environment, browser, entry, page_id)
+            RowKind::Choice(film_start) => {
+                choice_row::run(stand, environment, browser, entry, row.page_id, film_start)
             }
             RowKind::Refusal(refusal) => {
                 refusal_rows::run_refusal(stand, environment, browser, entry, row.page_id, refusal)

@@ -49,12 +49,45 @@ const PLAYBACK_ENDED_MARK: &str = "Browser playback ended";
 /// Сколько ждём конца баннера (файл на 12 с).
 const BANNER_END_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Когда страница запускает фильм после конца баннера. Оба варианта сперва ждут, пока СТРАНИЦА
+/// сама увидит `ended` у баннера (так ведёт себя живой сайт и так уходит гонка с часами плеера).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FilmStart {
+    /// Сразу, как только баннер сообщил `ended`.
+    RightAfterBannerEnd,
+    /// Через секунду после `ended`: у фильма под тенью не должно быть старого `ended`.
+    SecondAfterBannerEnd,
+}
+
+impl FilmStart {
+    /// Правило в подписи строки таблицы (по нему же фильтрует `BRIDGE_BENCH_ENTRY_ROW`).
+    pub(super) fn rule_name(self) -> &'static str {
+        match self {
+            Self::RightAfterBannerEnd => "choose-another-video",
+            Self::SecondAfterBannerEnd => "choose-another-video-late-film",
+        }
+    }
+
+    /// Команда страницы: имя команды и id элемента, который сейчас под тенью (баннер).
+    fn page_command(self) -> String {
+        let name = match self {
+            Self::RightAfterBannerEnd => "expect-follows-into-player",
+            Self::SecondAfterBannerEnd => "expect-follows-into-player-late",
+        };
+        format!("{name}:{SHADOWED_ELEMENT_ID}")
+    }
+}
+
+/// Id баннера на странице `banner-with-main`: именно он стоит под тенью после выбора строки.
+const SHADOWED_ELEMENT_ID: &str = "banner";
+
 pub(super) fn run(
     stand: &Stand,
     environment: &BenchEnvironment,
     browser: BrowserKind,
     entry: Entry,
     page_id: &'static str,
+    film_start: FilmStart,
 ) -> Result<Verdict, ScenarioError> {
     let run_started_at = Instant::now();
     let mut ready = match open_ready(
@@ -139,6 +172,7 @@ pub(super) fn run(
             &mut ready,
             environment,
             BANNER_END_TIMEOUT,
+            film_start,
         )?);
     }
     let report = ready.run.finish_page();
@@ -342,6 +376,7 @@ fn confirm_main_follows(
     ready: &mut ReadyRun<'_, '_>,
     environment: &BenchEnvironment,
     banner_end_timeout: Duration,
+    film_start: FilmStart,
 ) -> Result<Option<String>, ScenarioError> {
     // Отдельный читатель журнала: общий курсор мог уйти дальше строки конца, пока ждал сводку.
     let mut whole_log = PlayerLog::open(environment.player_log());
@@ -351,9 +386,12 @@ fn confirm_main_follows(
         )));
     }
     let before_following = last_summary(ready)?;
-    let command = "expect-follows-into-player";
-    ready.run.tell_page(command);
-    if let Err(message) = ready.run.wait_ack(command, ACK_TIMEOUT) {
+    // Страница сама дожидается `ended` баннера (см. handoff-mode.js): строка журнала плеера приходит
+    // раньше, чем тик часов доходит до фона, и без этого ожидания фон отвечал бы `release`.
+    let command = film_start.page_command();
+    ready.run.tell_page(&command);
+    // Ответ страницы приходит после ожидания конца баннера, запуска фильма и наблюдения.
+    if let Err(message) = ready.run.wait_ack(&command, ACK_TIMEOUT) {
         return Ok(Some(format!(
             "the page did not start the main video: {message}"
         )));
@@ -407,6 +445,26 @@ mod tests {
 
     fn rows(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn film_start_variants_have_distinct_rules_and_address_the_banner() {
+        assert_eq!(
+            FilmStart::RightAfterBannerEnd.rule_name(),
+            "choose-another-video"
+        );
+        assert_eq!(
+            FilmStart::SecondAfterBannerEnd.rule_name(),
+            "choose-another-video-late-film"
+        );
+        assert_eq!(
+            FilmStart::RightAfterBannerEnd.page_command(),
+            "expect-follows-into-player:banner"
+        );
+        assert_eq!(
+            FilmStart::SecondAfterBannerEnd.page_command(),
+            "expect-follows-into-player-late:banner"
+        );
     }
 
     #[test]

@@ -47,6 +47,15 @@ const RETURN_WAIT_MS = 15000;
 const RETURN_MIN_REAL_FRAMES = 10;
 /** Видео ушло в плеер: браузер почти не декодирует (запас на момент перехода). */
 const FOLLOWED_MAX_REAL_FRAMES = 3;
+/** Сколько ждём, пока элемент под тенью (баннер) доиграет до `ended`, мс (файл баннера — 12 с). */
+const SHADOWED_END_WAIT_MS = 30000;
+/**
+ * Пауза между концом прошлого видео и запуском нового в варианте «фильм позже». Живой сайт после
+ * рекламы не запускает фильм в ту же миллисекунду; 1 с заведомо дольше тика часов плеера (250 мс),
+ * так что фон точно знает конец баннера и открыл переезд. Дефект, который ловит вариант: новое
+ * видео под тенью получает старое `ended` и страница видит его «доигравшим».
+ */
+const LATE_FILM_DELAY_MS = 1000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -327,7 +336,9 @@ async function runCommand(context, state, hooks, command) {
   } else if (name === 'expect-returned-paused') {
     await expectReturnedPaused(context, state, Number(argument));
   } else if (name === 'expect-follows-into-player') {
-    await expectFollowsIntoPlayer(context, state);
+    await expectFollowsIntoPlayer(context, state, { argument, startDelayMs: 0 });
+  } else if (name === 'expect-follows-into-player-late') {
+    await expectFollowsIntoPlayer(context, state, { argument, startDelayMs: LATE_FILM_DELAY_MS });
   } else if (await runReturnCommand(context, state, name)) {
     // Команды возврата видео странице (11a): отметка, наблюдение, счёт кликов — в return-checks.js.
   } else {
@@ -420,12 +431,38 @@ async function expectPagePlaysItself(context, state) {
 }
 
 /**
+ * Ждём, пока элемент, который сейчас под тенью (у баннера это `<video id=banner>`), сам сообщит
+ * `ended === true`. Так ведёт себя живой сайт: следующее видео он запускает, увидев конец прошлого.
+ * Фон отмечает `ended` ДО пересылки часов тени странице, поэтому «страница видит ended» означает
+ * «фон уже знает конец и открыл переезд». Строка журнала плеера для этого не годится: бенч видит
+ * её раньше, чем тик часов доходит до фона (гонка, ~1 прогон из 4 в Chromium).
+ * Элемент передаёт команда: `expect-follows-into-player:<id элемента>`.
+ */
+async function waitShadowedElementEnded(context, elementId) {
+  const element = elementId ? document.getElementById(elementId) : null;
+  if (!element) {
+    context.check('shadowed-element-found', false, `no element with id '${elementId}' (command argument)`);
+    return false;
+  }
+  const ended = await waitFor(() => element.ended === true, SHADOWED_END_WAIT_MS);
+  context.check('shadowed-element-ended', ended,
+    `#${elementId}: ended=${element.ended}, paused=${element.paused}, currentTime=${element.currentTime.toFixed(2)}`);
+  return ended;
+}
+
+/**
  * Страница сама запускает видео, пока окно плеера живо и прошлое видео в нём доиграло (выбор другого
  * видео, решение 215). Сеанс переезжает обратно на это видео (решение 201): часы идут, браузер не
  * декодирует. Сравнение с `expectPagePlaysItself` здесь неверно: там плеера уже нет.
+ * `startDelayMs` > 0 — вариант «фильм позже»: страница ждёт после конца прошлого видео, а потом
+ * обязана видеть у нового `paused=false ended=false` (оно не должно унаследовать старое `ended`).
  */
-async function expectFollowsIntoPlayer(context, state) {
+async function expectFollowsIntoPlayer(context, state, { argument, startDelayMs }) {
   const { video, probe } = state;
+  // Не дождались конца прошлого видео — фильм не запускаем: проверка уже провалена, а запуск
+  // только размазал бы причину по ложным кадрам.
+  if (!await waitShadowedElementEnded(context, argument)) return;
+  if (startDelayMs > 0) await sleep(startDelayMs);
   const startTime = video.currentTime;
   try {
     await video.play();
@@ -440,4 +477,8 @@ async function expectFollowsIntoPlayer(context, state) {
   const gained = probe.framesOf(video) - framesAtStart;
   context.check('page-play-follows-into-player', advanced && !video.paused && gained <= FOLLOWED_MAX_REAL_FRAMES,
     `currentTime ${startTime.toFixed(2)} -> ${video.currentTime.toFixed(2)}, paused=${video.paused}, real frames while it plays ${gained} (limit ${FOLLOWED_MAX_REAL_FRAMES})`);
+  // Общая проверка `page-sees-playback-not-pause` пропускает `ended=true`, поэтому дефект «новое
+  // видео получило старое ended» ловим явно: фильм играет, а не «закончился».
+  context.check('film-under-shadow-playing-not-ended', !video.paused && !video.ended,
+    `paused=${video.paused} ended=${video.ended}, currentTime=${video.currentTime.toFixed(2)}, start delay ${startDelayMs} ms`);
 }
