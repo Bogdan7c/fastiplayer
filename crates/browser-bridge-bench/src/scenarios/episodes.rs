@@ -10,12 +10,14 @@
 //! 3. `no-next-episode`: серии 2 нет вовсе — через ~60 с «The page didn't start the next episode»;
 //! 4. `instant-next`: порядок PlayerJS Tortuga (16a3) — серия 2 тем же элементом сразу, `play()` и
 //!    перемотка на 0 раньше `sourceopen`; плеер не перезапускает доигравшую серию 1;
-//! 5. `spa-away`: одностраничник сменил адрес (`pushState`), снял источник и ничего не поставил —
+//! 5. `reset-next`: порядок klonua (16a3, находка 3) — в такте `ended` страница сбрасывает элемент
+//!    на 0, потом снимает источник и через ~1 с ставит серию 2; серия 1 тоже не играет снова;
+//! 6. `spa-away`: одностраничник сменил адрес (`pushState`), снял источник и ничего не поставил —
 //!    плеер говорит «вкладка закрыта» (`tab_gone`), а не «страница забрала видео».
 //!
 //! Серию 1 до конца доводит робот: ставит позицию плеера за 8 с до конца (MPRIS `Seek`), страница
-//! следует за перемоткой плеера, как за перемоткой зрителя. Страницы: `episode-gap` (строки 1-4) и
-//! `episode-spa-away` (строка 5). Приговоры — чистые функции в [`judge`].
+//! следует за перемоткой плеера, как за перемоткой зрителя. Страницы: `episode-gap` (строки 1-5) и
+//! `episode-spa-away` (строка 6). Приговоры — чистые функции в [`judge`].
 
 mod judge;
 mod replay_guard;
@@ -27,7 +29,7 @@ use self::judge::{
     ObservedEnd, PAGE_TITLE_MARKER, PLAYER_PROCESS_MARKER, PageTab, PlayerJournal,
     VIEWER_NOTICE_MARKER, WINDOW_CREATED_MARKER, judge,
 };
-use self::replay_guard::EPISODE_CHANGE_MARKERS;
+use self::replay_guard::{EPISODE_CHANGE_MARKERS, EpisodeSwapOrder};
 use super::capture::judge_early_report;
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
@@ -93,7 +95,7 @@ struct EpisodeRow {
 }
 
 /// Строки сценария в порядке прогона.
-const ROWS: [EpisodeRow; 5] = [
+const ROWS: [EpisodeRow; 6] = [
     EpisodeRow {
         name: "delayed-next",
         page_id: GAP_PAGE,
@@ -112,7 +114,12 @@ const ROWS: [EpisodeRow; 5] = [
     EpisodeRow {
         name: "instant-next",
         page_id: GAP_PAGE,
-        expectation: Expectation::InstantNext,
+        expectation: Expectation::InstantNext(EpisodeSwapOrder::PlayBeforeOpen),
+    },
+    EpisodeRow {
+        name: "reset-next",
+        page_id: GAP_PAGE,
+        expectation: Expectation::InstantNext(EpisodeSwapOrder::ResetBeforeSwap),
     },
     EpisodeRow {
         name: "spa-away",
@@ -132,7 +139,10 @@ impl EpisodeRow {
                 format!("&next=delayed&delay_ms={NEXT_EPISODE_DELAY_MS}&hidden=1")
             }
             Expectation::NoNextEpisode => "&next=never".to_owned(),
-            Expectation::InstantNext => "&next=instant".to_owned(),
+            Expectation::InstantNext(EpisodeSwapOrder::PlayBeforeOpen) => {
+                "&next=instant".to_owned()
+            }
+            Expectation::InstantNext(EpisodeSwapOrder::ResetBeforeSwap) => "&next=reset".to_owned(),
             Expectation::SpaAway => String::new(),
         };
         format!("{HANDOFF_MODE_QUERY}{row_query}")
@@ -141,7 +151,7 @@ impl EpisodeRow {
     /// Профиль настроек плеера: строки с серией 2 стартуют с запомненным полным экраном.
     fn player_config(&self, bench_default: PlayerConfigProfile) -> PlayerConfigProfile {
         match self.expectation {
-            Expectation::DelayedNext(_) | Expectation::InstantNext => {
+            Expectation::DelayedNext(_) | Expectation::InstantNext(_) => {
                 PlayerConfigProfile::RememberedFullscreen
             }
             Expectation::NoNextEpisode | Expectation::SpaAway => bench_default,
@@ -310,7 +320,7 @@ fn walk_row(
                 .player_log
                 .snapshot_lines_containing(END_NOTICE_MARKER)?;
         }
-        Expectation::InstantNext => {
+        Expectation::InstantNext(_) => {
             if let Err(reason) = walk_instant_next(run, control) {
                 failed_steps.push(reason);
             }
@@ -446,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_cover_the_five_promised_cases_on_known_pages() {
+    fn rows_cover_the_promised_cases_on_known_pages() {
         let names: Vec<&str> = ROWS.iter().map(|row| row.name).collect();
         assert_eq!(
             names,
@@ -455,6 +465,7 @@ mod tests {
                 "delayed-next-hidden",
                 "no-next-episode",
                 "instant-next",
+                "reset-next",
                 "spa-away"
             ]
         );
@@ -484,6 +495,7 @@ mod tests {
         );
         assert_eq!(query("no-next-episode"), "&mode=handoff&next=never");
         assert_eq!(query("instant-next"), "&mode=handoff&next=instant");
+        assert_eq!(query("reset-next"), "&mode=handoff&next=reset");
         assert_eq!(query("spa-away"), "&mode=handoff");
         // Пауза строго между прежним допуском (5 с) и ожиданием экстеншена (60 с).
         assert!((5_000..60_000).contains(&NEXT_EPISODE_DELAY_MS));
@@ -502,6 +514,7 @@ mod tests {
                 PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::Clean,
+                PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::Clean,
             ]
@@ -533,6 +546,8 @@ mod tests {
             "get('hidden')",
             "'instant'",
             "playBeforeOpen: true",
+            "'reset'",
+            "video.currentTime = 0;",
         ] {
             assert!(gap.contains(fragment), "{GAP_PAGE} lacks {fragment}");
         }

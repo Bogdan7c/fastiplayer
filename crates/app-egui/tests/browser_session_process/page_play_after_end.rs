@@ -15,6 +15,11 @@
 //! - между концами двух серий показано и сыграно ровно столько, сколько в серии 2;
 //! - серия 2 играет: её тики несут номер 2, MPRIS называет её длительность.
 //!
+//! Третий порядок — живой журнал klonua (16a3, находка 3): в такте `ended` страница
+//! сбрасывает доигравший элемент на ноль (`page_seek{0}`) и только потом снимает источник.
+//! Плеер исполнял эту перемотку у доигравшей серии со своей волей «играть» — серия 1 шла с
+//! начала со звуком до прихода серии 2.
+//!
 //! Повтор той же серии перемоткой страницы проверяют фокусные тесты медиа-части
 //! (`session_media/tests/page_play_after_end.rs`). Нужны `kwin_wayland` (иначе SKIPPED) и
 //! `busctl`.
@@ -82,9 +87,9 @@ fn read_player_messages_for(
     })
 }
 
-/// Окно с сеансом страницы 1.10: серия 1 доиграла, страница сказала «ждём следующую серию».
+/// Окно с сеансом страницы 1.10: серия 1 доиграла (страница играла и молчит).
 /// Возвращает сокет и строку журнала конца серии 1.
-fn first_episode_played_and_awaiting(
+fn first_episode_played_to_the_end(
     process: &SessionProcessUnderTest,
 ) -> (WebSocket<MaybeTlsStream<TcpStream>>, String) {
     let bus = &process.bus;
@@ -94,6 +99,16 @@ fn first_episode_played_and_awaiting(
     wait_until_playing_past(&mut socket, 1_000_000);
     read_player_messages_until(&mut socket, "the end of episode 1", is_ended);
     let first_end = bus.wait_for_log_line_without("Browser playback ended", &PLAYBACK_REFUSALS);
+    (socket, first_end)
+}
+
+/// Окно с сеансом страницы 1.10: серия 1 доиграла, страница сказала «ждём следующую серию».
+/// Возвращает сокет и строку журнала конца серии 1.
+fn first_episode_played_and_awaiting(
+    process: &SessionProcessUnderTest,
+) -> (WebSocket<MaybeTlsStream<TcpStream>>, String) {
+    let bus = &process.bus;
+    let (mut socket, first_end) = first_episode_played_to_the_end(process);
     socket
         .send(Message::text(AWAITING_NEXT_EPISODE))
         .expect("awaiting_next_episode is sent");
@@ -210,6 +225,30 @@ fn a_page_seek_and_play_after_the_announcement_start_the_next_episode_not_a_repl
     );
     let after_first_end = read_player_messages_for(&mut socket, GAP_BEFORE_THE_NEXT_STEP);
     send_all(&mut socket, second_episode_data);
+
+    assert_only_the_second_episode_played(&process, &mut socket, &first_end, after_first_end);
+}
+
+/// Порядок 3 (живой журнал klonua, 16a3): в такте `ended` страница сбрасывает элемент на
+/// ноль, после паузы снимает источник и ждёт следующую серию, затем приходят её данные.
+#[test]
+fn a_page_seek_to_zero_at_the_end_does_not_replay_the_finished_episode() {
+    let Some(process) = SessionProcessUnderTest::start("seek-at-the-end", VideoMode::Window) else {
+        return;
+    };
+    let (mut socket, first_end) = first_episode_played_to_the_end(&process);
+
+    socket
+        .send(Message::text(PAGE_SEEK_TO_ZERO))
+        .expect("the page seek is sent");
+    let after_first_end = read_player_messages_for(&mut socket, GAP_BEFORE_THE_NEXT_STEP);
+    socket
+        .send(Message::text(AWAITING_NEXT_EPISODE))
+        .expect("awaiting_next_episode is sent");
+    process
+        .bus
+        .wait_for_log_line_without(WAITING_SHOWN, &PLAYBACK_REFUSALS);
+    send_all(&mut socket, second_episode_with_another_spec());
 
     assert_only_the_second_episode_played(&process, &mut socket, &first_end, after_first_end);
 }

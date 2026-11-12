@@ -48,7 +48,7 @@ use tracing::debug;
 
 use super::SessionMedia;
 use super::generation_placement::PendingAim;
-use super::page_play_after_end::ShownMediaEnd;
+use super::page_play_after_end::{HeldSeekDrop, ShownMediaEnd};
 use super::position_carry::CarryEnd;
 use super::viewer_click_claim::ViewerClickClaim;
 use crate::ad_plate::AdPlateAction;
@@ -198,6 +198,8 @@ impl SessionMedia {
                     debug!("Viewer resumed the playback after the tab was gone");
                     self.ask_page_to_come_back(now);
                 }
+                // Зритель распорядился сам: отложенная перемотка страницы устарела.
+                self.drop_held_page_seek(HeldSeekDrop::ViewerTransport);
                 self.page_wants_play = will.wants_play();
                 self.viewer_will.note_play(will, now);
                 // Нет загруженного — воля всё равно запомнена: загрузка начнётся так.
@@ -281,7 +283,9 @@ impl SessionMedia {
     ///
     /// Пока плеер ставит поколение, команда досталась бы прежнему медиа: она ждёт показа
     /// (`seek_when_shown`, правило 03e). После перемотки плеер приводится к
-    /// «играть/пауза» страницы (перемотка после `Ended` кончается паузой).
+    /// «играть/пауза» страницы. Перемотку страницы у доигравшего поколения сюда не пускает
+    /// [`super::page_play_after_end`]: воля «играть» после конца устарела бы и перезапустила
+    /// прошлую серию (16a3).
     pub(super) fn seek_loaded_generation(&mut self, target: Duration) -> LoadedSeek {
         let Some(loaded) = self.loaded.as_mut() else {
             return LoadedSeek::NothingLoaded;
@@ -303,8 +307,8 @@ impl SessionMedia {
     pub(super) fn follow_page_play(&mut self, page: PlayWill) {
         match self.viewer_will.judge_page_play(page) {
             PageEcho::Follow => match (page, self.shown_media_end()) {
-                (PlayWill::Play, ShownMediaEnd::PlayedToEnd) => {
-                    self.keep_page_play_for_what_comes_next();
+                (PlayWill::Play, end @ (ShownMediaEnd::Ended | ShownMediaEnd::DrainingTail)) => {
+                    self.follow_page_play_at_the_end(end);
                 }
                 (PlayWill::Play | PlayWill::Pause, _) => {
                     self.page_wants_play = page.wants_play();

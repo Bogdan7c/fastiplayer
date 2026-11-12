@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use super::replay_guard::previous_episode_replay_failures;
+use super::replay_guard::{EpisodeSwapOrder, previous_episode_replay_failures};
 use crate::observe::{EndNotice, HostLogEvidence};
 use crate::scenarios::evidence::{host_failures, page_failures, unexpected_player_lines};
 use crate::scenarios::outcome::Verdict;
@@ -62,9 +62,8 @@ pub(super) enum Expectation {
     NoNextEpisode,
     /// Одностраничник ушёл со страницы просмотра: «вкладка закрыта», а не «страница забрала».
     SpaAway,
-    /// Серия 2 тем же элементом сразу, в порядке PlayerJS (16a3): как `DelayedNext`, и серия 1 не
-    /// перезапускается до показа серии 2.
-    InstantNext,
+    /// Серия 2 тем же элементом сразу, в порядке сайта (16a3): серия 1 не играет до показа серии 2.
+    InstantNext(EpisodeSwapOrder),
 }
 
 /// Строки журнала плеера по смыслу, в порядке появления в журнале.
@@ -142,7 +141,7 @@ pub(super) fn judge(
             failures.extend(delayed_next_failures(tab, evidence));
             delayed_next_summary(&evidence.journal)
         }
-        Expectation::InstantNext => {
+        Expectation::InstantNext(_) => {
             failures.extend(instant_next_failures(evidence));
             failures.extend(previous_episode_replay_failures(
                 &evidence.journal.episode_change,
@@ -673,7 +672,7 @@ mod tests {
     fn the_instant_next_row_fails_when_episode_1_plays_again_before_episode_2() {
         let verdict = judge(
             "episode-gap",
-            Expectation::InstantNext,
+            Expectation::InstantNext(EpisodeSwapOrder::ResetBeforeSwap),
             &evidence(healthy_journal()),
         );
         assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
@@ -683,7 +682,8 @@ mod tests {
             "Audio stream started",
             "Browser stream generation loaded generation=2",
         ]);
-        let verdict = judge("episode-gap", Expectation::InstantNext, &evidence(replayed));
+        let instant = Expectation::InstantNext(EpisodeSwapOrder::PlayBeforeOpen);
+        let verdict = judge("episode-gap", instant, &evidence(replayed));
         assert_eq!(verdict.outcome, Outcome::Fail);
         assert!(
             verdict.detail.contains("played again"),

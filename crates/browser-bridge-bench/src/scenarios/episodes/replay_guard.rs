@@ -1,21 +1,33 @@
-//! Приговор строки `instant-next` (сессия 16a3, находка 3 живой проверки 16a2): доигравшая серия 1
-//! не играет снова, пока плеер ставит серию 2.
+//! Приговор строк `instant-next` и `reset-next` (сессия 16a3, находка 3 живой проверки 16a2):
+//! доигравшая серия 1 не перематывается и не играет снова, пока плеер ставит серию 2.
 //!
-//! Живой дефект: после конца серии 1 плеер ~0,4 с играл её начало, потом показывал серию 2. Одна
-//! найденная дорога к нему — страница ставит серию 2 тем же элементом и тут же зовёт `play()` и
-//! `currentTime = 0`, а эти команды уходили в плеер раньше объявления нового поколения (закрыто в
-//! мире страницы, `coming-source-commands.ts`). Что именно сработало в живом прогоне, ещё не доказано;
-//! строка стенда — сторож результата, а не доказательство корня (без починки она тоже проходит).
+//! Живой дефект: после конца серии 1 плеер играл её начало (0,4 с на Tortuga, до 5 с на klonua),
+//! потом показывал серию 2. Корень (решение 313): сайт в такте `ended` сбрасывает доигравший
+//! элемент на ноль, а плеер исполнял эту перемотку со старой волей «играть». Строка `reset-next`
+//! воспроизводит этот порядок; `instant-next` — порядок PlayerJS (`play()` до `sourceopen`).
+//!
 //! Признаки в журнале плеера между концом показанного и загрузкой следующего поколения — в этом
 //! промежутке плееру нечего ни перематывать, ни играть:
-//! - завершённая перемотка ядра («Final seek commit completed») — доигравшее поколение пошло к началу:
-//!   так кончается и перемотка страницы, и перезапуск ядра по `play` после конца; строка есть и на стенде,
-//!   где звук симулированный (строки демуксера у перезапуска нет);
+//! - перемотка ядра в любой стадии: первый кадр после перемотки, перемотка, ждущая данных (у
+//!   плеера может уже не быть начала серии — тогда она застревает, и звука нет, но плеер всё равно
+//!   пытался вернуть прошлую серию), завершённая перемотка («Final seek commit completed»);
 //! - старт звука («Audio stream started») — на машине с настоящим звуком.
 
+/// Как страница меняет серию сразу после конца (обе формы — живые журналы 16a2-16a3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EpisodeSwapOrder {
+    /// Tortuga (PlayerJS): новый источник тем же кодом, `play()` и перемотка на 0 до `sourceopen`.
+    PlayBeforeOpen,
+    /// klonua (Ashdi): сброс доигравшего элемента на 0 в такте `ended`, потом снятие источника и
+    /// серия 2 через ~1 с.
+    ResetBeforeSwap,
+}
+
 /// Строки журнала плеера, по порядку которых судит этот приговор.
-pub(super) const EPISODE_CHANGE_MARKERS: [&str; 4] = [
+pub(super) const EPISODE_CHANGE_MARKERS: [&str; 6] = [
     PLAYBACK_ENDED_MARKER,
+    SEEK_FIRST_FRAME_MARKER,
+    SEEK_WAITING_MARKER,
     SEEK_ACCEPTED_MARKER,
     AUDIO_STARTED_MARKER,
     GENERATION_LOADED_MARKER,
@@ -25,6 +37,10 @@ pub(super) const EPISODE_CHANGE_MARKERS: [&str; 4] = [
 const PLAYBACK_ENDED_MARKER: &str = "Browser playback ended";
 /// Ядро довело перемотку показанного медиа до показа (и перемотка, и перезапуск с начала).
 const SEEK_ACCEPTED_MARKER: &str = "Final seek commit completed";
+/// Ядро декодировало первый кадр после перемотки.
+const SEEK_FIRST_FRAME_MARKER: &str = "First post-seek decoded frame observed";
+/// Перемотка ядра ждёт данных дольше 0,5 с (данных начала серии у плеера уже нет).
+const SEEK_WAITING_MARKER: &str = "Active seek transaction is still waiting";
 /// Звук пошёл в колонки.
 const AUDIO_STARTED_MARKER: &str = "Audio stream started";
 /// Плеер загрузил поколение страницы (номер — в поле `generation=`).
@@ -49,15 +65,27 @@ pub(super) fn previous_episode_replay_failures(episode_change: &[String]) -> Vec
     };
     let restarts: Vec<&String> = after_end[..next_loaded]
         .iter()
-        .filter(|line| line.contains(AUDIO_STARTED_MARKER) || line.contains(SEEK_ACCEPTED_MARKER))
+        .filter(|line| moves_or_plays_the_shown_media(line))
         .collect();
     if restarts.is_empty() {
         return Vec::new();
     }
     vec![format!(
-        "episode 1 played again between its end and the next generation ({} seek/audio line(s)): {restarts:?}",
+        "episode 1 was moved or played again between its end and the next generation ({} seek/audio line(s)): {restarts:?}",
         restarts.len()
     )]
+}
+
+/// Строка — перемотка ядра в любой стадии или старт звука.
+fn moves_or_plays_the_shown_media(line: &str) -> bool {
+    [
+        SEEK_FIRST_FRAME_MARKER,
+        SEEK_WAITING_MARKER,
+        SEEK_ACCEPTED_MARKER,
+        AUDIO_STARTED_MARKER,
+    ]
+    .iter()
+    .any(|marker| line.contains(marker))
 }
 
 #[cfg(test)]
@@ -122,5 +150,19 @@ mod tests {
             previous_episode_replay_failures(&lines(&["INFO Browser playback ended"])),
             vec!["the player never loaded the next generation after episode 1 ended".to_owned()]
         );
+    }
+
+    #[test]
+    fn a_seek_of_the_ended_episode_stuck_without_data_is_the_defect_too() {
+        // Форма стенда `reset-next` без починки: данных начала серии у плеера нет, перемотка застряла.
+        let journal = lines(&[
+            "INFO Browser playback ended presented_frames=412 audio_output=simulated",
+            "WARN Active seek transaction is still waiting kind=\"seek\" blocker=demux age_ms=500",
+            "WARN Active seek transaction is still waiting kind=\"seek\" blocker=demux age_ms=1000",
+            "INFO Browser stream generation loaded generation=2",
+        ]);
+        let failures = previous_episode_replay_failures(&journal);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("2 seek/audio line(s)"), "{failures:?}");
     }
 }

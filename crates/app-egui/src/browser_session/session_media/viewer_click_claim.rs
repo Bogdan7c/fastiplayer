@@ -49,6 +49,7 @@ use super::SessionMedia;
 use super::generation_feed::LoadedFeed;
 use super::generation_placement::PendingAim;
 use super::live_hls::PageSeekInLiveTime;
+use super::page_play_after_end::PageSeekAtEnd;
 use super::viewer_transport::{LoadedSeek, VIEWER_WILL_CONFIRMATION_WINDOW};
 
 /// Состояние претензии клика зрителя.
@@ -223,6 +224,11 @@ impl SessionMedia {
             debug!("Page seek repeats the place the generation is being installed at");
             return;
         }
+        // Показанное поколение доиграло: перемотка ждёт `play` страницы — настоящий повтор
+        // (16a3, находка 3: сайты сбрасывают доигравший элемент на ноль перед сменой серии).
+        if self.hold_page_seek_at_the_end(target) == PageSeekAtEnd::Held {
+            return;
+        }
         // Плеер ещё ставит поколение — перемотка ждёт показа (последняя побеждает).
         if self.seek_loaded_generation(target) == LoadedSeek::NothingLoaded {
             debug!("Page seek before the stream opened; the player starts where the bytes start");
@@ -310,7 +316,7 @@ impl SessionMedia {
     }
 
     /// Показано ли загруженное поколение (плеер его поставил и привёл к странице).
-    fn loaded_generation_is_shown(&self) -> bool {
+    pub(super) fn loaded_generation_is_shown(&self) -> bool {
         self.loaded
             .as_ref()
             .is_some_and(|loaded| loaded.page_state_reconciled)

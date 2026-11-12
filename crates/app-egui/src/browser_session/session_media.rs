@@ -268,6 +268,9 @@ pub(crate) struct SessionMedia {
     /// Команды транспорта плееру после последнего наблюдения (16a2, [`page_play_after_end`]):
     /// «у конца» устаревшего наблюдения не мешает `play` страницы.
     transport_since_observation: self::page_play_after_end::TransportSinceObservation,
+    /// Перемотка страницы, отложенная у доигравшего поколения до её `play` (16a3, находка 3,
+    /// [`page_play_after_end`]).
+    held_page_seek: Option<self::page_play_after_end::HeldPageSeek>,
 }
 
 impl SessionMedia {
@@ -305,6 +308,7 @@ impl SessionMedia {
             next_episode_wait: Default::default(),
             page_retitles: Default::default(),
             transport_since_observation: Default::default(),
+            held_page_seek: None,
         }
     }
 
@@ -321,6 +325,7 @@ impl SessionMedia {
         // следующей серии снято, невостребованный заголовок прежней страницы забыт.
         self.end_next_episode_wait_on_session_end();
         self.page_retitles.forget_unclaimed();
+        self.drop_held_page_seek(self::page_play_after_end::HeldSeekDrop::NewSession);
         self.current_session = Some(session.clone());
         self.pending = None;
         self.bytes_arrived = false;
@@ -487,6 +492,8 @@ impl SessionMedia {
                 "Pending stream generation superseded before it opened"
             );
         }
+        // Отложенная перемотка была про доигравшую серию, а страница несёт следующую.
+        self.drop_held_page_seek(self::page_play_after_end::HeldSeekDrop::NewGeneration);
         self.pending = Some(PendingGeneration {
             session: handoff.session,
             generation: handoff.generation,

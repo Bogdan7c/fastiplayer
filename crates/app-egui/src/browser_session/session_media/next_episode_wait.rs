@@ -118,6 +118,8 @@ impl NextEpisodeWait {
 impl SessionMedia {
     /// Слово страницы `awaiting_next_episode` текущего экземпляра.
     pub(super) fn note_page_awaits_next_episode(&mut self, patience: NextEpisodePatience) {
+        // Страница сняла источник: отложенная перемотка доигравшей серии больше не повтор.
+        self.drop_held_page_seek(super::page_play_after_end::HeldSeekDrop::PageAwaitsNextEpisode);
         // Сеанс уже кончился (конец обогнал данные): ждать нечего, надпись не ставится.
         if self.is_draining() {
             debug!("The page awaits the next episode after the session ended; ignored");
