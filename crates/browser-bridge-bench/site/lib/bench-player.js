@@ -148,7 +148,13 @@ export class BenchPlayer {
     autoplay = !this.video.paused,
     releaseOldSource = RELEASE_OLD_SOURCE.SRC,
     firstRequestDelayMs = 0,
+    // Как PlayerJS Tortuga (hls.js, сессия 16a3): `play()` и `currentTime = 0` тем же синхронным кодом,
+    // что и новый `src`, ДО `sourceopen` нового MediaSource. Только в главном потоке.
+    playBeforeOpen = false,
+    // Пауза между `sourceopen` и первым `addSourceBuffer` (hls.js сперва грузит плейлист), мс.
+    sourceBuffersDelayMs = 0,
   } = {}) {
+    if (playBeforeOpen && this.useWorker) throw new Error('playBeforeOpen is a main-thread page order');
     if (this.useWorker) {
       // Воркер сам останавливает старый движок и создаёт новый MediaSource; сюда — его handle.
       this.refs = refs;
@@ -159,8 +165,8 @@ export class BenchPlayer {
     await this.#detachEngine();
     this.hangAt = null; // «зависание» — одноразовый сбой первого поколения
     this.refs = refs;
-    await this.#attachInPage(positionS, { releaseOldSource, firstRequestDelayMs });
-    if (autoplay) await this.play();
+    await this.#attachInPage(positionS, { releaseOldSource, firstRequestDelayMs, playBeforeOpen, sourceBuffersDelayMs });
+    if (autoplay && !playBeforeOpen) await this.play();
   }
 
   async seek(positionS) {
@@ -275,7 +281,7 @@ export class BenchPlayer {
   }
 
   /** Создаёт MediaSource, привязывает к элементу и запускает движок. */
-  async #attachInPage(positionS, { releaseOldSource = RELEASE_OLD_SOURCE.SRC, firstRequestDelayMs = 0 } = {}) {
+  async #attachInPage(positionS, { releaseOldSource = RELEASE_OLD_SOURCE.SRC, firstRequestDelayMs = 0, playBeforeOpen = false, sourceBuffersDelayMs = 0 } = {}) {
     const mediaSource = new MediaSource();
     const previousUrl = this.objectUrl;
     this.objectUrl = URL.createObjectURL(mediaSource);
@@ -284,7 +290,11 @@ export class BenchPlayer {
     if (previousUrl) URL.revokeObjectURL(previousUrl);
     this.mediaSources.push(mediaSource);
     this.generations += 1;
+    // Обещание `play()` исполнится только с данными нового поколения: ждём его после запуска движка.
+    const earlyPlay = playBeforeOpen ? this.play() : null;
+    if (playBeforeOpen) this.video.currentTime = 0;
     await this.#waitSourceOpen(mediaSource);
+    if (sourceBuffersDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, sourceBuffersDelayMs));
     if (positionS > 0) this.video.currentTime = positionS;
     this.engine = new MseEngine({
       mediaSource,
@@ -301,6 +311,7 @@ export class BenchPlayer {
     this.engine.start(positionS);
     this.logLine(`generation ${this.generations} started at ${positionS.toFixed(2)} s`);
     this.onGeneration(this.generations);
+    if (earlyPlay !== null) await earlyPlay;
   }
 
   /** Снимает старый источник выбранным способом (см. `RELEASE_OLD_SOURCE`). */

@@ -261,3 +261,31 @@ test("a giant segment in the worker ends the hand-off honestly and is not copied
     isolated.close();
   }
 });
+
+test("16a3: a shadow command after the page attached a new worker media source waits for its first event", async () => {
+  const world = await workerPlayingPage();
+  const isolated = handshake(world.page);
+  try {
+    await beginHandoff(isolated);
+    await until(() => world.shadow.started.length === 1, "the shadow");
+    const shadow = world.shadow.started[0];
+    assert.ok(shadow !== undefined);
+    await isolated.settle();
+    isolated.received.length = 0;
+    // Новый MediaSource воркера на том же элементе, а тень уже передаёт play() страницы.
+    const next = postHandle(world.running);
+    await until(() => world.handles.length === 2, "the next handle");
+    world.video.srcObject = null;
+    world.pair.attachHandle(world.video, world.handles[1] as object);
+    shadow.emit({ kind: "page_playback", request: { kind: "play" } });
+    await isolated.settle();
+    assert.ok(!kinds(isolated.received).includes("page_playback"), "the player does not know the new source yet");
+    next.addSourceBuffer(VIDEO_MIME).appendBuffer(VIDEO_MP4.bytes().slice(0, 64));
+    await until(() => kinds(isolated.received).includes("page_playback"), "the waiting play");
+    const streamed = kinds(isolated.received);
+    assert.ok(streamed.indexOf("mse:source_buffer_added:w1/ms-2") < streamed.indexOf("page_playback"), `play follows the new source's first event: ${streamed.join()}`);
+    assertAcceptedByIsolatedWorld(isolated.received);
+  } finally {
+    isolated.close();
+  }
+});

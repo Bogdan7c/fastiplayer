@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use super::replay_guard::previous_episode_replay_failures;
 use crate::observe::{EndNotice, HostLogEvidence};
 use crate::scenarios::evidence::{host_failures, page_failures, unexpected_player_lines};
 use crate::scenarios::outcome::Verdict;
@@ -61,6 +62,9 @@ pub(super) enum Expectation {
     NoNextEpisode,
     /// Одностраничник ушёл со страницы просмотра: «вкладка закрыта», а не «страница забрала».
     SpaAway,
+    /// Серия 2 тем же элементом сразу, в порядке PlayerJS (16a3): как `DelayedNext`, и серия 1 не
+    /// перезапускается до показа серии 2.
+    InstantNext,
 }
 
 /// Строки журнала плеера по смыслу, в порядке появления в журнале.
@@ -76,6 +80,8 @@ pub(super) struct PlayerJournal {
     pub(super) viewer_notices: Vec<String>,
     /// «Browser page title changed title_bytes=… revision=…».
     pub(super) page_titles: Vec<String>,
+    /// Конец показанного, старт звука и загрузка поколения — по порядку ([`EPISODE_CHANGE_MARKERS`]).
+    pub(super) episode_change: Vec<String>,
 }
 
 /// Конец сеанса, который стенд дождался после действия, и через сколько.
@@ -136,6 +142,13 @@ pub(super) fn judge(
             failures.extend(delayed_next_failures(tab, evidence));
             delayed_next_summary(&evidence.journal)
         }
+        Expectation::InstantNext => {
+            failures.extend(instant_next_failures(evidence));
+            failures.extend(previous_episode_replay_failures(
+                &evidence.journal.episode_change,
+            ));
+            delayed_next_summary(&evidence.journal)
+        }
         Expectation::NoNextEpisode => {
             failures.extend(no_next_episode_failures(evidence));
             end_summary(evidence)
@@ -167,6 +180,21 @@ fn window_failures(journal: &PlayerJournal) -> Vec<String> {
         failures.push(format!(
             "the player process started {} time(s), expected exactly 1",
             journal.process_starts.len()
+        ));
+    }
+    failures
+}
+
+/// Серия 2 сразу (16a3): окно то же, полный экран и заголовок дошли, сеанс не кончался. Надписи
+/// «ждём следующую серию» тут может и не быть: серия 2 приходит раньше, чем её стоит показывать.
+fn instant_next_failures(evidence: &EpisodeEvidence) -> Vec<String> {
+    let journal = &evidence.journal;
+    let mut failures = fullscreen_failures(&journal.fullscreen_changes);
+    failures.extend(page_title_failures(&journal.page_titles));
+    if !evidence.end_notices_while_running.is_empty() {
+        failures.push(format!(
+            "the session ended while the next episode was coming: {}",
+            evidence.end_notices_while_running.join(" | ")
         ));
     }
     failures
@@ -313,6 +341,13 @@ fn spa_away_failures(evidence: &EpisodeEvidence) -> Vec<String> {
         None => failures.push("the row never waited for the end of the session".to_owned()),
     }
     failures.extend(window_closed_failures(evidence));
+    // 16a3: окно досматривает прежний ролик — заголовок ушедшей страницы до него доходить не должен.
+    if !evidence.journal.page_titles.is_empty() {
+        failures.push(format!(
+            "the window took the title of the page the site left for: {:?}",
+            evidence.journal.page_titles
+        ));
+    }
     failures
 }
 
@@ -431,6 +466,12 @@ mod tests {
             fullscreen_changes: lines(&["Browser window fullscreen changed fullscreen=true"]),
             viewer_notices: lines(&[WAITING, CLEARED_BY_GENERATION]),
             page_titles: lines(&["Browser page title changed title_bytes=22 revision=1"]),
+            episode_change: lines(&[
+                "Audio stream started",
+                "Browser playback ended presented_frames=700",
+                "Browser stream generation loaded generation=2",
+                "Audio stream started",
+            ]),
         }
     }
 
@@ -629,6 +670,29 @@ mod tests {
     }
 
     #[test]
+    fn the_instant_next_row_fails_when_episode_1_plays_again_before_episode_2() {
+        let verdict = judge(
+            "episode-gap",
+            Expectation::InstantNext,
+            &evidence(healthy_journal()),
+        );
+        assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+        let mut replayed = healthy_journal();
+        replayed.episode_change = lines(&[
+            "Browser playback ended presented_frames=700",
+            "Audio stream started",
+            "Browser stream generation loaded generation=2",
+        ]);
+        let verdict = judge("episode-gap", Expectation::InstantNext, &evidence(replayed));
+        assert_eq!(verdict.outcome, Outcome::Fail);
+        assert!(
+            verdict.detail.contains("played again"),
+            "{}",
+            verdict.detail
+        );
+    }
+
+    #[test]
     fn the_hidden_tab_row_needs_proof_that_the_tab_was_hidden() {
         let mut shown = evidence(healthy_journal());
         shown.page_ended_lines = lines(&["episode-1-ended visibility=visible"]);
@@ -690,6 +754,28 @@ mod tests {
                 verdict.detail
             );
         }
+    }
+
+    #[test]
+    fn spa_away_fails_when_the_window_took_the_title_of_the_page_left_for() {
+        let mut journal = healthy_journal();
+        journal.page_titles.clear();
+        let mut gone = evidence(journal);
+        gone.end = Some(Ok((
+            notice("finished", "tab_gone", "none"),
+            Duration::from_secs(20),
+        )));
+        gone.window_closed = Some(Ok(()));
+        let verdict = judge("episode-gap", Expectation::SpaAway, &gone);
+        assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+        gone.journal.page_titles = lines(&["Browser page title changed title_bytes=4 revision=1"]);
+        let verdict = judge("episode-gap", Expectation::SpaAway, &gone);
+        assert_eq!(verdict.outcome, Outcome::Fail);
+        assert!(
+            verdict.detail.contains("title of the page the site left"),
+            "{}",
+            verdict.detail
+        );
     }
 
     #[test]

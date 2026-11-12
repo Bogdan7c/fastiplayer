@@ -586,3 +586,99 @@ test("real shadow: a pulse send that throws ends the handoff, returns the elemen
     isolated.close();
   }
 });
+
+/** Тик часов плеера «доиграло» (конец показанного поколения). */
+function endedTick(isolated: IsolatedSide, positionUs: number): void {
+  isolated.send({ kind: "shadow", command: { kind: "clock", position_us: positionUs, state: "ended", rate: 1000, relation: "this_video" } });
+}
+
+/** Только команды тени плееру и события потока — то, в каком порядке их увидит фон. */
+function commandsAndStream(messages: readonly unknown[]): unknown[] {
+  return messages.flatMap((message): unknown[] => {
+    const typed = message as PageEvent;
+    if (typed.kind === "page_seek") return [{ page_seek: typed.target_us }];
+    if (typed.kind === "page_playback") return [{ page_playback: typed.request.kind }];
+    if (typed.kind === "mse") return [`mse:${typed.event.kind}:${"media_source" in typed.event ? typed.event.media_source : ""}`];
+    return [];
+  });
+}
+
+test("real shadow, PlayerJS order after the end (16a3): commands for a not yet opened MediaSource follow its first event", async () => {
+  const harness = startRealShadowHarness();
+  const { page, bridge } = harness;
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    endedTick(isolated, 400_000);
+    await isolated.settle();
+    assert.equal(video.ended, true, "the page saw the end of episode 1");
+    isolated.received.length = 0;
+
+    // Tortuga (hls.js в PlayerJS) в конце серии, синхронно: load() → новый MediaSource на тот же
+    // элемент → play() → currentTime = 0. `sourceopen` у нового MediaSource — только следующей задачей.
+    video.load();
+    const nextEpisode = new page.FakeMediaSource();
+    video.src = page.FakeURL.createObjectURL(nextEpisode);
+    video.testAttachedMediaSource = nextEpisode;
+    void video.play();
+    video.currentTime = 0;
+    await isolated.settle();
+    assert.deepEqual(
+      commandsAndStream(isolated.received),
+      [],
+      "nothing for the next episode may reach the player before it is named: the player would replay episode 1",
+    );
+
+    nextEpisode.testOpen();
+    nextEpisode.addSourceBuffer(VIDEO_MIME);
+    await isolated.settle();
+    assert.deepEqual(commandsAndStream(isolated.received), ["mse:source_buffer_added:ms-2", { page_playback: "play" }, { page_seek: 0 }], "the page's own order, right after the first event of the new source");
+    assert.equal(bridge.controller.isHandingOff, true);
+  });
+});
+
+test("real shadow (16a3): on the named source the page's own commands go out at once, not held", async () => {
+  const harness = startRealShadowHarness();
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    clockTick(isolated, 250_000);
+    await isolated.settle();
+    isolated.received.length = 0;
+    video.pause();
+    video.currentTime = 0.1;
+    void video.play();
+    await isolated.settle();
+    assert.deepEqual(commandsAndStream(isolated.received), [{ page_playback: "pause" }, { page_seek: 100_000 }, { page_playback: "play" }]);
+  });
+});
+
+test("real shadow (16a3): commands for a source that never comes leave with the handoff, the old episode gets none", async () => {
+  const harness = startRealShadowHarness();
+  const { page, bridge } = harness;
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    clockTick(isolated, 250_000);
+    await isolated.settle();
+    isolated.received.length = 0;
+    // Середина серии: страница сняла источник и зовёт play()/перемотку, а нового MediaSource так и нет.
+    video.removeAttribute("src");
+    video.load();
+    // Ожидающий play() стандарт отвергнет, когда элемент вернётся странице: это не ошибка теста.
+    const pendingPlay = video.play().catch((error: unknown) => (error as Error).name);
+    video.currentTime = 0;
+    for (let tick = 0; tick < 8; tick += 1) {
+      page.clock.advance(1_000);
+      clockTick(isolated, 1_250_000 + tick * 1_000_000);
+    }
+    await isolated.settle();
+    assert.equal(bridge.controller.isHandingOff, false, "after the empty-source grace the element went back to the page");
+    assert.deepEqual(commandsAndStream(isolated.received), [], "no command reached the player's old episode");
+    assert.ok(isolated.received.some((message) => message.kind === "handoff_ended"), "the end itself is reported");
+    assert.equal(await pendingPlay, "AbortError", "the page's waiting play() is rejected, as the browser does");
+  });
+});

@@ -8,14 +8,17 @@
 //!    снимаются появлением серии 2, кадры идут, заголовок страницы дошёл до окна, сеанс не кончался;
 //! 2. `delayed-next-hidden`: то же, но вкладку страницы стенд спрятал (открыл поверх пустую);
 //! 3. `no-next-episode`: серии 2 нет вовсе — через ~60 с «The page didn't start the next episode»;
-//! 4. `spa-away`: одностраничник сменил адрес (`pushState`), снял источник и ничего не поставил —
+//! 4. `instant-next`: порядок PlayerJS Tortuga (16a3) — серия 2 тем же элементом сразу, `play()` и
+//!    перемотка на 0 раньше `sourceopen`; плеер не перезапускает доигравшую серию 1;
+//! 5. `spa-away`: одностраничник сменил адрес (`pushState`), снял источник и ничего не поставил —
 //!    плеер говорит «вкладка закрыта» (`tab_gone`), а не «страница забрала видео».
 //!
 //! Серию 1 до конца доводит робот: ставит позицию плеера за 8 с до конца (MPRIS `Seek`), страница
-//! следует за перемоткой плеера, как за перемоткой зрителя. Страницы: `episode-gap` (строки 1-3) и
-//! `episode-spa-away` (строка 4). Приговоры — чистые функции в [`judge`].
+//! следует за перемоткой плеера, как за перемоткой зрителя. Страницы: `episode-gap` (строки 1-4) и
+//! `episode-spa-away` (строка 5). Приговоры — чистые функции в [`judge`].
 
 mod judge;
+mod replay_guard;
 
 use std::time::{Duration, Instant};
 
@@ -24,6 +27,7 @@ use self::judge::{
     ObservedEnd, PAGE_TITLE_MARKER, PLAYER_PROCESS_MARKER, PageTab, PlayerJournal,
     VIEWER_NOTICE_MARKER, WINDOW_CREATED_MARKER, judge,
 };
+use self::replay_guard::EPISODE_CHANGE_MARKERS;
 use super::capture::judge_early_report;
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
@@ -89,7 +93,7 @@ struct EpisodeRow {
 }
 
 /// Строки сценария в порядке прогона.
-const ROWS: [EpisodeRow; 4] = [
+const ROWS: [EpisodeRow; 5] = [
     EpisodeRow {
         name: "delayed-next",
         page_id: GAP_PAGE,
@@ -104,6 +108,11 @@ const ROWS: [EpisodeRow; 4] = [
         name: "no-next-episode",
         page_id: GAP_PAGE,
         expectation: Expectation::NoNextEpisode,
+    },
+    EpisodeRow {
+        name: "instant-next",
+        page_id: GAP_PAGE,
+        expectation: Expectation::InstantNext,
     },
     EpisodeRow {
         name: "spa-away",
@@ -123,6 +132,7 @@ impl EpisodeRow {
                 format!("&next=delayed&delay_ms={NEXT_EPISODE_DELAY_MS}&hidden=1")
             }
             Expectation::NoNextEpisode => "&next=never".to_owned(),
+            Expectation::InstantNext => "&next=instant".to_owned(),
             Expectation::SpaAway => String::new(),
         };
         format!("{HANDOFF_MODE_QUERY}{row_query}")
@@ -131,7 +141,9 @@ impl EpisodeRow {
     /// Профиль настроек плеера: строки с серией 2 стартуют с запомненным полным экраном.
     fn player_config(&self, bench_default: PlayerConfigProfile) -> PlayerConfigProfile {
         match self.expectation {
-            Expectation::DelayedNext(_) => PlayerConfigProfile::RememberedFullscreen,
+            Expectation::DelayedNext(_) | Expectation::InstantNext => {
+                PlayerConfigProfile::RememberedFullscreen
+            }
             Expectation::NoNextEpisode | Expectation::SpaAway => bench_default,
         }
     }
@@ -271,6 +283,7 @@ fn read_journal(player_log: &mut PlayerLog) -> Result<PlayerJournal, ObserveErro
         fullscreen_changes: player_log.snapshot_lines_containing(FULLSCREEN_MARKER)?,
         viewer_notices: player_log.snapshot_lines_containing(VIEWER_NOTICE_MARKER)?,
         page_titles: player_log.snapshot_lines_containing(PAGE_TITLE_MARKER)?,
+        episode_change: player_log.snapshot_forbidden(&EPISODE_CHANGE_MARKERS)?,
     })
 }
 
@@ -291,6 +304,14 @@ fn walk_row(
                 return Ok(outcome);
             }
             if let Err(reason) = walk_delayed_next(run, control) {
+                failed_steps.push(reason);
+            }
+            outcome.end_notices_while_running = run
+                .player_log
+                .snapshot_lines_containing(END_NOTICE_MARKER)?;
+        }
+        Expectation::InstantNext => {
+            if let Err(reason) = walk_instant_next(run, control) {
                 failed_steps.push(reason);
             }
             outcome.end_notices_while_running = run
@@ -335,6 +356,27 @@ fn walk_delayed_next(run: &mut HandoffRun<'_>, control: &PlayerControl) -> Resul
         LINE_TIMEOUT,
     )
     .map_err(|reason| format!("window-shows-episode-2: {reason}"))?;
+    run.player_log
+        .skip_history()
+        .map_err(|error| format!("frames-after-episode-2: {error}"))?;
+    run.player_log
+        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
+        .map_err(|error| format!("frames-after-episode-2: {error}"))?;
+    Ok(())
+}
+
+/// Серия 1 доиграна, серия 2 тем же элементом сразу (16a3): плеер загрузил её поколение, кадры растут.
+fn walk_instant_next(run: &mut HandoffRun<'_>, control: &PlayerControl) -> Result<(), String> {
+    carry_episode_to_its_end(run, control)?;
+    run.wait_page_log_line(PAGE_NEXT_ATTACHED, NEXT_EPISODE_ATTACH_TIMEOUT)
+        .map_err(|reason| format!("episode-2-attached-on-page: {reason}"))?;
+    wait_for_lines_anywhere(
+        &mut run.player_log,
+        "Browser stream generation loaded generation=2",
+        1,
+        LINE_TIMEOUT,
+    )
+    .map_err(|reason| format!("player-loads-episode-2: {reason}"))?;
     run.player_log
         .skip_history()
         .map_err(|error| format!("frames-after-episode-2: {error}"))?;
@@ -404,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_cover_the_four_promised_cases_on_known_pages() {
+    fn rows_cover_the_five_promised_cases_on_known_pages() {
         let names: Vec<&str> = ROWS.iter().map(|row| row.name).collect();
         assert_eq!(
             names,
@@ -412,6 +454,7 @@ mod tests {
                 "delayed-next",
                 "delayed-next-hidden",
                 "no-next-episode",
+                "instant-next",
                 "spa-away"
             ]
         );
@@ -440,6 +483,7 @@ mod tests {
             "&mode=handoff&next=delayed&delay_ms=20000&hidden=1"
         );
         assert_eq!(query("no-next-episode"), "&mode=handoff&next=never");
+        assert_eq!(query("instant-next"), "&mode=handoff&next=instant");
         assert_eq!(query("spa-away"), "&mode=handoff");
         // Пауза строго между прежним допуском (5 с) и ожиданием экстеншена (60 с).
         assert!((5_000..60_000).contains(&NEXT_EPISODE_DELAY_MS));
@@ -458,6 +502,7 @@ mod tests {
                 PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::Clean,
+                PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::Clean,
             ]
         );
@@ -486,6 +531,8 @@ mod tests {
             "get('next')",
             "get('delay_ms')",
             "get('hidden')",
+            "'instant'",
+            "playBeforeOpen: true",
         ] {
             assert!(gap.contains(fragment), "{GAP_PAGE} lacks {fragment}");
         }

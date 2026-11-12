@@ -57,6 +57,7 @@ import type { ElementSource } from "./element-source.ts";
 import type { ForwardByteMeter } from "./forward-byte-meter.ts";
 import type { ShadowSessionHandle, ShadowSourceKind, ShadowStarter } from "./handoff-seam.ts";
 import { hlsStreamOfDuration, shadowSourceOfHls } from "./hls-stream-kind.ts";
+import { ComingSourceCommands, isSourceCommand, type CurrentSourceNaming, type SourceCommand } from "./coming-source-commands.ts";
 import type { HandoffAnchorHooks } from "./handed-off-video-anchor.ts";
 import type { HeldVideo } from "./next-video-guard.ts";
 import { notifyTap, type HandoffTap, type StreamOrigin } from "./handoff-tap.ts";
@@ -114,6 +115,13 @@ interface ActiveHandoff {
   readonly element: Element;
   /** Ключи MediaSource (главного потока и «w<N>/ms-K» воркеров), чьи события и байты идут живым потоком. */
   readonly liveMediaSources: Set<string>;
+  /** Ключи потоков, по которым плееру уже ушло хотя бы одно событие: их поколение фон уже объявил. */
+  readonly namedStreams: Set<string>;
+  /**
+   * Команды тени, ждущие, пока плеер узнает текущий источник элемента (16a3); только у MSE — файл и HLS
+   * при смене источника снимают тень, и новый источник идёт новой передачей.
+   */
+  readonly comingSourceCommands: ComingSourceCommands | null;
   session: ShadowSessionHandle | null;
   /** Тень уже стоит: сторож поставил её раньше первого кадра (сессия 09c2). */
   readonly held: HeldVideo | null;
@@ -276,7 +284,19 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     port.send({ kind: "handoff_began", request_id: requestId, outcome: "started" });
     this.#tap((tap) => tap.handoffBegan(element));
     const liveMediaSources = new Set<string>(source.kind === "media_source" ? [source.record.key] : []);
-    const active: ActiveHandoff = { element, liveMediaSources, session: null, held: this.#environment.nextVideo.take(element), announcedStartUs: null, flooded: false, failureWatch: null, subtitles: null };
+    const streamsMediaSource = source.kind === "media_source" || source.kind === "worker_media_source";
+    const active: ActiveHandoff = {
+      element,
+      liveMediaSources,
+      namedStreams: new Set<string>(),
+      comingSourceCommands: streamsMediaSource ? new ComingSourceCommands() : null,
+      session: null,
+      held: this.#environment.nextVideo.take(element),
+      announcedStartUs: null,
+      flooded: false,
+      failureWatch: null,
+      subtitles: null,
+    };
     this.#active = active;
     if (source.kind === "worker_media_source") {
       // Повтор журнала идёт из воркера асинхронно: шаги 3–5 — по его концу.
@@ -405,6 +425,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
         try {
           this.#port?.send(message, transfer);
           if (role === "handoff_source") this.#announceStartOnGeneration(active, message);
+          this.#noteStreamNamed(mediaSource.key);
         } catch {
           this.#failLiveStream();
         }
@@ -551,6 +572,54 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
    */
   #emitFromShadow(active: ActiveHandoff, event: PageEvent): void {
     if (this.#active !== active) return;
+    const waiting = active.comingSourceCommands;
+    if (waiting === null) {
+      this.#sendShadowEvent(active, event);
+      return;
+    }
+    if (isSourceCommand(event)) {
+      this.#sendShadowCommands(active, waiting.submit(event, this.#namingOfCurrentSource(active)));
+      return;
+    }
+    // Остальные события тени (пульс, конец, ожидание серии) — не команды источнику и не ждут. Пульс
+    // заодно проверяет, не стал ли источник известным без новых событий потока (страница вернула прежний).
+    if (waiting.hasWaiting && event.kind !== "handoff_ended") this.#releaseWaitingCommands(active);
+    this.#sendShadowEvent(active, event);
+  }
+
+  /**
+   * Знает ли плеер текущий источник элемента: это MediaSource (главного потока или воркера), по
+   * потоку которого уже ушло событие. Файл, HLS, пустота и прочее — нет: MSE-передаче ждать там нечего,
+   * тень такой элемент отпустит, и ждущие команды уйдут вместе с передачей.
+   */
+  #namingOfCurrentSource(active: ActiveHandoff): CurrentSourceNaming {
+    const source = this.#sourceOf(active.element);
+    const key = source.kind === "media_source" ? source.record.key : source.kind === "worker_media_source" ? source.mediaSource.key : null;
+    return key !== null && active.namedStreams.has(key) ? "named" : "not_yet_named";
+  }
+
+  /** По потоку ушло событие (повтор или живое): поток назван плееру, ждавшие его команды можно отдать. */
+  #noteStreamNamed(mediaSourceKey: string): void {
+    const active = this.#active;
+    if (active === null || active.namedStreams.has(mediaSourceKey)) return;
+    active.namedStreams.add(mediaSourceKey);
+    if (active.comingSourceCommands?.hasWaiting === true) this.#releaseWaitingCommands(active);
+  }
+
+  /** Отдать ждавшие команды, если плеер уже знает текущий источник элемента. */
+  #releaseWaitingCommands(active: ActiveHandoff): void {
+    const waiting = active.comingSourceCommands;
+    if (waiting === null) return;
+    this.#sendShadowCommands(active, waiting.release(this.#namingOfCurrentSource(active)));
+  }
+
+  #sendShadowCommands(active: ActiveHandoff, commands: readonly SourceCommand[]): void {
+    for (const command of commands) this.#sendShadowEvent(active, command);
+  }
+
+  /** Отправить событие тени фону (общие правила сбоя отправки — в описании `#emitFromShadow`). */
+  #sendShadowEvent(active: ActiveHandoff, event: PageEvent): void {
+    if (this.#active !== active) return;
     const endsHandoff = event.kind === "handoff_ended";
     const outgoing: PageEvent = event.kind === "handoff_ended" ? { kind: "handoff_ended", cause: this.#endCauseOf(active, event.cause) } : event;
     if (outgoing.kind === "handoff_ended") this.#tap((tap) => tap.handoffEnded(outgoing.cause));
@@ -624,6 +693,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
       }
       port.send(message, transfer);
     });
+    this.#noteStreamNamed(mediaSourceKey);
   }
 
   /** Вызвать подписчика (если он есть), не давая его сбою попасть в передачу. */

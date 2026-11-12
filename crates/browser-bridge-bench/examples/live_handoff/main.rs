@@ -518,7 +518,11 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         } else {
             PlayerConfigProfile::Clean
         },
-        player_rust_log: "info".to_owned(),
+        // Разбор живого сбоя (16a3): тот же `FASTIPLAYER_BENCH_PLAYER_LOG`, что у стенда, иначе `info`.
+        player_rust_log: std::env::var("FASTIPLAYER_BENCH_PLAYER_LOG")
+            .ok()
+            .filter(|filter| !filter.trim().is_empty())
+            .unwrap_or_else(|| "info".to_owned()),
         work_root: std::env::temp_dir(),
         // Мышь и снимки экрана стенда — только когда их попросили: обычный прогон их не трогает.
         desktop: if arguments.click_at.is_some() || arguments.screenshots.is_some() {

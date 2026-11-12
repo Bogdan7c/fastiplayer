@@ -16,6 +16,8 @@
 //    ожидания экстеншена): новый MediaSource на том же элементе, плеер обязан дождаться;
 //  * `next=never` — вторая серия так и не приходит: через 60 с экстеншен кончает сеанс честным
 //    «The page didn't start the next episode».
+//  * `next=instant` — порядок PlayerJS Tortuga (16a3): серия 2 тем же элементом сразу, а `play()` и
+//    `currentTime = 0` идут тем же синхронным кодом, что и новый `src`, ещё до `sourceopen`.
 // `hidden=1` — стенд спрятал эту вкладку (таймеры страницы в скрытой вкладке тикают реже): страница
 // только пропускает проверку «пульс страницы не провалился», остальное то же.
 // Страница сама меняет `document.title` по серии, как делают сайты. Метки журнала для робота:
@@ -32,6 +34,11 @@ const EPISODE_ASSET = 'h264-aac';
 const EPISODE_TITLES = { 1: 'Gap Series - Episode 1', 2: 'Gap Series - Episode 2' };
 /** Обычный режим: серия 1 стартует за столько секунд до конца, чтобы дойти до `ended` в бюджете. */
 const PLAIN_SECONDS_BEFORE_END = 4;
+/**
+ * `next=instant`: сколько hls.js грузит плейлист между `sourceopen` и первым `addSourceBuffer`, мс. В живом
+ * журнале Tortuga серия 2 загрузилась через 0,66 с после конца серии 1 — в этом окне команды и терялись.
+ */
+const PLAYLIST_LOAD_MS = 400;
 /** Обычный режим: пауза до серии 2, мс (в режиме передачи её задаёт робот через `delay_ms`). */
 const PLAIN_DELAY_MS = 1000;
 /** Бюджет страницы в обычном режиме, мс (режим передачи берёт общий). */
@@ -54,7 +61,7 @@ await runScenario('episode-gap', async (ctx) => {
   const nextMode = query.get('next') ?? 'delayed';
   const delayMs = Number(query.get('delay_ms') ?? PLAIN_DELAY_MS);
   const tabHidden = query.get('hidden') === '1';
-  if (!['delayed', 'never'].includes(nextMode) || !Number.isFinite(delayMs) || delayMs < 0) {
+  if (!['delayed', 'never', 'instant'].includes(nextMode) || !Number.isFinite(delayMs) || delayMs < 0) {
     throw new Error(`bad page query: next=${nextMode}, delay_ms=${query.get('delay_ms')}`);
   }
   const catalog = await loadCatalog();
@@ -69,6 +76,14 @@ await runScenario('episode-gap', async (ctx) => {
   async function onEpisodeEnded() {
     ctx.log(`episode-1-ended visibility=${document.visibilityState}`);
     document.title = EPISODE_TITLES[2];
+    if (nextMode === 'instant') {
+      // Порядок PlayerJS Tortuga (16a3): тот же элемент, новый MediaSource, play() и перемотка на 0 сразу.
+      ctx.log('episode-1-source-removed');
+      await player.newGeneration({ refs, positionS: 0, playBeforeOpen: true, sourceBuffersDelayMs: PLAYLIST_LOAD_MS });
+      flow.attached = true;
+      ctx.log('episode-2-attached');
+      return;
+    }
     await withdrawSource(player, video);
     flow.removed = true;
     ctx.log('episode-1-source-removed');
@@ -90,7 +105,7 @@ await runScenario('episode-gap', async (ctx) => {
   if (ctx.params.handoff) {
     await observeHandoff(ctx, { video, player, refs, catalog }, {}, {
       // Серия 2 — единственный лишний MediaSource, и только если страница вообще её ставит.
-      expectedExtraGenerations: nextMode === 'delayed' ? 1 : 0,
+      expectedExtraGenerations: nextMode === 'never' ? 0 : 1,
       skipFinishChecks: nextMode === 'never' ? SOURCE_GONE_FINISH_CHECKS
         : (tabHidden ? ['page-alive-under-shadow'] : []),
     });
