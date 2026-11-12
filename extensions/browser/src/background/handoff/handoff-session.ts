@@ -37,11 +37,12 @@
 // Смена серии на той же странице (сессия 16a; владелец правил — episode-change/): серия доиграла, а следующая
 // не пришла за 60 с — 4011 (старому плееру 4009); пока ждём — `awaiting_next_episode`; заголовок вкладки —
 // `page_title_changed`; одностраничник сменил адрес, а видео пропало — `tab_gone{navigated_away}` (решение 42).
+// Перезагрузка страницы (16c; владелец — session-page-reload.ts): документ ушёл, вкладка на том же сайте — фаза
+// `page_reloading`, окно досматривает скачанное, видео нового документа берёт сеанс-замена (решение 215).
 
 import type {
   HandOffTabOutcome,
   HandoffEndCause,
-  HeldVideoReply,
   HeldVideoReport,
   PageCommand,
   PageEvent,
@@ -64,7 +65,7 @@ import { playerAbilitiesOf } from "./hls-player-support.ts";
 import { createDocumentTranslator, type DocumentTranslator, type PageStreamProblem, type StreamPageEvent } from "./page-event-translator.ts";
 import { choiceMemoryWritingOf, createSessionSiteAdapters } from "./session-site-adapters.ts";
 import { DEMAND_REASON, NATIVE_HLS_NOT_YET, startsGeneration, UNKNOWN_HINTS, type PageDelivery, type SessionPlace } from "./handoff-session-basics.ts";
-import type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
+import type { HandoffSession, HandoffSessionEnd, SessionHeldVideoAnswer } from "./session-contract.ts";
 import type { SessionPhase } from "./session-phase.ts";
 
 export type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
@@ -91,10 +92,11 @@ import { createSessionEpisodeChange } from "./episode-change/session-episode-cha
 import { endAfterSourceLoss, sourceLossOfExpiredWait, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
 import { describeRefusal, describeSocketEnd, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
-import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
+import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow, stepAfterPlayerSocketEnded } from "./session-end-rules.ts";
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
 import { createPageLeave } from "./session-page-leave.ts";
 import { createPagePresence } from "./session-page-presence.ts";
+import { createSessionPageReload } from "./session-page-reload.ts";
 import { createSessionPageReveal } from "./page-tab-reveal.ts";
 
 export function startHandoffSession(
@@ -143,12 +145,24 @@ export function startHandoffSession(
     endSession: (end) => finish(end),
   });
   pageReturn.notePage(target.pagePlace);
+  // Ожидание видео после перезагрузки (16c): срок, адрес вкладки, суд над видео. По сроку посреди серии — уход, после — конец 16a.
+  const pageReload = createSessionPageReload({
+    browser: dependencies,
+    currentTabId: () => presence.tabId(),
+    sessionPageUrl: () => presence.pageUrl(),
+    midEpisodeWaitMs: target.pageReloadWaitMs,
+    fileAddressRule: () => place.fileAddressRule,
+    playerAbilities: () => playerAbilitiesOf(agreedProtocol),
+    siteLeft: () => leavePage("navigated_away"),
+    waitExpired: (wait) => (wait === "after_episode_end" ? endForNoNextVideo(wait) : leavePage("navigated_away")),
+  });
   // Уход страницы (порт умер, вкладку закрыли, ушли со страницы): page-leave.ts; состоянием владеет сеанс.
   const pageLeave = createPageLeave({
     presence,
     pageReturn,
     relocation,
     silenceWatch,
+    pageReload,
     phase: () => phase,
     portFrameId: () => portFrameId,
     socketOpened: () => socket !== undefined,
@@ -164,6 +178,7 @@ export function startHandoffSession(
       if (abandoned !== undefined) abandoned = { outcome: abandoned.outcome, reason: "closed" };
     },
     waitForNextVideo: () => waitForNextVideo(),
+    beginPageReloadWait: () => beginPageReloadWait(),
     finish: (end) => finish(end),
   });
   const { endForLostFramePort, leavePage, notifyTabRemoved } = pageLeave;
@@ -421,7 +436,7 @@ export function startHandoffSession(
    * после конца серии — «не поставила следующую», адрес вкладки сменился — уход одностраничника.
    */
   function endForNoNextVideo(wait: NextVideoWait): void {
-    if (phase !== "active" && phase !== "between_videos") return;
+    if (phase !== "active" && phase !== "between_videos" && phase !== "page_reloading") return;
     if (phase === "active") tryPostToPage(END_WITHOUT_PLAYER);
     endByPageSideStep(endAfterSourceLoss(sourceLossOfExpiredWait(wait), { pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol }));
   }
@@ -433,8 +448,26 @@ export function startHandoffSession(
     finish({ kind: "page_gone", reason: "navigated_away" });
   }
 
-  function heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply {
+  /**
+   * Документ ушёл, вкладка на том же сайте (16c): окно досматривает скачанное — без паузы, в отличие от `waitForNextVideo`.
+   * «Ждём следующую» 16a — ДО смены фазы (в ней плеер слов страницы не слышит). Загрузчики файла и HLS живут.
+   */
+  function beginPageReloadWait(): void {
+    const wait = relocation.episodeEnded() ? "after_episode_end" : "mid_episode";
+    if (wait === "after_episode_end") episodeChange.nextEpisodeWaitBegan();
+    phase = "page_reloading";
+    shownRef = null;
+    beginTimer.cancel(); // начатый переезд не вернёт сеанс в `between_videos` своим запасным шагом
+    silenceWatch.stop();
+    siteAdapters.stop(); // команды адаптеров ушедшему документу не нужны
+    subtitles.endDocument();
+    relocation.pageReloadBegan();
+    pageReload.begin(wait);
+  }
+
+  function heldVideo(frameId: number, report: HeldVideoReport): SessionHeldVideoAnswer {
     if (phase === "page_away") return adoptReturnedVideo(frameId, report);
+    if (phase === "page_reloading") return pageReload.heldVideo(frameId, report);
     if ((phase !== "active" && phase !== "between_videos") || !relocation.adoptionOpen()) return "release";
     const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol));
     if (decision.kind === "release") return "release";
@@ -443,7 +476,7 @@ export function startHandoffSession(
   }
 
   /** Сторож вернувшейся страницы задержал видео (11b2): то же видео — переезд в новую вкладку, иначе отпустить. */
-  function adoptReturnedVideo(frameId: number, report: HeldVideoReport): HeldVideoReply {
+  function adoptReturnedVideo(frameId: number, report: HeldVideoReport): SessionHeldVideoAnswer {
     const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol));
     if (decision.kind === "release" || !pageReturn.acceptsReturnedVideo(decision.video.durationS)) return "release";
     moveToVideo(decision.video, decision.fileAddressRule, () => pageReturn.shadowDidNotStand());
@@ -655,8 +688,8 @@ export function startHandoffSession(
       if (message.type === "show_page") dependencies.noteForDeveloper("show_page ignored: the page is away");
       return;
     }
-    // До старта тени и после её снятия командовать некем.
-    if (phase !== "active" && phase !== "between_videos" && phase !== "moving") return;
+    // До старта тени и после её снятия командовать некем; в `page_reloading` (16c) — часы, конец и байты.
+    if (phase !== "active" && phase !== "between_videos" && phase !== "moving" && phase !== "page_reloading") return;
     const action = translatePlayerMessage(message, videoGeneration);
     switch (action.kind) {
       case "shadow":
@@ -676,7 +709,7 @@ export function startHandoffSession(
         }
         return;
       }
-      case "site_adapter": return void siteAdapters.command(action.command);
+      case "site_adapter": return phase === "page_reloading" ? dependencies.noteForDeveloper("site adapter command ignored: the page is reloading") : void siteAdapters.command(action.command);
       case "show_page": return void pageReveal.show(); // сбои разобраны внутри, наружу не бросает
       case "fetch_resource":
         // Ресурсы HLS просят только в поколении HLS; в другом поколении фид сам ответит `refused`.
@@ -696,30 +729,19 @@ export function startHandoffSession(
 
   function handleSocketEnded(cause: SocketEndCause): void {
     if (cause.kind === "closed_by_extension") return; // мы сами закрыли — решение уже принято
-    switch (phase) {
-      case "opening":
-        failStart({ kind: "player_unavailable", reason: `session_socket:${describeSocketEnd(cause)}` });
-        return;
-      case "abandoning":
-        // Сокет умер раньше attach: сеанс у плеера закрыт и так, исход уже сообщён.
-        finish({ kind: "start_failed", outcome: abandoned?.outcome ?? { kind: "failed", reason: "abandoned" } });
-        return;
-      case "beginning":
-        // Тень могла успеть встать: изолированный мир снимет её сам, когда порт закроется.
-        failStart({ kind: "player_unavailable", reason: `session_socket:${describeSocketEnd(cause)}` });
-        return;
-      case "active":
-        endHandoff(endCommandAfterPlayerSocketEnd(cause), { kind: "player_ended", cause });
-        return;
-      case "between_videos":
-      case "moving":
-      case "page_away":
-        // В сироте порта нет (команда никуда не уйдёт), а открытие страницы и нашу вкладку отменит `finish`.
+    const playerEnded: HandoffSessionEnd = { kind: "player_ended", cause };
+    switch (stepAfterPlayerSocketEnded(phase)) { // таблица по фазам — session-end-rules.ts
+      case "fail_start":
+        return failStart({ kind: "player_unavailable", reason: `session_socket:${describeSocketEnd(cause)}` });
+      case "finish_abandoned":
+        return finish({ kind: "start_failed", outcome: abandoned?.outcome ?? { kind: "failed", reason: "abandoned" } });
+      case "end_shadow":
+        return endHandoff(endCommandAfterPlayerSocketEnd(cause), playerEnded);
+      case "finish_without_shadow":
+        // В сироте и в ожидании перезагрузки порта нет (команда никуда не уйдёт); открытие страницы отменит `finish`.
         tryPostToPage(END_WITHOUT_PLAYER);
-        finish({ kind: "player_ended", cause });
-        return;
-      case "ending":
-      case "finished":
+        return finish(playerEnded);
+      case "nothing":
         return;
     }
   }
@@ -744,6 +766,7 @@ export function startHandoffSession(
     endTimer.cancel();
     silenceWatch.stop();
     relocation.stop();
+    pageReload.stop();
     siteAdapters.stop();
     // Текущие загрузки источников обрываются: ни рамки после конца сеанса или ухода страницы.
     feeds.dispose();
@@ -773,5 +796,5 @@ export function startHandoffSession(
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
-  return { outcome, notifyTabRemoved, heldVideo, adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
+  return { outcome, notifyTabRemoved, heldVideo, pageReloadHandoverRefused: () => pageReload.handoverRefused(), adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
 }

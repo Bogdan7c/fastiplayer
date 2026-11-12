@@ -169,6 +169,8 @@ describe("фильм в другом фрейме", () => {
   it("главный документ ушёл — это уход со страницы, а не конец ролика", async () => {
     const world = setup([{ frameId: 0, result: [AD, FILM] }]);
     await startHandoff(world);
+    // Другой сайт (16c): иначе это перезагрузка, и сеанс ждал бы видео нового документа.
+    world.navigateTab("https://other-site.test/");
     world.framePorts.last().drop();
     await flushPromises();
     assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);

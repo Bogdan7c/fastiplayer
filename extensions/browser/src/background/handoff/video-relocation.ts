@@ -12,6 +12,10 @@
 //   случаях — прежние `NEXT_VIDEO_WAIT_MS` (15 с). Вид ожидания запоминается в миг его начала: часы
 //   плеера продолжают приходить и между роликами, и их `ended` могло бы смениться до истечения срока.
 //
+// - взводом сторожа на время ожидания после перезагрузки страницы (сессия 16c): документ ушёл, срок ведёт
+//   session-page-reload.ts, а переезд только держит сторож взведённым и свой срок не начинает (два срока
+//   наперегонки кончали бы сеанс по тому, что сработало раньше).
+//
 // Сторож взведён чаще, чем открыт переезд, и это намеренно. Короткий файл с вердиктом «фильм» может
 // оказаться рекламой, которую правила не узнали: сторож должен успеть за `play()` фильма, а переезд
 // откроется только когда ролик дошёл до конца. Иначе превью по наведению увело бы сеанс с настоящего видео.
@@ -93,6 +97,11 @@ export interface VideoRelocation {
   nextVideoExpectedAfterLoss(): boolean;
   /** На экране реклама (сессия 09d читает только это). */
   adOnScreen(): boolean;
+  /**
+   * Документ страницы ушёл, сеанс ждёт видео нового документа (16c): сторож взведён во всех фреймах до
+   * `stop()`, а свой срок ожидания переезд снимает и больше не начинает — срок у ожидания перезагрузки свой.
+   */
+  pageReloadBegan(): void;
   /** Сеанс кончился: снять таймеры. Взвод истечёт сам. */
   stop(): void;
 }
@@ -122,14 +131,19 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
   let waitExpired = false;
   // Вид идущего ожидания: запоминается в миг начала и живёт до следующего видео.
   let currentWait: NextVideoWait | undefined;
+  // Документ ушёл (16c): сторож нужен новому документу, а срок ведёт ожидание перезагрузки.
+  let pageReloading = false;
 
   function armsNeeded(): boolean {
-    return role === "ad" || mayBeAd || endedReached || waiting;
+    return role === "ad" || mayBeAd || endedReached || waiting || pageReloading;
   }
 
-  /** Реклама кончилась и страница её не убрала, или тени уже нет: идёт отсчёт. */
+  /**
+   * Реклама кончилась и страница её не убрала, или тени уже нет: идёт отсчёт. Во время ожидания перезагрузки
+   * — никогда: часы плеера идут и тогда (окно досматривает скачанное), и их `ended` не должен начать второй срок.
+   */
   function waitsForNextVideo(): boolean {
-    return waiting || (endedReached && role === "ad");
+    return !pageReloading && (waiting || (endedReached && role === "ad"));
   }
 
   /**
@@ -182,6 +196,8 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       waiting = false;
       waitExpired = false;
       currentWait = undefined;
+      // Тень встала (например, на вернувшейся странице сироты, 11b2): ожидание перезагрузки позади.
+      pageReloading = false;
       waitTimer.cancel();
       applyState();
     },
@@ -214,7 +230,12 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
     adoptionOpen: () => role === "ad" || endedReached || waiting,
     nextVideoExpectedAfterLoss: () => role === "ad" || mayBeAd || endedReached || waiting,
     adOnScreen: () => role === "ad",
+    pageReloadBegan() {
+      pageReloading = true;
+      applyState();
+    },
     stop() {
+      pageReloading = false;
       armTimer.cancel();
       waitTimer.cancel();
     },

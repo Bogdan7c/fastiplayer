@@ -6,6 +6,8 @@ import type { HandOffTabOutcome, HeldVideoReply, HeldVideoReport, PageEventBudge
 import type { PageAdState, PageReopenFailure, TabGoneReason } from "../../protocol/index.ts";
 import type { PageStreamProblem } from "./page-event-translator.ts";
 import type { SocketEndCause } from "./session-socket.ts";
+import type { LocalAddressConsent } from "./file-address-guard.ts";
+import type { ChosenVideo } from "./video-choice.ts";
 
 /** Чем закончилась передача (для владельца и тестов; журнала в продукте нет). */
 export type HandoffSessionEnd =
@@ -50,13 +52,39 @@ export type HandoffSessionEnd =
  */
 export type AfterPreviousSession = () => Promise<void>;
 
+/**
+ * Ответ сеанса на задержанное видео, когда документ страницы ушёл и сеанс ждёт новый (16c, решения 59, 215):
+ * видео того же сайта передаётся в то же окно НОВЫМ сеансом-заменой. Сам сеанс его не открывает — это дело
+ * владельца сеансов (`tab-handoffs.ts` `replaceSession`); странице уходит `adopt_new_session`.
+ */
+export interface PageReloadHandover {
+  readonly kind: "replace_session";
+  /** Видео нового документа, которое возьмёт сеанс-замена. */
+  readonly video: VideoRef;
+  /** Согласие человека на локальный адрес файла, перенесённое из старого сеанса (`consentOf`). */
+  readonly consent: LocalAddressConsent;
+  /** Роль видео по суду сторожа: реклама новой страницы остаётся рекламой в сеансе-замене (как в 09c2). */
+  readonly judged: Pick<ChosenVideo, "role" | "mayBeAd">;
+}
+
+/** Что сеанс решил о задержанном видео: ответ странице как есть или передача сеансу-замене. */
+export type SessionHeldVideoAnswer = HeldVideoReply | PageReloadHandover;
+
 export interface HandoffSession {
   /** Исход старта: `started` или причина отказа. Всегда завершается. */
   readonly outcome: Promise<HandOffTabOutcome>;
   /** Браузер сообщил, что вкладка закрыта (`tabs.onRemoved`). */
   notifyTabRemoved(): void;
-  /** Сторож задержал видео в этом фрейме: переехать на него или отпустить. */
-  heldVideo(frameId: number, report: HeldVideoReport): HeldVideoReply;
+  /**
+   * Сторож задержал видео в этом фрейме: переехать на него, отпустить или (документ ушёл, 16c) отдать его
+   * сеансу-замене. В последнем случае сеанс ждёт исхода замены: не состоялась — `pageReloadHandoverRefused`.
+   */
+  heldVideo(frameId: number, report: HeldVideoReport): SessionHeldVideoAnswer;
+  /**
+   * Сеанс-замена после перезагрузки страницы не состоялся (16c): сеанс снова ждёт видео остаток срока, а срок
+   * уже вышел — кончается сразу. Вне передачи замене — ничего.
+   */
+  pageReloadHandoverRefused(): void;
   /** На экране плеера реклама (решение 204; сессия 09d читает только это). */
   adOnScreen(): boolean;
   /**

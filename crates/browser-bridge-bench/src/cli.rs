@@ -7,8 +7,9 @@ use browser_bridge_bench::environment::{DisplayTarget, PlayerConfigProfile};
 use browser_bridge_bench::scenarios::{
     BrowserExecutables, DEFAULT_MIN_FRAMES, PAGE_SCENARIOS, PageFilter, ReplayOptions, RunSettings,
     attack_page_ids, auto_handoff_page_ids, capture_page_ids, end_page_ids, entries_page_ids,
-    episodes_page_ids, page_return_page_ids, page_subtitles_page_ids, player_command_page_ids,
-    quality_page_ids, series_memory_page_ids, series_page_ids, tab_return_page_ids,
+    episodes_page_ids, page_reload_page_ids, page_return_page_ids, page_subtitles_page_ids,
+    player_command_page_ids, quality_page_ids, series_memory_page_ids, series_page_ids,
+    tab_return_page_ids,
 };
 
 /// Что запускать.
@@ -32,6 +33,7 @@ pub enum Command {
     Entries,
     PageReturn,
     TabReturn,
+    PageReload,
     AutoHandoff,
     BlockerMatrix,
     Replay,
@@ -87,6 +89,7 @@ impl Command {
                 | Self::Entries
                 | Self::PageReturn
                 | Self::TabReturn
+                | Self::PageReload
                 | Self::AutoHandoff
                 | Self::All
         )
@@ -110,6 +113,7 @@ impl Command {
             Self::Entries => filter.matches_any_of(entries_page_ids()),
             Self::PageReturn => filter.matches_any_of(page_return_page_ids()),
             Self::TabReturn => filter.matches_any_of(tab_return_page_ids()),
+            Self::PageReload => filter.matches_any_of(page_reload_page_ids()),
             Self::AutoHandoff => filter.matches_any_of(auto_handoff_page_ids()),
             // `all` всегда начинается с `pages`, где есть любая известная страница.
             Self::All => filter.matches_any_of(pages()),
@@ -204,8 +208,11 @@ Commands:
   episodes          a gap between episodes (16a): the next episode comes after ~20 s, the window
                     stays fullscreen and waits, hidden tab too; no next episode ends the session
                     after ~60 s; a single-page site that left says 'source tab closed'
+  page-reload       a page reloads or navigates inside the same tab (16c): a new video of the same site
+                    replaces the session in the same window; no video ends it after ~10 s; another site
+                    ends it at once
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return, page-reload and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -215,7 +222,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, attacks, episodes, entries, page-return, tab-return, auto-handoff, all);
+                                      player-commands, attacks, episodes, entries, page-return, tab-return, page-reload, auto-handoff, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)
@@ -430,6 +437,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "entries" => Ok(Command::Entries),
         "page-return" => Ok(Command::PageReturn),
         "tab-return" => Ok(Command::TabReturn),
+        "page-reload" => Ok(Command::PageReload),
         "auto-handoff" => Ok(Command::AutoHandoff),
         "blocker-matrix" => Ok(Command::BlockerMatrix),
         "replay" => Ok(Command::Replay),
@@ -643,6 +651,17 @@ mod tests {
     fn hls_live_is_a_command_of_its_own_without_a_page_filter() {
         assert_eq!(invocation(&["hls-live"]).command, Command::HlsLive);
         assert!(parse_words(&["hls-live", "--page", "hls-live"]).is_err());
+    }
+
+    #[test]
+    fn page_reload_is_a_command_with_its_own_page() {
+        assert_eq!(invocation(&["page-reload"]).command, Command::PageReload);
+        assert!(
+            invocation(&["page-reload", "--page", "page-reload"])
+                .pages
+                .admits("page-reload")
+        );
+        assert!(parse_words(&["page-reload", "--page", "mse-webm"]).is_err());
     }
 
     #[test]

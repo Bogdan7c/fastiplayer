@@ -5,11 +5,18 @@
 // страницы и каким путём её провожает (`abandon` → `tab_gone` → закрытие; `tab_gone` и конец;
 // сирота). Состоянием сеанса (фаза, сокет, порт, запись «сеанс выдан, страницы нет») по-прежнему
 // владеет сам сеанс: сюда оно приходит только через узкий шов `PageLeavePorts`.
+//
+// Сессия 16c (решения 59, 304, 305): документ ушёл, а вкладка жива — прежде чем провожать страницу, сеанс
+// спрашивает, на том ли она сайте (session-page-reload.ts). Тот же сайт — фаза `page_reloading`: окно ждёт
+// видео нового документа. Три пути сюда: умер порт главного документа; умер порт фрейма с плеером посреди
+// серии; умер порт рекламного фрейма, а адрес вкладки сменился. Путь «рекламный фрейм умер, адрес тот же —
+// ждём следующий ролик» (09c2) не меняется.
 
 import type { ProtocolVersion, TabGoneReason } from "../../protocol/index.ts";
 import { TOP_FRAME_ID } from "./handoff-session-basics.ts";
 import type { HandoffSessionEnd } from "./session-contract.ts";
 import type { SessionPageReturn } from "./page-return/session-page-return.ts";
+import type { SessionPageReload } from "./session-page-reload.ts";
 import type { PagePresence } from "./session-page-presence.ts";
 import type { SessionPhase } from "./session-phase.ts";
 import type { ShadowSilenceWatch } from "./shadow-silence-watch.ts";
@@ -21,6 +28,7 @@ export interface PageLeavePorts {
   readonly pageReturn: SessionPageReturn;
   readonly relocation: Pick<VideoRelocation, "nextVideoExpectedAfterLoss">;
   readonly silenceWatch: Pick<ShadowSilenceWatch, "stop">;
+  readonly pageReload: Pick<SessionPageReload, "waitsForReloadedPage" | "askWhereTabWent" | "stop">;
   phase(): SessionPhase;
   /** Фрейм живого порта (главный документ вкладки — `TOP_FRAME_ID`). */
   portFrameId(): number;
@@ -40,6 +48,8 @@ export interface PageLeavePorts {
   relabelAbandonmentAsClosed(): void;
   /** Страница убрала видео, а переезд открыт: ждать следующее. */
   waitForNextVideo(): void;
+  /** Документ ушёл, вкладка на том же сайте: фаза `page_reloading`, ждём видео нового документа (16c). */
+  beginPageReloadWait(): void;
   finish(end: HandoffSessionEnd): void;
 }
 
@@ -60,7 +70,8 @@ export function createPageLeave(ports: PageLeavePorts): PageLeave {
    */
   function endForLostFramePort(): void {
     const phase = ports.phase();
-    if (phase === "finished" || phase === "page_away") return;
+    // В ожидании перезагрузки порта уже нет: старый документ забыт, новый ещё не наш.
+    if (phase === "finished" || phase === "page_away" || phase === "page_reloading") return;
     if (phase === "beginning") {
       ports.abandonGrantedSession(ports.presence.wasRemoved() ? "closed" : "navigated_away", "page_navigated_away");
       return;
@@ -71,6 +82,10 @@ export function createPageLeave(ports: PageLeavePorts): PageLeave {
     }
     if (framePortLossIsSurvivable()) {
       askWhetherPageStayed();
+      return;
+    }
+    if (pageReloadWaitIsPossible()) {
+      waitForReloadedPage();
       return;
     }
     // Порт закрывается раньше, чем приходит tabs.onRemoved: живость вкладки спрашиваем у браузера.
@@ -87,7 +102,9 @@ export function createPageLeave(ports: PageLeavePorts): PageLeave {
     ports.presence.askWhetherPageStayed((answer) => {
       const phase = ports.phase();
       if (phase !== "active" && phase !== "between_videos" && phase !== "moving") return;
-      if (answer !== "same_page") leavePage(answer);
+      // Адрес сменился: может быть, это следующая серия перезагрузкой (16c) — сначала вопрос о сайте.
+      if (answer === "navigated_away" && pageReloadWaitIsPossible()) waitForReloadedPage();
+      else if (answer !== "same_page") leavePage(answer);
       else if (phase !== "between_videos") ports.waitForNextVideo();
     });
   }
@@ -100,6 +117,33 @@ export function createPageLeave(ports: PageLeavePorts): PageLeave {
     if (ports.portFrameId() === TOP_FRAME_ID) return false;
     const phase = ports.phase();
     return phase === "between_videos" || phase === "moving" || (phase === "active" && ports.relocation.nextVideoExpectedAfterLoss());
+  }
+
+  /**
+   * Ждать ли видео нового документа (16c): видео в плеере или между роликами, плеер принял сеанс, страница
+   * не возвращается (её отказ — свой путь, 11b2), а настройка не `0`.
+   */
+  function pageReloadWaitIsPossible(): boolean {
+    const phase = ports.phase();
+    const sessionHasVideo = phase === "active" || phase === "between_videos" || phase === "moving";
+    return sessionHasVideo && ports.socketAttached() && !ports.pageReturn.isReturning() && ports.pageReload.waitsForReloadedPage();
+  }
+
+  /**
+   * Документ ушёл, вкладка, возможно, жива: где она теперь. Порт старого документа забыт сразу (команды в него
+   * больше не идут), пульса тени больше не будет. Ответ приходит позже: фаза могла смениться, проверяем заново.
+   */
+  function waitForReloadedPage(): void {
+    ports.forgetFramePort();
+    ports.silenceWatch.stop();
+    ports.pageReload.askWhereTabWent((answer) => {
+      const phase = ports.phase();
+      if (phase !== "active" && phase !== "between_videos" && phase !== "moving") return ports.pageReload.stop();
+      if (answer === "closed" || ports.presence.wasRemoved()) return leavePage("closed");
+      // Другой сайт или ждать уже нельзя (страница стала возвращаться) — прежний уход, без ожидания.
+      if (answer === "other_site" || !pageReloadWaitIsPossible()) return leavePage("navigated_away");
+      ports.beginPageReloadWait();
+    });
   }
 
   /**
@@ -125,7 +169,7 @@ export function createPageLeave(ports: PageLeavePorts): PageLeave {
       ports.abandonGrantedSession("closed", "tab_closed");
     } else if (phase === "abandoning" && ports.isAbandonmentPending()) {
       ports.relabelAbandonmentAsClosed();
-    } else if (phase === "active" || phase === "ending" || phase === "between_videos" || phase === "moving") {
+    } else if (phase === "active" || phase === "ending" || phase === "between_videos" || phase === "moving" || phase === "page_reloading") {
       leavePage("closed");
     }
     // opening без сокета: openPlayerSession увидит флаг, когда плеер выдаст сеанс.

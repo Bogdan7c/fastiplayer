@@ -6,6 +6,8 @@ import { ARM_NEXT_VIDEO_KIND, HANDOFF_PORT_NAME, type ArmNextVideoRequest, type 
 import { ARM_AD_WATCH_KIND, PRESS_AD_SKIP_KIND, type ArmAdWatchRequest, type PressAdSkipRequest } from "../../shared/ad-watch-contract.ts";
 import { parsePressSkipOutcome } from "../../shared/ad-watch-validation.ts";
 import { readLocalAddressSetting } from "../../shared/local-address-setting.ts";
+import { readPageReloadWaitSettings } from "../../shared/page-reload-wait-settings.ts";
+import { RELEASE_HELD_VIDEO_REQUEST_KIND, type ReleaseHeldVideoRequest } from "../../shared/auto-handoff-contract.ts";
 import type { Scheduler } from "../host-link/native-port.ts";
 import type { FramePort } from "./frame-port.ts";
 import { browserFrameInjection } from "../frame-injection/browser-frame-injection.ts";
@@ -64,6 +66,16 @@ function connectFrame(tabId: number, frameId: number): FramePort {
 function armNextVideo(tabId: number, leaseMs: number): void {
   const request: ArmNextVideoRequest = { kind: ARM_NEXT_VIDEO_KIND, lease_ms: leaseMs };
   browserApi.tabs.sendMessage(tabId, request).catch(() => {});
+}
+
+/**
+ * Просьба одному фрейму отпустить задержанное видео: передача, которой оно было обещано (`adopt_new_session`),
+ * не состоялась. Общая для режима 2 (12a) и сеанса-замены после перезагрузки страницы (16c). Не дошло — фрейма уже
+ * нет или страховка изолированного мира сама отпустит видео (`NEW_SESSION_ADOPT_INSURANCE_MS`); сбой — в журнал.
+ */
+export function releaseHeldVideoInFrame(tabId: number, frameId: number, element: number): void {
+  const request: ReleaseHeldVideoRequest = { kind: RELEASE_HELD_VIDEO_REQUEST_KIND, element };
+  browserApi.tabs.sendMessage(tabId, request, { frameId }).catch((error: unknown) => console.debug("[fastiplayer] the held video release was not delivered:", error));
 }
 
 /**
@@ -126,6 +138,9 @@ export function installTabHandoffs(door: SessionDoor, scheduler: Scheduler, tabM
     localAddressBlock: createLocalAddressBlock(sessionRules, extensionHost),
     readLocalAddressSetting: () => readLocalAddressSetting({ get: (keys) => browserApi.storage.local.get([...keys]), set: (items) => browserApi.storage.local.set(items) }),
     reportSettingFailure: (error) => console.warn("[fastiplayer] could not read the local address setting, blocking:", error),
+    // Срок ожидания видео после перезагрузки страницы (16c, решение 305): читается при открытии каждого сеанса.
+    readPageReloadWaitSettings: () => readPageReloadWaitSettings({ get: (keys) => browserApi.storage.local.get([...keys]), set: (items) => browserApi.storage.local.set(items) }),
+    releaseHeldVideo: releaseHeldVideoInFrame,
     // Причина флуда — только в журнал разработчика, модель вкладки хранит закрытый вид.
     onSessionEnded: (_tabId, end) => {
       if (end.kind === "page_flood") console.debug(`[fastiplayer] page exceeded the event budget: ${end.overBudget}`);

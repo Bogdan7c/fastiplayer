@@ -140,6 +140,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("return-baked-ad"),
     // 11b2, решения 240–241: возврат закрытой вкладки (сценарий `tab-return`): страница грузится дважды.
     page("tab-return"),
+    // 16c, решения 59, 304, 305: страница перезагружается в той же вкладке (сценарий `page-reload`).
+    page("page-reload"),
     // 13b2: субтитры, которые страница берёт сама (сценарий `page-subtitles`).
     page("subtitles-track"),
     page("subtitles-fetch"),
@@ -216,7 +218,12 @@ mod tests {
         }
         // Страницы без самостоятельного прогона в `pages`: `iframe-inner` вложена в другие,
         // `replay-recording` запускается только командой `replay` (ей нужен файл записи).
-        const HELPER_PAGES: &[&str] = &["iframe-inner", "ad-frame-inner", "replay-recording"];
+        const HELPER_PAGES: &[&str] = &[
+            "iframe-inner",
+            "ad-frame-inner",
+            "replay-recording",
+            "page-reload-frame",
+        ];
         for file_id in &on_disk {
             assert!(
                 HELPER_PAGES.contains(&file_id.as_str())

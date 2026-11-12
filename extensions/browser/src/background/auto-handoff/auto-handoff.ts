@@ -7,7 +7,7 @@
 // - `next_video` (переезд сеанса 09c2, возврат страницы 11b2) идёт в `handoffs.heldVideo` без изменений;
 // - `viewer_play`:
 //   1. у вкладки уже есть передача -> сначала её собственный сторож (`handoffs.heldVideo`): переезд сеанса
-//      (реклама кончилась, 09c2) главнее. Сеанс не взял видео — человек сам запустил ДРУГОЕ видео той же вкладки:
+//      (реклама кончилась, 09c2) и сеанс-замена после перезагрузки страницы (16c) главнее. Сеанс не взял видео — человек сам запустил ДРУГОЕ видео той же вкладки:
 //      оно судится как новое и при «передать» заменяет прежнее в том же окне (решения 40, 215: последнее
 //      заменяет; иначе звучали бы два видео сразу). Замену ведёт `handOffTab` с выбранным видео;
 //   2. на вкладке уже идёт решение режима 2 -> `release` (одно решение на вкладку);
@@ -164,8 +164,12 @@ export function createAutoHandoff(dependencies: AutoHandoffDependencies): AutoHa
 
   function viewerPlay(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoAnswer {
     if (decisionsInFlight.has(tabId)) return "release";
-    // Переезд живого сеанса на это видео (09c2) главнее: сеанс взял — больше решать нечего.
-    if (dependencies.handoffs.activeTabIds().includes(tabId) && dependencies.handoffs.heldVideo(tabId, frameId, report) === "adopt") return "adopt";
+    // Переезд живого сеанса на это видео (09c2) или сеанс-замена после перезагрузки страницы (16c) главнее:
+    // сеанс взял видео — больше решать нечего, второе решение открыло бы вторую передачу того же видео.
+    if (dependencies.handoffs.activeTabIds().includes(tabId)) {
+      const sessionReply = dependencies.handoffs.heldVideo(tabId, frameId, report);
+      if (sessionReply === "adopt" || sessionReply === "adopt_new_session") return sessionReply;
+    }
     decisionsInFlight.add(tabId);
     return judgeViewerPlay(tabId, frameId, report).then(
       (reply) => {

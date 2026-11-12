@@ -12,6 +12,9 @@
  * - ending — мы послали `end_handoff`, ждём `handoff_ended{returned}` (или таймаут);
  * - page_away — страница ушла «сиротой» (11b2): тени и порта нет, связь с плеером держим, ждём `reopen_page`
  *   и открытия страницы; тень вернувшейся страницы встаёт через `moving`;
+ * - page_reloading — документ страницы ушёл (перезагрузка или переход в той же вкладке), вкладка на том же
+ *   сайте (16c): тени и порта нет, связь с плеером держим, окно досматривает скачанное; сторож взведён, ждём
+ *   видео нового документа до срока (session-page-reload.ts). Пришло — его берёт сеанс-замена (решение 215);
  * - finished — всё освобождено.
  */
-export type SessionPhase = "opening" | "abandoning" | "beginning" | "active" | "between_videos" | "moving" | "ending" | "page_away" | "finished";
+export type SessionPhase = "opening" | "abandoning" | "beginning" | "active" | "between_videos" | "moving" | "ending" | "page_away" | "page_reloading" | "finished";

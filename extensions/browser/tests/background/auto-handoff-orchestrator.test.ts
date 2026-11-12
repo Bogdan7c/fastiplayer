@@ -234,6 +234,15 @@ describe("режим 2: маршрутизация и одно решение н
     assert.deepEqual(world.handOffCalls, []);
   });
 
+  it("сеанс вкладки отдал видео сеансу-замене после перезагрузки страницы (16c): adopt_new_session сразу, второго решения нет", async () => {
+    const world = createWorld({ activeTabs: [TAB], heldVideoReply: "adopt_new_session" });
+    assert.equal(world.autoHandoff.heldVideo(TAB, FRAME, report(FILM)), "adopt_new_session", "ответ готов сразу, без суда режима 2");
+    await flushPromises();
+    assert.equal(world.heldVideoCalls.length, 1);
+    assert.deepEqual(world.handOffCalls, [], "вторая передача того же видео не начиналась");
+    assert.deepEqual(world.releases, []);
+  });
+
   it("у вкладки живая передача, а человек запустил другое видео: оно заменяет прежнее через handOffTab с выбранным видео", async () => {
     const world = createWorld({ activeTabs: [TAB], heldVideoReply: "release" });
     assert.equal(await world.autoHandoff.heldVideo(TAB, FRAME, report(FILM)), "adopt_new_session");

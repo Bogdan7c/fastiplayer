@@ -21,8 +21,11 @@ export type HeldVideoDecision =
 
 const RELEASE: HeldVideoDecision = { kind: "release" };
 
-/** Согласие человека, данное при первой передаче, действует только на хост, про который спрашивали. */
-function consentOf(rule: FileAddressRule): LocalAddressConsent {
+/**
+ * Согласие человека, данное при первой передаче, действует только на хост, про который спрашивали. Им же
+ * открывается сеанс-замена после перезагрузки страницы (16c): согласие не должно ни пропасть, ни расшириться.
+ */
+export function consentOf(rule: FileAddressRule): LocalAddressConsent {
   return rule.consentedHost === null ? NO_LOCAL_ADDRESS_CONSENT : { kind: "given_for", host: rule.consentedHost };
 }
 

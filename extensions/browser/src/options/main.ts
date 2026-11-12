@@ -1,6 +1,6 @@
 // Страница настроек: видео-кодек для сайтов (сессия 09b) и локальные адреса файлов (сессия 09c);
 // входы (10c) и режим 2 «автозапуск» (12a); свои правила сайтов — сессия 12b; фильтры видео — решения 260–261;
-// память выбора озвучки, качества и субтитров — сессия 14b2.
+// память выбора озвучки, качества и субтитров — сессия 14b2; ожидание видео после перезагрузки страницы — 16c.
 import { autoHandoffSettingsFromChange, type AutoHandoffSettings } from "../shared/auto-handoff-settings.ts";
 import { browserApi } from "../shared/browser-api.ts";
 import { mountAutoHandoffSettingControl } from "./auto-handoff-setting-control.ts";
@@ -9,6 +9,7 @@ import { mountChoiceMemoryControl } from "./choice-memory-control.ts";
 import { mountCodecSettingControl } from "./codec-setting-control.ts";
 import { mountEntrySettingControl } from "./entry-setting-control.ts";
 import { mountLocalAddressSettingControl } from "./local-address-setting-control.ts";
+import { mountPageReloadWaitControl } from "./page-reload-wait-control.ts";
 import { mountVideoFiltersControl } from "./video-filters-control.ts";
 
 const container = document.getElementById("options-content");
@@ -33,3 +34,5 @@ void mountVideoFiltersControl(container, { store: localStore, onSettingsChanged:
 void mountAutoHandoffListsControl(container, { store: localStore, onSettingsChanged: onAutoHandoffSettingsChanged });
 // Память выбора принадлежит фону: число записей и «Forget» — сообщением ему, объём — обычная настройка.
 void mountChoiceMemoryControl(container, { store: localStore, askBackground: (request) => browserApi.runtime.sendMessage(request) });
+// Срок ожидания видео после перезагрузки страницы (16c, решение 305): обычная настройка, фон читает её при открытии сеанса.
+void mountPageReloadWaitControl(container, localStore);

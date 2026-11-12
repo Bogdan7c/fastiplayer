@@ -8,11 +8,11 @@
 // И третий, свой (12b): выбор человека на предложении «Ask» -> `autoHandoff.viewerOfferChoice`.
 
 import { browserApi } from "../../shared/browser-api.ts";
-import { GRANT_PLAY_CREDIT_KIND, RELEASE_HELD_VIDEO_REQUEST_KIND, type GrantPlayCreditRequest, type ReleaseHeldVideoRequest } from "../../shared/auto-handoff-contract.ts";
+import { GRANT_PLAY_CREDIT_KIND, type GrantPlayCreditRequest } from "../../shared/auto-handoff-contract.ts";
 import { readAutoHandoffSettings, writeAutoHandoffSettings } from "../../shared/auto-handoff-settings.ts";
 import { WITHDRAW_VIEWER_OFFER_REQUEST_KIND, type WithdrawViewerOfferRequest } from "../../shared/viewer-offer-contract.ts";
 import type { EntryReporter } from "../entries/entry-reporter.ts";
-import { adMirrorBrowser } from "../handoff/browser-wiring.ts";
+import { adMirrorBrowser, releaseHeldVideoInFrame } from "../handoff/browser-wiring.ts";
 import { createAdWatchReportListener } from "../handoff/ad-watch-listener.ts";
 import { createHeldVideoListener } from "../handoff/hand-off-command.ts";
 import type { TabHandoffs } from "../handoff/tab-handoffs.ts";
@@ -43,11 +43,8 @@ export function installAutoHandoff(handoffs: TabHandoffs, scheduler: Scheduler, 
       // Фрейма без нашего скрипта или закрытой вкладки достаточно для отказа: кредит просто не выдан.
       browserApi.tabs.sendMessage(tabId, request).catch((error: unknown) => note("the play credit was not delivered", error));
     },
-    releaseHeldVideo: (tabId, frameId, element) => {
-      const request: ReleaseHeldVideoRequest = { kind: RELEASE_HELD_VIDEO_REQUEST_KIND, element };
-      // Не дошло — страховка изолированного мира сама отпустит видео (`NEW_SESSION_ADOPT_INSURANCE_MS`).
-      browserApi.tabs.sendMessage(tabId, request, { frameId }).catch((error: unknown) => note("the held video release was not delivered", error));
-    },
+    // Одна просьба «отпусти» на весь фон (handoff/browser-wiring.ts): её шлёт и сеанс-замена после перезагрузки (16c).
+    releaseHeldVideo: releaseHeldVideoInFrame,
     withdrawViewerOffer: (tabId, frameId, element) => {
       const request: WithdrawViewerOfferRequest = { kind: WITHDRAW_VIEWER_OFFER_REQUEST_KIND, element };
       // Не дошло — фрейма уже нет (страница ушла): снимать нечего.

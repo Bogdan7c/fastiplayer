@@ -343,6 +343,8 @@ describe("передача вкладки: конец", () => {
     const world = setup();
     await startHandoff(world);
     deliverStream(world);
+    // Другой сайт (16c): тот же сайт значил бы перезагрузку, и окно ждало бы видео нового документа.
+    world.navigateTab("https://other-site.test/");
     world.framePorts.last().drop();
     await flushPromises();
     const socket = world.sockets.last();

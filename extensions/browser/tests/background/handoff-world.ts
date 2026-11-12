@@ -21,6 +21,7 @@ import { createChoiceMemoryStore } from "../../src/background/choice-memory/choi
 import { memoryStore } from "./auto-handoff-lists-fake-dom.ts";
 import type { HandOffTabOutcome, PageEvent, VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import type { LocalAddressSetting } from "../../src/shared/local-address-setting.ts";
+import { DEFAULT_PAGE_RELOAD_WAIT_SETTINGS, type PageReloadWaitSettings } from "../../src/shared/page-reload-wait-settings.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import type { TabUpdate } from "../../src/background/handoff/episode-change/session-episode-change.ts";
 import { createFakeClock, createFakeDoor, flushPromises, recordFramePorts, recordSockets } from "./support.ts";
@@ -101,6 +102,11 @@ export interface WorldOptions {
   readonly pageTabReveal?: PageTabRevealApi;
   /** Вкладка в приватном окне (14b2); по умолчанию — обычное окно. */
   readonly incognito?: boolean;
+  /**
+   * Настройка ожидания после перезагрузки страницы (16c); по умолчанию — настоящее умолчание (10 с). `Error` —
+   * чтение настройки отклоняется.
+   */
+  readonly pageReloadWait?: PageReloadWaitSettings | Error;
 }
 
 /** «Показать страницу» по умолчанию: вкладка в окне 1, окно слушается (сценарии до 13c его не зовут). */
@@ -145,6 +151,8 @@ export function setup(
   const adMirrorFake = createFakeAdMirrorBrowser();
   const variantMirrorFake = createFakeVariantMirrorBrowser();
   const armings: { readonly tabId: number; readonly leaseMs: number }[] = [];
+  // Просьбы фону отпустить задержанное видео (сеанс-замена после перезагрузки не состоялся, 16c).
+  const releases: { readonly tabId: number; readonly frameId: number; readonly element: number }[] = [];
   // Ответ фреймов на опрос; сценарий может его сменить (страница убрала видео, поставила другое).
   let currentFrames = frames;
   // Опрос фреймов отклоняется (служебная страница браузера: внедрение запрещено).
@@ -203,6 +211,11 @@ export function setup(
     localAddressBlock: createLocalAddressBlock(requestRules, EXTENSION_HOST),
     readLocalAddressSetting: () => Promise.resolve(options.localAddressSetting ?? "block"),
     reportSettingFailure: (error) => void settingFailures.push(error),
+    readPageReloadWaitSettings: () => {
+      const setting = options.pageReloadWait ?? DEFAULT_PAGE_RELOAD_WAIT_SETTINGS;
+      return setting instanceof Error ? Promise.reject(setting) : Promise.resolve(setting);
+    },
+    releaseHeldVideo: (tabId, frameId, element) => void releases.push({ tabId, frameId, element }),
     onSessionEnded: (_tabId, end) => void ended.push(end),
   });
   return {
@@ -212,6 +225,7 @@ export function setup(
     framePorts,
     ended,
     armings,
+    releases,
     adMirror: adMirrorFake,
     variantMirror: variantMirrorFake,
     choiceStorage,

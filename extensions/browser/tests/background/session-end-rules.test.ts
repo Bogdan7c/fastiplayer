@@ -5,6 +5,7 @@ import {
   closingAfterConfirmedEnd,
   endCommandAfterPlayerSocketEnd,
   stepAfterPageEndedShadow,
+  stepAfterPlayerSocketEnded,
   tabGoneReasonForPagePlayerFailure,
 } from "../../src/background/handoff/session-end-rules.ts";
 import { END_WITHOUT_PLAYER, RETURN_PAUSED_AT_SHADOW } from "../../src/background/handoff/session-page-commands.ts";
@@ -124,5 +125,23 @@ describe("потеря источника после конца серии и у
       end: { kind: "page_took_video_back" },
     });
     assert.deepEqual(stepAfterPageEndedShadow("next_episode_not_started", { ...afterAd, nextVideoExpected: true }), { kind: "wait_for_next_video" });
+  });
+});
+
+describe("шаг после конца сокета плеера по фазам (вынесено из сеанса в 16c)", () => {
+  it("каждая фаза — свой шаг; ожидание перезагрузки — как между роликами: конец без тени", () => {
+    const table = {
+      opening: "fail_start",
+      beginning: "fail_start",
+      abandoning: "finish_abandoned",
+      active: "end_shadow",
+      between_videos: "finish_without_shadow",
+      moving: "finish_without_shadow",
+      page_reloading: "finish_without_shadow",
+      page_away: "finish_without_shadow",
+      ending: "nothing",
+      finished: "nothing",
+    } as const;
+    for (const [phase, step] of Object.entries(table)) assert.equal(stepAfterPlayerSocketEnded(phase as keyof typeof table), step, phase);
   });
 });

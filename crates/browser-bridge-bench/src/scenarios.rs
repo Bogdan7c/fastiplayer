@@ -28,6 +28,7 @@ mod outcome;
 mod page_catalog;
 mod page_ends;
 mod page_filter;
+mod page_reload;
 mod page_return;
 mod page_subtitles;
 mod pages;
@@ -137,6 +138,21 @@ pub fn page_return_page_ids() -> Vec<&'static str> {
 /// открывает её заново (все строки или страница из `--page`).
 pub fn run_tab_return(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     tab_return::run_all(stand, browser, filter)
+}
+
+/// Перезагрузка и переход страницы в той же вкладке (16c, решения 59, 304, 305): замена в том же окне
+/// или честный конец (все строки или страница из `--page`).
+pub fn run_page_reload(
+    stand: &Stand,
+    browser: BrowserKind,
+    filter: &PageFilter,
+) -> Vec<StepResult> {
+    page_reload::run_all(stand, browser, filter)
+}
+
+/// Идентификаторы страниц `page-reload` (для проверки `--page` в командной строке).
+pub fn page_reload_page_ids() -> Vec<&'static str> {
+    page_reload::page_ids()
 }
 
 /// Идентификаторы страниц `tab-return` (для проверки `--page` в командной строке).

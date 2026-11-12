@@ -109,4 +109,9 @@ export interface HandoffTarget {
   readonly nextBeginRequestId: () => number;
   /** Замена видео на той же вкладке (решение 215): когда начинать страницу; см. `AfterPreviousSession`. */
   readonly afterPreviousSession?: AfterPreviousSession;
+  /**
+   * Сколько ждать видео нового документа, если страница перезагрузилась посреди серии (16c, решение 305):
+   * настройка, прочитанная при открытии сеанса; `0` — не ждать (уход страницы сразу, как до 16c).
+   */
+  readonly pageReloadWaitMs: number;
 }

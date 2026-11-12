@@ -6,13 +6,16 @@
 //   1.3 только плееру, который его знает;
 // - как закрыть сокет, когда страница подтвердила снятие тени по нашему `end_handoff`;
 // - что значит `handoff_ended`, о котором мы не просили (09a2, 09c2, 11a; вынесено из сеанса в 11b2;
-//   16a — серия доиграла без следующей и уход одностраничника, правило потери — episode-change/source-loss-end.ts).
+//   16a — серия доиграла без следующей и уход одностраничника, правило потери — episode-change/source-loss-end.ts);
+// - что делать, когда сокет плеера кончился по его стороне, в каждой фазе (вынесено из сеанса в 16c: сеанс упёрся
+//   в предел размера, а 16c добавляет фазу `page_reloading`).
 
 import { SESSION_CLOSE_CODES, tabGoneReasonIntroducedIn, versionIncludes, type ProtocolVersion, type SessionCloseReason, type TabGoneReason } from "../../protocol/index.ts";
 import type { HandoffEndCause, PageCommand } from "../../shared/handoff-contract.ts";
 import { endAfterSourceLoss, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
 import type { PageAddressSinceVideoBegan } from "./episode-change/page-address-tracker.ts";
 import type { HandoffSessionEnd } from "./session-contract.ts";
+import type { SessionPhase } from "./session-phase.ts";
 import { END_WITHOUT_PLAYER, RETURN_PAUSED_AT_SHADOW } from "./session-page-commands.ts";
 import { NORMAL_CLOSE_CODE, type QueueDeliveringCloseReason, type SocketEndCause } from "./session-socket.ts";
 
@@ -117,4 +120,36 @@ export function stepAfterPageEndedShadow(cause: HandoffEndCause, facts: PageEnde
   }
   if (cause === "page_flood") return { kind: "end_on_page_side", closeReason: "protocol_violation", end: { kind: "page_flood", overBudget: "forwarded_bytes" } };
   return { kind: "end_on_page_side", closeReason: "protocol_violation", end: { kind: "page_side_failure" } };
+}
+
+/**
+ * Шаг сеанса, когда сокет плеера кончился по его стороне (не нами):
+ * - `fail_start` — сеанс ещё не начался (`opening`) или тень только встаёт (`beginning`; изолированный мир снимет
+ *   её сам, когда порт закроется): старт не состоялся, плеер недоступен;
+ * - `finish_abandoned` — сокет умер раньше `attached` у брошенного сеанса: у плеера сеанс закрыт и так;
+ * - `end_shadow` — тень стоит: снять её (`endCommandAfterPlayerSocketEnd`) и дождаться страницы;
+ * - `finish_without_shadow` — тени нет (между роликами, переезд, ожидание перезагрузки 16c, сирота): странице —
+ *   «сними, если что-то стоит» без ожидания ответа, сеанс кончен;
+ * - `nothing` — конец уже идёт или наступил.
+ */
+export type StepAfterPlayerSocketEnded = "fail_start" | "finish_abandoned" | "end_shadow" | "finish_without_shadow" | "nothing";
+
+export function stepAfterPlayerSocketEnded(phase: SessionPhase): StepAfterPlayerSocketEnded {
+  switch (phase) {
+    case "opening":
+    case "beginning":
+      return "fail_start";
+    case "abandoning":
+      return "finish_abandoned";
+    case "active":
+      return "end_shadow";
+    case "between_videos":
+    case "moving":
+    case "page_reloading":
+    case "page_away":
+      return "finish_without_shadow";
+    case "ending":
+    case "finished":
+      return "nothing";
+  }
 }

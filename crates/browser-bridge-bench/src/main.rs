@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|page-subtitles|quality|series|episodes|entries|page-return|tab-return|auto-handoff|blocker-matrix|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|page-subtitles|quality|series|episodes|entries|page-return|tab-return|page-reload|auto-handoff|blocker-matrix|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -122,6 +122,9 @@ fn run(invocation: Invocation) -> ExitCode {
                 Command::TabReturn => {
                     results.extend(scenarios::run_tab_return(&stand, browser, &pages));
                 }
+                Command::PageReload => {
+                    results.extend(scenarios::run_page_reload(&stand, browser, &pages));
+                }
                 Command::AutoHandoff => {
                     results.extend(scenarios::run_auto_handoff(&stand, browser, &pages));
                 }
@@ -174,6 +177,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::Entries,
             Command::PageReturn,
             Command::TabReturn,
+            Command::PageReload,
             Command::AutoHandoff,
         ],
         Command::All => vec![
@@ -212,6 +216,7 @@ mod tests {
                 Command::Entries,
                 Command::PageReturn,
                 Command::TabReturn,
+                Command::PageReload,
                 Command::AutoHandoff
             ]
         );

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>page-reload</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>page-reload</h1>
+<div id="stage"></div>
+<script type="module">
+// Страница сценария `page-reload` (сессия 16c, решения 59, 304, 305): вкладку с переданным видео
+// перезагружают или уводят на другой адрес В ТОЙ ЖЕ вкладке. Страница сама делает переход по команде
+// робота `hook:navigate` (настоящая навигация сайта, а не действие стенда над вкладкой).
+//
+// Параметры адреса:
+//   view=film|frame|empty  что показывает ЭТОТ документ: фильм (MSE, автозапуск), iframe чужого origin с
+//                          фильмом внутри или ничего (страница без видео);
+//   ep=1|2                 номер серии (одна и та же картинка, разная метка в журнале);
+//   nav=reload|episode2|empty|other-site  куда уходит первый документ по команде робота: перезагрузка,
+//                          тот же origin с ep=2, тот же origin без видео, ДРУГОЙ origin с фильмом.
+// Без режима передачи (команда `pages`) страница только играет фильм силами браузера и проверяет это.
+import { runScenario } from '../lib/bench-report.js';
+import { checkPlaying } from '../lib/bench-checks.js';
+import { loadCatalog, BenchPlayer, standardRefs } from '../lib/bench-player.js';
+import { mountVideo } from '../lib/scenario-kit.js';
+import {
+  params, log, logLoad, runFilmDocument, detectSecondLoad, waitForNavigateHook, navigateAway, FILM_ASSET,
+} from '../lib/page-reload-kit.js';
+
+/** Файл этой же страницы на любом origin стенда. */
+const PAGE_PATH = '/site/pages/page-reload.html';
+/** Файл плеера для iframe. */
+const FRAME_PATH = '/site/pages/page-reload-frame.html';
+
+if (!params.handoff) {
+  await runScenario('page-reload', async (ctx) => {
+    const catalog = await loadCatalog();
+    const video = mountVideo(document.getElementById('stage'));
+    const player = new BenchPlayer(video, catalog, { log: (line) => ctx.log(line) });
+    await player.start({ refs: standardRefs(catalog, FILM_ASSET), autoplay: true });
+    await checkPlaying(ctx, video, 'film-plays');
+    await player.destroy();
+  });
+} else {
+  await runReloadPage();
+}
+
+/** Адрес, на который уходит первый документ, и вид перехода для журнала. */
+function navigationTarget(kind) {
+  const here = new URL(location.href);
+  if (kind === 'reload') return { target: 'reload', url: here.href };
+  if (kind === 'episode2') {
+    here.searchParams.set('ep', '2');
+    here.searchParams.set('nav', 'none');
+    return { target: 'episode2', url: here.href };
+  }
+  if (kind === 'empty') {
+    here.searchParams.set('view', 'empty');
+    here.searchParams.set('nav', 'none');
+    return { target: 'empty', url: here.href };
+  }
+  if (kind === 'other-site') {
+    // Другой сайт: origin `localhost` вместо `127.0.0.1`; параметры прогона те же.
+    const other = new URL(`${params.otherOrigin}${PAGE_PATH}`);
+    for (const key of ['run', 'report_origin', 'mode']) other.searchParams.set(key, params.raw.get(key));
+    other.searchParams.set('view', 'film');
+    other.searchParams.set('ep', '1');
+    other.searchParams.set('nav', 'none');
+    return { target: 'other-site', url: other.href };
+  }
+  throw new Error(`unknown nav ${kind}`);
+}
+
+/** Режим передачи: см. шапку. */
+async function runReloadPage() {
+  const { secondLoad } = await detectSecondLoad();
+  const view = params.raw.get('view') ?? 'film';
+  const episode = params.raw.get('ep') ?? '1';
+  await logLoad({ secondLoad, view, episode });
+  const stage = document.getElementById('stage');
+  if (view === 'film') {
+    await runFilmDocument({ stage, secondLoad, view, episode });
+  } else if (view === 'frame') {
+    const frame = document.createElement('iframe');
+    const query = new URLSearchParams({
+      run: params.run,
+      report_origin: params.reportOrigin,
+      mode: params.mode,
+      second_load: String(secondLoad),
+      ep: episode,
+    });
+    frame.src = `${params.otherOrigin}${FRAME_PATH}?${query}`;
+    frame.width = 520;
+    frame.height = 320;
+    stage.append(frame);
+  } else {
+    log(`no-video view=${view}`);
+  }
+  // Уходит только первый документ и только по команде; второй команд не слушает.
+  if (secondLoad) return;
+  await waitForNavigateHook();
+  const { target, url } = navigationTarget(params.raw.get('nav') ?? 'reload');
+  await navigateAway(target, url);
+}
+</script>
+</body>
+</html>

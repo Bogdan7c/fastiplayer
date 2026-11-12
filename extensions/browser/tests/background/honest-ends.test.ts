@@ -61,6 +61,8 @@ describe("Д-7: команда странице потерялась (порт �
     it(`postMessage бросает на ${lost} — сеанс кончается сразу, плеер получает честный конец`, async () => {
       const world = setup();
       await startHandoff(world);
+      // Вкладка ушла на другой сайт: ждать видео нового документа нечего (16c), конец — прежний и сразу.
+      world.navigateTab("https://other-site.test/");
       const port = world.framePorts.last();
       port.failPostsWhere = (command) => command.kind === "shadow" && command.command.kind === lost;
       const socket = world.sockets.last();
@@ -78,7 +80,8 @@ describe("Д-7: команда странице потерялась (порт �
   }
 
   it("потери команд подряд, пока ждём ответа «жива ли вкладка», — один вопрос и один конец", async () => {
-    const world = setup();
+    // Настройка 0 (16c): ожидания после перезагрузки нет, путь прежний — вопрос «жива ли вкладка».
+    const world = setup(undefined, undefined, undefined, { pageReloadWait: { seconds: 0 } });
     await startHandoff(world);
     world.framePorts.last().failPostsWhere = () => true;
     const socket = world.sockets.last();

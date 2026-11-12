@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION_1_0 } from "../../src/protocol/index.ts";
 import type { HandoffSessionEnd } from "../../src/background/handoff/session-contract.ts";
 import { createPageLeave, type PageLeavePorts } from "../../src/background/handoff/session-page-leave.ts";
 import type { SessionPhase } from "../../src/background/handoff/session-phase.ts";
+import type { ReloadedTabAnswer } from "../../src/background/handoff/session-page-reload.ts";
 
 interface Scenario {
   phase: SessionPhase;
@@ -20,6 +21,10 @@ interface Scenario {
   /** Что ответит браузер на вопрос «страница на месте?» (`undefined` — вопрос не задан/не отвечен). */
   stayedAnswer: "same_page" | "closed" | "navigated_away" | undefined;
   orphaned: boolean;
+  /** Настройка ожидания после перезагрузки не `0` (16c); по умолчанию выключена — старые сценарии как были. */
+  reloadWaits: boolean;
+  /** Что ответит браузер на вопрос «где вкладка» (16c); `undefined` — вопрос не отвечен. */
+  reloadAnswer: ReloadedTabAnswer | undefined;
 }
 
 function scenario(overrides: Partial<Scenario>): Scenario {
@@ -34,6 +39,8 @@ function scenario(overrides: Partial<Scenario>): Scenario {
     nextVideoExpected: false,
     stayedAnswer: undefined,
     orphaned: false,
+    reloadWaits: false,
+    reloadAnswer: undefined,
     ...overrides,
   };
 }
@@ -69,6 +76,14 @@ function fakeSession(state: Scenario) {
     } as unknown as PageLeavePorts["pageReturn"],
     relocation: { nextVideoExpectedAfterLoss: () => state.nextVideoExpected },
     silenceWatch: { stop: () => void log.push("silenceWatch.stop") },
+    pageReload: {
+      waitsForReloadedPage: () => state.reloadWaits,
+      askWhereTabWent: (onAnswer) => {
+        log.push("askWhereTabWent");
+        if (state.reloadAnswer !== undefined) onAnswer(state.reloadAnswer);
+      },
+      stop: () => void log.push("pageReload.stop"),
+    },
     phase: () => state.phase,
     portFrameId: () => state.portFrameId,
     socketOpened: () => state.socketOpened,
@@ -80,6 +95,7 @@ function fakeSession(state: Scenario) {
     isAbandonmentPending: () => state.abandonmentPending,
     relabelAbandonmentAsClosed: () => void log.push("relabelClosed"),
     waitForNextVideo: () => void log.push("waitForNextVideo"),
+    beginPageReloadWait: () => void log.push("beginPageReloadWait"),
     finish: (end) => void ends.push(end),
   };
   return { leave: createPageLeave(ports), log, ends };
@@ -184,5 +200,64 @@ describe("уход страницы сеанса", () => {
     orphan.leave.notifyTabRemoved();
     assert.deepEqual(orphan.log, ["markRemoved", "pageReturn.tabRemoved 7"]);
     assert.deepEqual(orphan.ends, []);
+  });
+
+  describe("перезагрузка страницы (16c): документ ушёл, вкладка жива", () => {
+    it("порт главного документа умер, тот же сайт — ожидание вместо ухода; порт забыт, пульс не слушаем", () => {
+      const session = fakeSession(scenario({ phase: "active", portFrameId: 0, reloadWaits: true, reloadAnswer: "same_site" }));
+      session.leave.endForLostFramePort();
+      assert.deepEqual(session.log, ["forgetFramePort", "silenceWatch.stop", "askWhereTabWent", "beginPageReloadWait"]);
+      assert.deepEqual(session.ends, [], "сеанс не кончился и tab_gone не ушёл");
+    });
+
+    it("другой сайт — прежний уход сразу, без ожидания", () => {
+      const session = fakeSession(scenario({ phase: "active", portFrameId: 0, reloadWaits: true, reloadAnswer: "other_site" }));
+      session.leave.endForLostFramePort();
+      assert.ok(!session.log.includes("beginPageReloadWait"));
+      assert.deepEqual(session.ends, [{ kind: "page_gone", reason: "navigated_away" }]);
+    });
+
+    it("вкладки нет — прежний конец «закрыли»", () => {
+      const session = fakeSession(scenario({ phase: "between_videos", portFrameId: 0, reloadWaits: true, reloadAnswer: "closed" }));
+      session.leave.endForLostFramePort();
+      assert.deepEqual(session.ends, [{ kind: "page_gone", reason: "closed" }]);
+    });
+
+    it("порт фрейма с плеером умер посреди серии (не рекламный путь) — тоже вопрос о сайте", () => {
+      const session = fakeSession(scenario({ phase: "active", portFrameId: 5, nextVideoExpected: false, reloadWaits: true, reloadAnswer: "same_site" }));
+      session.leave.endForLostFramePort();
+      assert.ok(!session.log.includes("askWhyPageLeft"));
+      assert.ok(session.log.includes("beginPageReloadWait"));
+    });
+
+    it("рекламный фрейм умер и адрес сменился — вопрос о сайте, а не уход", () => {
+      const session = fakeSession(scenario({ phase: "between_videos", portFrameId: 5, stayedAnswer: "navigated_away", reloadWaits: true, reloadAnswer: "same_site" }));
+      session.leave.endForLostFramePort();
+      assert.deepEqual(session.log.slice(-2), ["askWhereTabWent", "beginPageReloadWait"]);
+      assert.deepEqual(session.ends, []);
+    });
+
+    it("рекламный фрейм умер, адрес тот же — путь 09c2 не меняется: ждём следующий ролик", () => {
+      const session = fakeSession(scenario({ phase: "active", portFrameId: 5, nextVideoExpected: true, stayedAnswer: "same_page", reloadWaits: true, reloadAnswer: "same_site" }));
+      session.leave.endForLostFramePort();
+      assert.deepEqual(session.log, ["forgetFramePort", "silenceWatch.stop", "askWhetherPageStayed", "waitForNextVideo"]);
+    });
+
+    it("настройка 0, плеер не принял сеанс или страница возвращается — прежний вопрос «почему ушли»", () => {
+      for (const overrides of [{ reloadWaits: false }, { socketAttached: false }, { returning: true }]) {
+        const session = fakeSession(scenario({ phase: "active", portFrameId: 0, reloadWaits: true, reloadAnswer: "same_site", ...overrides }));
+        session.leave.endForLostFramePort();
+        assert.ok(!session.log.includes("askWhereTabWent"), JSON.stringify(overrides));
+      }
+    });
+
+    it("во время ожидания: потеря порта — ничего; закрытие вкладки — «закрыли»", () => {
+      const lost = fakeSession(scenario({ phase: "page_reloading" }));
+      lost.leave.endForLostFramePort();
+      assert.deepEqual(lost.log, []);
+      const closed = fakeSession(scenario({ phase: "page_reloading" }));
+      closed.leave.notifyTabRemoved();
+      assert.deepEqual(closed.ends, [{ kind: "page_gone", reason: "closed" }]);
+    });
   });
 });

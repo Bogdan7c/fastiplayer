@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>page-reload-frame</title>
+<style>body{font:14px system-ui,sans-serif;margin:8px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<div id="stage"></div>
+<!-- Плеер в iframe ЧУЖОГО origin для `page-reload` (строка iframe-player-reload): вкладка на главном origin,
+     видео играет здесь. Вкладку перезагружает верхняя страница, а этот документ создаётся заново. -->
+<script type="module">
+import { params, logLoad, runFilmDocument } from '../lib/page-reload-kit.js';
+
+// Верхняя страница уже знает, второй ли это документ прогона, и говорит нам параметром.
+const secondLoad = params.raw.get('second_load') === 'true';
+const view = 'frame-inner';
+const episode = params.raw.get('ep') ?? '1';
+await logLoad({ secondLoad, view, episode });
+await runFilmDocument({ stage: document.getElementById('stage'), secondLoad, view, episode });
+</script>
+</body>
+</html>

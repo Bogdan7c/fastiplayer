@@ -14,9 +14,18 @@
 // Старая запись на время замены уходит из `entries` в `replaced`: закрытие вкладки доходит и до неё,
 // конец старого сеанса не теряется, а удаление старой записи не стирает новую. Если новый сеанс не
 // состоялся, а старый ещё жив, старая запись возвращается на место.
+//
+// Перезагрузка страницы (16c, решения 59, 304, 305): документ ушёл, сеанс ждёт видео нового документа той же
+// вкладки и того же сайта. Задержанное видео сеанс не берёт сам, а отвечает `replace_session`: здесь оно
+// становится той же заменой (`replaceSession`), странице уходит `adopt_new_session`. Замена не состоялась —
+// видео отпускается во фрейме (`releaseHeldVideo`), а старый сеанс ждёт дальше остаток срока. Две разницы с
+// заменой из попапа (`ReplacementTerms`): только замена — старого сеанса уже нет (зритель закрыл окно, пока
+// готовились), значит, новое окно НЕ открывается, видео остаётся в браузере; и роль видео — та, что дал суд
+// сторожа (реклама на новой странице — реклама, как в 09c2), а не «фильм» явного выбора человека.
 
 import type { VariantWatchReport } from "../../shared/variant-watch-contract.ts";
 import type { ReloadReason, HandOffTabOutcome, HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
+import { DEFAULT_PAGE_RELOAD_WAIT_MS, pageReloadWaitMsOf, type PageReloadWaitSettings } from "../../shared/page-reload-wait-settings.ts";
 import type { SurveyTabReply, TabPlayerPresence } from "../../shared/survey-contract.ts";
 import type { PageAdState } from "../../protocol/index.ts";
 import type { TabModel } from "../tab-model/tab-model.ts";
@@ -29,6 +38,7 @@ import { surveyTabVideos } from "./frame-survey.ts";
 import { refusalOf, refusalOfSessionEnd } from "./handoff-refusal.ts";
 import { HANDOFF_END_REPLY_TIMEOUT_MS } from "./constants.ts";
 import { startHandoffSession, type HandoffSession, type HandoffSessionDependencies, type HandoffSessionEnd } from "./handoff-session.ts";
+import type { PageReloadHandover } from "./session-contract.ts";
 import { returnablePageOf } from "./handoff-session-dependencies.ts";
 import { pageIdentityOf } from "./page-identity.ts";
 import { chooseRequestedVideo, chooseVideo, type ChosenVideo, type RequestedVideoChoice } from "./video-choice.ts";
@@ -49,6 +59,10 @@ export interface TabHandoffsDependencies extends HandoffSessionDependencies {
   readonly readLocalAddressSetting: () => Promise<LocalAddressSetting>;
   /** Сбой чтения настройки: действует безопасное значение по умолчанию, передача не ломается. */
   readonly reportSettingFailure: (error: unknown) => void;
+  /** Срок ожидания видео после перезагрузки страницы (16c, решение 305). Читается при открытии каждого сеанса. */
+  readonly readPageReloadWaitSettings: () => Promise<PageReloadWaitSettings>;
+  /** Просьба одному фрейму отпустить задержанное видео: сеанс-замена после перезагрузки не состоялся (16c). */
+  readonly releaseHeldVideo: (tabId: number, frameId: number, element: number) => void;
   /** Конец передачи — для диагностики и тестов. */
   readonly onSessionEnded?: (tabId: number, end: HandoffSessionEnd) => void;
 }
@@ -63,7 +77,10 @@ export interface TabHandoffs {
   surveyTab(tabId: number): Promise<SurveyTabReply>;
   /** `tabs.onRemoved`. */
   tabRemoved(tabId: number): void;
-  /** Сторож задержал видео во фрейме вкладки. Нет сеанса — видео отпускается. */
+  /**
+   * Сторож задержал видео во фрейме вкладки. Нет сеанса — видео отпускается. `adopt` — сеанс переехал на него сам;
+   * `adopt_new_session` — его берёт сеанс-замена после перезагрузки страницы (16c): видео взято, судить его снова незачем.
+   */
   heldVideo(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoReply;
   /** На экране плеера реклама; сеанса нет — `false` (решение 204, сессия 09d). */
   isAdOnScreen(tabId: number): boolean;
@@ -108,6 +125,22 @@ interface TabEntry {
 
 /** Видео уже в окне плеера (то же видео, повторная команда): новое окно не открывалось (решение 216). */
 const STARTED_IN_OPEN_WINDOW: HandOffTabOutcome = { kind: "started", player_window: "already_open" };
+
+/**
+ * Условия замены видео в том же окне (решение 215):
+ * - `viewer_choice` — человек выбрал видео в попапе (или режим 2): видео — «фильм» по его выбору; если старый сеанс,
+ *   пока готовились, кончился или заменён, решение принимается заново (`handOffTab`, может открыть новое окно);
+ * - `page_reload` — видео нового документа после перезагрузки страницы (16c): роль и «может быть рекламой» — из суда
+ *   сторожа; только замена — без старого сеанса исход `failed`, новое окно не открывается.
+ */
+type ReplacementTerms =
+  | { readonly kind: "viewer_choice" }
+  | { readonly kind: "page_reload"; readonly judged: Pick<ChosenVideo, "role" | "mayBeAd"> };
+
+const VIEWER_CHOICE_REPLACEMENT: ReplacementTerms = { kind: "viewer_choice" };
+
+/** Исход замены после перезагрузки, когда заменять уже нечего: старого сеанса нет. */
+const PREVIOUS_SESSION_GONE: HandOffTabOutcome = { kind: "failed", reason: "page_reload_previous_session_gone" };
 
 /** Подготовка передачи: выбранное видео и правило адреса либо отказ (он уже записан в модель). */
 type PreparedHandoff =
@@ -212,6 +245,16 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     }
   }
 
+  /** Срок ожидания после перезагрузки страницы; сбой чтения — срок по умолчанию и отметка, не молча. */
+  async function pageReloadWaitMs(): Promise<number> {
+    try {
+      return pageReloadWaitMsOf(await dependencies.readPageReloadWaitSettings());
+    } catch (error) {
+      dependencies.noteForDeveloper(`could not read the page reload wait setting, waiting ${DEFAULT_PAGE_RELOAD_WAIT_MS} ms: ${String(error)}`);
+      return DEFAULT_PAGE_RELOAD_WAIT_MS;
+    }
+  }
+
   /** Шаг «открыть сеанс плееру и странице» для выбранного видео. */
   async function openSessionFor(
     tabId: number,
@@ -221,6 +264,8 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     replacing: TabEntry | undefined,
   ): Promise<HandOffTabOutcome> {
     const tab = await dependencies.describeTab(tabId);
+    const reloadWaitMs = await pageReloadWaitMs();
+    // Проверка — после последнего ожидания: вкладку могли закрыть, пока читалась настройка.
     if (tab === undefined || entry.removed) return { kind: "failed", reason: "tab_closed" };
     attempt += 1;
     const session = startHandoffSession(
@@ -240,6 +285,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         movePageToTab: (newTabId) => movePageToTab(entry, newTabId),
         nextBeginRequestId: takeBeginRequestId,
         ...(replacing === undefined ? {} : { afterPreviousSession: () => waitForSessionEnd(replacing) }),
+        pageReloadWaitMs: reloadWaitMs,
       },
       dependencies,
       (end) => {
@@ -358,23 +404,55 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     // Запись жива, но передача не состоялась (сеанс ещё закрывается): исход той же передачи.
     if (!existing.started) return startOutcome;
     if (isInPlayer(existing, video)) return STARTED_IN_OPEN_WINDOW;
-    return replaceSession(tabId, existing, consent, video);
+    return replaceSession(tabId, existing, consent, video, VIEWER_CHOICE_REPLACEMENT);
   }
 
   /** Замена видео на той же вкладке (шапка файла, решение 215). */
-  async function replaceSession(tabId: number, previous: TabEntry, consent: LocalAddressConsent, video: VideoRef): Promise<HandOffTabOutcome> {
+  async function replaceSession(tabId: number, previous: TabEntry, consent: LocalAddressConsent, video: VideoRef, terms: ReplacementTerms): Promise<HandOffTabOutcome> {
     const prepared = await prepareHandoff(tabId, previous, consent, video);
     if (prepared.kind === "refused") return prepared.outcome;
     if (previous.removed) return { kind: "failed", reason: "tab_closed" };
-    // Пока готовились, сеанс кончился или его заменила другая команда: решаем заново.
-    if (entries.get(tabId) !== previous) return handOffTab(tabId, consent, video);
+    // Пока готовились, сеанс кончился или его заменила другая команда: выбор человека решается заново, а замена
+    // после перезагрузки — только замена (окна, которое она продолжала бы, уже нет).
+    if (entries.get(tabId) !== previous) return terms.kind === "page_reload" ? PREVIOUS_SESSION_GONE : handOffTab(tabId, consent, video);
     // Сеанс сам переехал на выбранное видео (реклама кончилась), пока готовились.
     if (isInPlayer(previous, video)) return STARTED_IN_OPEN_WINDOW;
     const entry = createEntry(tabId);
     replaced.add(previous);
-    const outcome = await register(tabId, entry, () => openSessionFor(tabId, entry, prepared.video, prepared.fileAddressRule, previous));
+    const chosen = terms.kind === "page_reload" ? { ...prepared.video, ...terms.judged } : prepared.video;
+    const outcome = await register(tabId, entry, () => openSessionFor(tabId, entry, chosen, prepared.fileAddressRule, previous));
     if (outcome.kind !== "started") giveBackPreviousEntry(tabId, entry, previous);
     return outcome;
+  }
+
+  /**
+   * Сеанс записи отдал видео нового документа сеансу-замене (16c). Замену не ждём: странице уже ответили
+   * `adopt_new_session`. Не состоялась (или бросила) — видео отпускается в его фрейме, а старый сеанс снова ждёт.
+   */
+  function handOverReloadedPage(tabId: number, entry: TabEntry, handover: PageReloadHandover): void {
+    const refused = (): void => {
+      dependencies.releaseHeldVideo(tabId, handover.video.frame_id, handover.video.element);
+      entry.session?.pageReloadHandoverRefused();
+    };
+    replaceSession(tabId, entry, handover.consent, handover.video, { kind: "page_reload", judged: handover.judged }).then(
+      (outcome) => {
+        if (outcome.kind !== "started") refused();
+      },
+      (error: unknown) => {
+        dependencies.noteForDeveloper(`the page reload handover threw: ${String(error)}`);
+        refused();
+      },
+    );
+  }
+
+  /** Задержанное видео: решает сеанс вкладки; его передачу сеансу-замене ведёт `handOverReloadedPage`. */
+  function heldVideo(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoReply {
+    const entry = entries.get(tabId);
+    const answer = entry?.session?.heldVideo(frameId, report);
+    if (entry === undefined || answer === undefined) return "release";
+    if (typeof answer === "string") return answer;
+    handOverReloadedPage(tabId, entry, answer);
+    return "adopt_new_session";
   }
 
   /** Новый сеанс не состоялся: если старый ещё жив, он снова текущий (его реклама и сторож — снова его). */
@@ -446,7 +524,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     handOffTab,
     surveyTab,
     tabRemoved,
-    heldVideo: (tabId, frameId, report) => entries.get(tabId)?.session?.heldVideo(frameId, report) ?? "release",
+    heldVideo,
     isAdOnScreen: (tabId) => entries.get(tabId)?.session?.adOnScreen() ?? false,
     adWatchReport: (tabId, frameId, ad) => entries.get(tabId)?.session?.adWatchReport(frameId, ad),
     variantWatchReport: (tabId, frameId, report) => entries.get(tabId)?.session?.variantWatchReport(frameId, report),
