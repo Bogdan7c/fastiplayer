@@ -200,3 +200,44 @@ describe("Д-2: пульс тени (решение 180)", () => {
     assert.equal(world.clock.liveTimers(), 0);
   });
 });
+
+describe("сон машины посреди просмотра (16d2, решение 330): тишина — прожитые секунды", () => {
+  /** Столько T480s просыпается с идущими часами, пока браузер ещё заморожен (замер 16d2). */
+  const RESUME_WITH_RUNNING_CLOCKS_MS = 48_000;
+
+  it("часы ушли на 48 с, пока фон был заморожен — сеанс жив, пульс после пробуждения держит его", async () => {
+    const world = setup();
+    await startHandoff(world);
+    deliverStream(world);
+    for (let second = 0; second < 3; second += 1) {
+      world.clock.advance(SHADOW_PULSE_INTERVAL_MS);
+      pulse(world);
+    }
+    world.clock.thawAfterFreeze(RESUME_WITH_RUNNING_CLOCKS_MS);
+    assert.deepEqual(world.ended, [], "проспанное время — не тишина страницы");
+    assert.equal(world.sockets.last().closedWithCode, undefined);
+    // Первый тик часов плеера после оттаивания вернул пульс — дальше сеанс живёт как обычно.
+    world.clock.advance(250);
+    pulse(world);
+    for (let second = 0; second < 30; second += 1) {
+      world.clock.advance(SHADOW_PULSE_INTERVAL_MS);
+      pulse(world);
+    }
+    assert.deepEqual(world.ended, []);
+    assert.equal(world.framePorts.last().posted.some((command) => command.kind === "end_handoff"), false);
+  });
+
+  it("после сна страница правда молчит — конец за предел прожитых секунд, а не сразу", async () => {
+    const world = setup();
+    await startHandoff(world);
+    pulse(world);
+    world.clock.thawAfterFreeze(RESUME_WITH_RUNNING_CLOCKS_MS);
+    // Тик, просроченный во сне, засчитан одной секундой; ещё восемь — всё ещё в пределе.
+    world.clock.advance(SHADOW_SILENCE_LIMIT_MS - 2 * SHADOW_PULSE_INTERVAL_MS);
+    assert.deepEqual(world.ended, [], "девять прожитых тихих секунд — ещё не конец");
+    world.clock.advance(SHADOW_PULSE_INTERVAL_MS);
+    assert.deepEqual(world.ended, [{ kind: "shadow_silent" }]);
+    assert.equal(world.sockets.last().closedWithCode, SESSION_CLOSE_CODES.protocol_violation);
+    assert.equal(world.clock.liveTimers(), 0, "после конца сторож не оставил таймеров");
+  });
+});

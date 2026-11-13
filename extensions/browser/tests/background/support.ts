@@ -14,6 +14,12 @@ import { CURRENT_PROTOCOL_VERSION, decodeDataFrame, decodePageSession, type Gran
 export interface FakeClock {
   readonly scheduler: Scheduler;
   advance(ms: number): void;
+  /**
+   * Сон машины / заморозка процесса (16d2): часы ушли на `ms` вперёд, а программа всё это время
+   * стояла. Как в настоящем браузере после оттаивания, каждый просроченный таймер срабатывает
+   * ОДИН раз уже в новом «сейчас»; таймеры, поставленные этими срабатываниями, ждут своего срока.
+   */
+  thawAfterFreeze(ms: number): void;
   liveTimers(): number;
 }
 
@@ -43,6 +49,15 @@ export function createFakeClock(): FakeClock {
         due[1].callback();
       }
       nowMs = target;
+    },
+    thawAfterFreeze(ms) {
+      nowMs += ms;
+      // Список просроченных снимается до срабатываний: новые таймеры встают от нового «сейчас».
+      const overdue = [...timers.entries()].filter(([, timer]) => timer.atMs <= nowMs).sort((a, b) => a[1].atMs - b[1].atMs || a[0] - b[0]);
+      for (const [id, timer] of overdue) {
+        if (!timers.delete(id)) continue;
+        timer.callback();
+      }
     },
     liveTimers: () => timers.size,
   };

@@ -26,5 +26,9 @@ tungstenite.workspace = true
 # Чтение манифестов записанных потоков (fixtures/streams/*/stream.json) в тестах «до кадра».
 serde_json.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Тест «сон машины»: пустой обработчик сигнала и `tgkill` каждому потоку процесса.
+libc.workspace = true
+
 [lints]
 workspace = true

@@ -55,6 +55,10 @@ use crate::sink::{
     ChunkSource, IntakeRoom, PageSubtitleChunk, RangeChunk, SessionChunk, SourceBufferChunk,
 };
 
+mod interrupt_retry;
+
+use interrupt_retry::InterruptRetrying;
+
 /// Наибольшее сообщение WebSocket: двоичная рамка протокола (заголовок + груз).
 /// JSON короче (128 КиБ) и дополнительно проверяется при разборе.
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = DATA_FRAME_HEADER_BYTES + MAX_DATA_FRAME_PAYLOAD_BYTES;
@@ -71,6 +75,10 @@ const LOG_EVERY_NTH_DROPPED_MESSAGE: u64 = 100;
 fn should_log_dropped_message(dropped_total: u64) -> bool {
     dropped_total == 1 || dropped_total.is_multiple_of(LOG_EVERY_NTH_DROPPED_MESSAGE)
 }
+
+/// Поток под WebSocket сеанса: TCP, у которого прерванные сигналом вызовы
+/// повторяются (см. `interrupt_retry`).
+type SessionStream = InterruptRetrying<TcpStream>;
 
 /// Тело потока соединения.
 pub(super) fn run(shared: &Arc<Shared>, stream: TcpStream, handle: ConnectionHandle) {
@@ -121,7 +129,7 @@ fn handshake(
     stream: TcpStream,
     handle: &ConnectionHandle,
     accepted_at: Instant,
-) -> Option<WebSocket<TcpStream>> {
+) -> Option<WebSocket<SessionStream>> {
     // Origin НЕ проверяем: у Firefox он — UUID на установку (решение 82), охраняет пропуск.
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_PRE_ATTACH_MESSAGE_BYTES))
@@ -132,7 +140,9 @@ fn handshake(
             .policy
             .handshake_timeout
             .min(shared.policy.attach_timeout);
-    let mut attempt = accept_with_config(stream, Some(config));
+    // Обёртка повторяет вызовы, прерванные сигналом (сон машины, 16d2): иначе
+    // рукопожатие, чтение и запись принимали бы безобидный `EINTR` за обрыв.
+    let mut attempt = accept_with_config(InterruptRetrying::new(stream), Some(config));
     loop {
         match attempt {
             Ok(socket) => return Some(socket),
@@ -202,7 +212,7 @@ struct Link<'shared> {
     farewell: Arc<FarewellSlot>,
     /// Сеанс после успешного `attach`: ключ для отвода провода (до `attach` — `None`).
     attached: Option<SessionRef>,
-    socket: WebSocket<TcpStream>,
+    socket: WebSocket<SessionStream>,
 }
 
 impl Link<'_> {
@@ -333,6 +343,9 @@ impl Link<'_> {
                 Err(error) => match classify_read_error(&error) {
                     ReadFailure::Idle => Flow::Continue,
                     ReadFailure::PeerGone => {
+                        // Причина обрыва — в журнал: по ней видно, кто рвёт связь
+                        // (ушёл браузер или ошибка сокета на нашей стороне).
+                        tracing::warn!(%error, "browser session read failed; the page link is gone");
                         self.shared.connection_lost(self.id);
                         Flow::Finished
                     }
