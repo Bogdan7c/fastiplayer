@@ -66,10 +66,15 @@
 //! открывает пустую вкладку поверх страницы, и та становится скрытой (`tab_hiding.rs`). Строки журнала
 //! печатаются с секундой от передачи.
 //!
+//! Конец эфира (16d1): `--live-end-probe-every <с>` — раз в столько секунд после передачи печатать, что
+//! плеер сайта сделал с `MediaSource` и `<video>` во всех фреймах вкладки (`live_end_probe.rs`): так видно,
+//! как сайт кончает эфир — меняет длительность, зовёт `endOfStream`, ставит новый источник или снимает его.
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
 mod frame_survey_probe;
+mod live_end_probe;
 mod page_scroll;
 mod playerjs_page;
 mod tab_hiding;
@@ -94,6 +99,7 @@ use browser_bridge_bench::player_control::PlayerControl;
 use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
 use frame_survey_probe::report_frame_survey;
+use live_end_probe::{report_live_end, tab_pattern_of};
 use page_scroll::scroll_page_to;
 use playerjs_page::{
     PlayerJsPick, parse_playerjs_pick, pick_on_playerjs_page, report_playerjs_page,
@@ -219,6 +225,8 @@ struct Arguments {
     next_after: Vec<Duration>,
     /// Как часто печатать пробу страницы YouTube (`--youtube-report-every`), `None` — не печатать.
     youtube_report_every: Option<Duration>,
+    /// Как часто печатать пробу конца эфира (`--live-end-probe-every`, 16d1), `None` — не печатать.
+    live_end_probe_every: Option<Duration>,
     /// Как часто печатать пробу фреймов PlayerJS (`--playerjs-report-every`, 15b), `None` — не печатать.
     playerjs_report_every: Option<Duration>,
     /// Выбор пунктов плейлиста PlayerJS на странице после передачи (`--playerjs-pick`), `None` — не выбирать.
@@ -301,6 +309,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut playerjs_report_every = None;
     let mut playerjs_pick = None;
     let mut youtube_report_every = None;
+    let mut live_end_probe_every = None;
     let mut frame_survey_probe = false;
     let mut scroll_to = None;
     let mut hide_tab_after = None;
@@ -356,6 +365,12 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .map_err(|error| format!("--youtube-report-every: {error}"))?;
                 youtube_report_every = Some(Duration::from_secs(every.max(1)));
             }
+            ("--live-end-probe-every", _) => {
+                let every: u64 = value
+                    .parse()
+                    .map_err(|error| format!("--live-end-probe-every: {error}"))?;
+                live_end_probe_every = Some(Duration::from_secs(every.max(1)));
+            }
             ("--playerjs-report-every", _) => {
                 let every: u64 = value
                     .parse()
@@ -407,6 +422,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         playerjs_report_every,
         playerjs_pick,
         youtube_report_every,
+        live_end_probe_every,
         frame_survey_probe,
         scroll_to,
         hide_tab_after,
@@ -691,6 +707,12 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let mut next_report_at = arguments
         .youtube_report_every
         .map(|every| handed_off_at + every);
+    // Проба конца эфира (16d1): шаблон адреса вкладки и первый срок — сразу после передачи.
+    let live_end_tab_pattern = match arguments.live_end_probe_every {
+        Some(_) => Some(tab_pattern_of(url)?),
+        None => None,
+    };
+    let mut next_live_end_probe_at = arguments.live_end_probe_every.map(|_| handed_off_at);
     let mut quality_steps = arguments.youtube_qualities.iter().peekable();
     let mut pick_pending = arguments.playerjs_pick.as_ref();
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
@@ -726,6 +748,22 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         {
             next_report_at = Some(at + every);
             report_youtube_page(browser.as_mut(), &tab, &mut service_page_open);
+        }
+        if let (Some(at), Some(every), Some(pattern)) = (
+            next_live_end_probe_at,
+            arguments.live_end_probe_every,
+            live_end_tab_pattern.as_deref(),
+        ) && Instant::now() >= at
+        {
+            next_live_end_probe_at = Some(at + every);
+            let since = handed_off_at.elapsed();
+            report_live_end(
+                browser.as_mut(),
+                &tab,
+                &mut service_page_open,
+                pattern,
+                since,
+            );
         }
         if let Some(pick) =
             pick_pending.take_if(|pick| Instant::now() >= handed_off_at + pick.after)
