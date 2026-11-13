@@ -425,3 +425,176 @@ fn busy_decoder_control_channel_at_the_boundary_retries_the_handoff() {
     );
     assert_eq!(sent_pts(&decoder), millis(&[0, 40, 80, 120]));
 }
+
+/// Перемотка к `pts_ms` командой зрителя (Accurate: кадры раньше цели не показываются).
+fn seek_to_millis(session: &mut PlayerSession, pts_ms: u64) {
+    session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_duration(Duration::from_millis(pts_ms)),
+        )))
+        .expect("seek accepted");
+}
+
+/// Тикает, пока decoder не настроится на `configured_streams` штук (или лимит шагов).
+fn tick_until_configured_streams(
+    session: &mut PlayerSession,
+    decoder: &SharedFakeVideoDecoderThread,
+    configured_streams: usize,
+) {
+    for _ in 0..8 {
+        if decoder.configured_streams().len() >= configured_streams {
+            return;
+        }
+        tick(session);
+    }
+}
+
+/// Смена качества пришла посреди перемотки, когда перемотка уже прочитала media (мост
+/// 16d1, решение 323): эстафета, а не сброс. Прочитанное для цели не выбрасывается,
+/// decoder переходит на новое описание на границе, а «пол» цели ставится заново.
+#[test]
+fn a_quality_change_after_the_seek_read_media_hands_over_without_a_reset() {
+    let (mut session, decoder) = playing_session_with_events(quality_switch_events());
+    // Цель дальше всех packet-ов: перемотка идёт всё время сценария.
+    seek_to_millis(&mut session, 200);
+    let seek_generation = session.pipeline.seek_generation();
+    let flushes_after_seek = decoder.flush_count();
+    let floors_after_seek = decoder.preroll_floor_sets();
+    assert_eq!(
+        floors_after_seek.len(),
+        1,
+        "precondition: the seek set its floor"
+    );
+
+    tick(&mut session);
+
+    assert!(
+        session.has_active_seek_commit(),
+        "precondition: the seek is landing"
+    );
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        seek_generation,
+        "no reset"
+    );
+    assert_eq!(decoder.flush_count(), flushes_after_seek, "no reset flush");
+    assert_eq!(
+        sent_pts(&decoder),
+        millis(&[0, 40]),
+        "the media read for the seek reached the decoder"
+    );
+    assert!(session.pipeline.pending_video_track_handoff().is_some());
+
+    decode_old_episode(&session, &decoder);
+    tick_until_configured_streams(&mut session, &decoder, 2);
+
+    let configured = decoder.configured_streams();
+    assert_eq!(
+        configured
+            .last()
+            .and_then(|config| config.codec_private.clone()),
+        video_track_with_new_parameter_sets().codec_private
+    );
+    assert_eq!(sent_pts(&decoder), millis(&[0, 40, 80, 120]));
+    assert_eq!(session.pipeline.seek_generation(), seek_generation);
+    assert!(
+        session.has_active_seek_commit(),
+        "the seek survives the handoff"
+    );
+    let floors = decoder.preroll_floor_sets();
+    assert_eq!(
+        floors.len(),
+        2,
+        "the floor is set again after the reconfiguration"
+    );
+    assert_eq!(floors[1], floors_after_seek[0], "same seek, same floor");
+    assert!(session.snapshot().last_error.is_none());
+}
+
+/// Метка без смены описания посреди перемотки — метка самой перемотки: прежний сброс с
+/// перепривязкой, даже когда media уже прочитано (эстафете здесь передавать нечего).
+#[test]
+fn an_unchanged_track_list_during_a_seek_keeps_the_seek_reset() {
+    let (mut session, _decoder) = playing_session_with_events(vec![
+        video_packet(0, PacketKeyframe::Keyframe),
+        video_packet(40, PacketKeyframe::NotKeyframe),
+        tracks_changed(vec![video_track()]),
+    ]);
+    seek_to_millis(&mut session, 200);
+    let seek_generation = session.pipeline.seek_generation();
+
+    tick(&mut session);
+
+    assert_ne!(
+        session.pipeline.seek_generation(),
+        seek_generation,
+        "seek rebased"
+    );
+    assert_eq!(
+        session.seek_commit().expect("seek stays active").generation,
+        session.pipeline.seek_generation()
+    );
+    assert!(session.pipeline.pending_video_track_handoff().is_none());
+}
+
+/// Новая перемотка, пока эстафета прошлой перемотки ждёт границу: flush выбросил старое,
+/// decoder сразу настраивается на последнее описание, передача больше не ждёт.
+#[test]
+fn a_new_seek_during_a_handoff_started_in_a_seek_configures_the_latest_description() {
+    let (mut session, decoder) = playing_session_with_events(quality_switch_events());
+    seek_to_millis(&mut session, 200);
+    tick(&mut session);
+    assert!(session.pipeline.pending_video_track_handoff().is_some());
+
+    seek_to_millis(&mut session, 300);
+
+    assert_eq!(
+        decoder
+            .configured_streams()
+            .last()
+            .and_then(|config| config.codec_private.clone()),
+        video_track_with_new_parameter_sets().codec_private
+    );
+    assert!(session.pipeline.pending_video_track_handoff().is_none());
+    assert!(decoder.eof_drain_requests().is_empty());
+}
+
+/// Склейщик видео+звук отдал первый звук цели раньше видео, а затем пришла метка-якорь с
+/// другим описанием видео: видео перемотка ещё не читала — это метка самой перемотки,
+/// прежний сброс с перепривязкой, а не эстафета.
+#[test]
+fn a_changed_video_marker_after_only_audio_was_read_keeps_the_seek_reset() {
+    let (mut session, _decoder) = playing_session_with_events(Vec::new());
+    seek_to_millis(&mut session, 200);
+    let seek_generation = session.pipeline.seek_generation();
+    session
+        .pipeline
+        .enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
+            TrackId::new(2),
+            Duration::from_millis(200),
+            None,
+            None,
+            seek_generation,
+            Bytes::from_static(b"aac-frame"),
+        ));
+    assert!(
+        session.pipeline.has_unplayed_demuxed_audio(),
+        "precondition"
+    );
+    assert!(
+        !session.pipeline.has_unplayed_demuxed_video(),
+        "precondition"
+    );
+
+    session.handle_demux_track_list_update(DemuxTrackListUpdate::new(
+        vec![video_track_with_new_parameter_sets()],
+        Some(Duration::from_secs(30)),
+    ));
+
+    assert_ne!(
+        session.pipeline.seek_generation(),
+        seek_generation,
+        "seek rebased"
+    );
+    assert!(session.pipeline.pending_video_track_handoff().is_none());
+}

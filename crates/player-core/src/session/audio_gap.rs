@@ -190,7 +190,9 @@ impl PlayerSession {
         now: Instant,
         demux_audio_wait: DemuxAudioPriorityWait,
     ) {
-        if !self.audio_gap_policy_applies() || !self.audio_clock_drives_presentation() {
+        // Ворота шире gap-политики: доказательства посреди отрезка сами проверяют вид
+        // шкалы (`audio_gap_evidence`), а начало отрезка действует и в эфире.
+        if !self.audio_clock_handover_applies() || !self.audio_clock_drives_presentation() {
             return;
         }
         let Some(evidence) = self.audio_gap_evidence(demux_audio_wait) else {
@@ -230,9 +232,11 @@ impl PlayerSession {
         {
             return;
         }
+        // Возврат — при любом виде шкалы: звук, удержанный после передачи часов
+        // (`HoldForAudioGap`), иначе ждал бы вечно — у эфира передача бывает в начале отрезка.
         if self.pipeline.presentation_clock_source()
             != PresentationClockSource::MonotonicAfterAudioEnd
-            || !self.audio_gap_policy_applies()
+            || !self.audio_clock_handover_applies()
         {
             return;
         }
@@ -263,18 +267,43 @@ impl PlayerSession {
         }
     }
 
-    /// Применима ли gap-политика: обычное воспроизведение static media с видео и звуком.
+    /// Может ли время показа переходить между звуком и monotonic clock: идёт показ media
+    /// с видео и звуком, без активного seek commit-а. Вид шкалы не важен.
     ///
-    /// Seek/scrub владеют своим lifecycle-ом; live-timeline имеет свои разрывы времени;
-    /// audio-only некому продолжать показ, поэтому там поведение прежнее.
-    fn audio_gap_policy_applies(&self) -> bool {
+    /// Seek/scrub владеют своим lifecycle-ом; audio-only некому продолжать показ без звука.
+    /// Этих ворот достаточно для звука, назначенного на потом в начале отрезка
+    /// (`audio_gap/scheduled_audio_start.rs`): он действует и в эфире (решение 322), а без
+    /// передачи часов видео стояло бы на базе — пустой output не двигает audio clock.
+    fn audio_clock_handover_applies(&self) -> bool {
         matches!(
             self.playback_state(),
             PlaybackState::Playing | PlaybackState::Draining
         ) && !self.has_active_seek_commit()
-            && self.snapshot.timeline.mode == TimelineMode::Static
-            && self.pipeline.has_selected_video_track()
+            && self.video_continues_the_presentation()
             && self.pipeline.has_selected_audio_track()
+    }
+
+    /// Есть ли у показа видео для правил звука: дорожка выбрана или ждёт смены backend-а.
+    ///
+    /// Корень сдвига позиции в окне (16d1, общий бэклог п. 51). Полная смена списка дорожек
+    /// снимает выбор дорожек и выбрасывает прочитанное впрок, а видео, которое активный
+    /// backend не тянет, выбирается заново только после смены backend-а
+    /// (`request_video_backend_reselection`). В этом промежутке звук уже выбран, и правила
+    /// звука видели «audio-only»: часы переносились на первый звук после сброса (3,5 с
+    /// впереди показа на процессном тесте), а смена backend-а потом перематывала туда —
+    /// пропадали секунды картинки. Видео ещё вернётся, поэтому правила звука считают его
+    /// присутствующим: звук ждёт своего PTS, часы остаются у показа, а перемотка смены
+    /// backend-а перечитывает звук с позиции показа.
+    pub(in crate::session) fn video_continues_the_presentation(&self) -> bool {
+        self.pipeline.has_selected_video_track() || self.has_pending_video_backend_reselection()
+    }
+
+    /// Применима ли gap-политика ПОСРЕДИ отрезка: передача часов разрешена и шкала — запись.
+    ///
+    /// Live-timeline имеет свои разрывы времени, поэтому дыры посреди эфира здесь не
+    /// доказываются (поведение прежнее; решение 322 касается только начала отрезка).
+    fn audio_gap_policy_applies(&self) -> bool {
+        self.audio_clock_handover_applies() && self.snapshot.timeline.mode == TimelineMode::Static
     }
 
     /// Возвращает границы разрыва, если следующий audio packet начинается после разрыва.
@@ -324,6 +353,10 @@ impl PlayerSession {
 
         // Блокировка demux-а доказывает отсутствие звука только при обычном чтении файла:
         // после EOF demux не читает, там работает EOF-drain передача.
+        // Это доказательство дыры посреди отрезка — только у записи, как `audio_gap_ahead`.
+        if !self.audio_gap_policy_applies() {
+            return None;
+        }
         let demux_saturated = demux_audio_wait == DemuxAudioPriorityWait::SaturatedWithoutAudio
             && self.playback_state() == PlaybackState::Playing
             && self.pipeline.pending_audio_packet_is_empty();

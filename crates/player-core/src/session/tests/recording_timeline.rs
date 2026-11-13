@@ -184,10 +184,9 @@ fn a_track_list_update_keeps_the_duration_owned_by_the_timeline() {
     );
 }
 
-/// Цель, а не нынешнее поведение: у эфира смена дорожек пока затирает шкалу (известный
-/// дефект, найден в 16d1, `apply_demuxer_reported_duration`). Включить вместе с починкой.
+/// Один писатель шкалы и у эфира: смена дорожек (смена качества, перезапуск эфира страницей)
+/// не затирает окно эфира в «запись без длины» (16d1, общий бэклог п. 51, решение 322).
 #[test]
-#[ignore = "16d1: the live timeline survives track list updates only after the live audio-start fix"]
 fn a_track_list_update_keeps_the_live_window() {
     let (prepared_media, _publisher, _seek_log) = media_with_timeline(live_window(20, 60).into());
     let mut session = installed(prepared_media);

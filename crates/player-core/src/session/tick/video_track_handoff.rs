@@ -149,6 +149,13 @@ fn hand_decoder_to(
     match session.reconfigure_video_decoder_for_track(next_track) {
         Ok(VideoTrackReconfiguration::Configured) => {
             session.pipeline.complete_video_track_handoff();
+            // Передача посреди перемотки (16d1, решение 323): новая настройка decoder-а
+            // могла снять «пол» цели — без него decoder отдал бы кадры раньше цели.
+            if let Err(error) = session.restore_seek_output_floor_after_video_handoff() {
+                warn!(error = %error, "Seek output floor could not be restored after handoff");
+                session.mark_fatal_error(error);
+                return VideoTrackHandoffProgress::Failed;
+            }
             info!(
                 track_id = %next_track.id,
                 codec_id = %next_track.codec_id,

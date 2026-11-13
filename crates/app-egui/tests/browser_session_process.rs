@@ -70,6 +70,9 @@ struct PrivateBusWithBrowserSession {
     /// Тексты, которых в журнале процесса не должно быть НИ В ОДНОЙ прочитанной строке
     /// (данные страницы, инвариант 7); проверяются при каждом чтении журнала.
     forbidden_in_log: std::cell::RefCell<Vec<String>>,
+    /// Счётчики строк журнала по тексту (`count_in_log`): сколько прочитанных строк его
+    /// содержат. Видно, сколько раз процесс что-то сделал (например, сменил декодер).
+    counted_in_log: std::cell::RefCell<Vec<(String, usize)>>,
 }
 
 impl PrivateBusWithBrowserSession {
@@ -233,6 +236,7 @@ impl PrivateBusWithBrowserSession {
             log_lines,
             directory,
             forbidden_in_log: std::cell::RefCell::new(Vec::new()),
+            counted_in_log: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -252,8 +256,28 @@ impl PrivateBusWithBrowserSession {
             .extend(texts.iter().map(|text| (*text).to_owned()));
     }
 
-    /// Падает, если строка содержит запрещённый (`forbid_in_log`) текст.
+    /// С этого момента считает прочитанные строки журнала с `text` (`log_count`).
+    fn count_in_log(&self, text: &str) {
+        self.counted_in_log.borrow_mut().push((text.to_owned(), 0));
+    }
+
+    /// Сколько прочитанных с `count_in_log` строк содержат `text`.
+    fn log_count(&self, text: &str) -> usize {
+        self.counted_in_log
+            .borrow()
+            .iter()
+            .find(|(counted, _)| counted == text)
+            .map_or(0, |(_, count)| *count)
+    }
+
+    /// Падает, если строка содержит запрещённый (`forbid_in_log`) текст; считает строку
+    /// в счётчиках `count_in_log` (каждая прочитанная строка проходит здесь).
     fn assert_line_is_allowed(&self, line: &str) {
+        for (text, count) in self.counted_in_log.borrow_mut().iter_mut() {
+            if line.contains(text.as_str()) {
+                *count += 1;
+            }
+        }
         if let Some(found) = self
             .forbidden_in_log
             .borrow()

@@ -210,7 +210,7 @@ fn gap_within_tolerance_writes_audio_immediately() {
 
 #[test]
 /// Packet, отданный прямо в decode (минуя очередь, где его удержал бы
-/// `audio_gap/scheduled_audio_start.rs`): прежнее поведение — ветка для live-timeline.
+/// `audio_gap/scheduled_audio_start.rs`): прежнее поведение — запасная ветка.
 fn gap_above_the_silence_cap_keeps_writing_at_the_clock_base() {
     let (mut session, output_factory_handle) = session_with_audio(SelectedVideo::Selected);
     let audio_start = Duration::from_secs(2);

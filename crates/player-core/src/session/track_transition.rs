@@ -17,9 +17,11 @@
 //!   `audio_spec_change`).
 //!
 //! Старый сброс (`handle_demux_track_list_update`) остаётся там, где эстафета
-//! неприменима: идёт перемотка или скраб (у них свои правила маркеров
-//! `TracksChanged`), изменился состав дорожек, новое видео требует другой backend
-//! или не играется, описание звука не принимается, слишком много ждущих смен.
+//! неприменима: ждёт квитанция перемотки или идёт скраб (у них свои правила маркеров
+//! `TracksChanged`), у перемотки это её собственная метка (описания не менялись или
+//! media перемотки ещё не прочитано — см. `active_seek_blocks_handoff`, 16d1),
+//! изменился состав дорожек, новое видео требует другой backend или не играется,
+//! описание звука не принимается, слишком много ждущих смен.
 
 use std::time::Duration;
 
@@ -81,6 +83,13 @@ struct ChangedSelectedDescriptions {
     audio: Option<TrackInfo>,
 }
 
+impl ChangedSelectedDescriptions {
+    /// Поменялось ли хоть одно описание выбранных дорожек (иначе это метка без смены).
+    const fn changes_any_description(&self) -> bool {
+        self.video.is_some() || self.audio.is_some()
+    }
+}
+
 /// Дорожки, выбранные сейчас в pipeline.
 #[derive(Debug, Clone, Copy)]
 struct SelectedTrackIds {
@@ -112,6 +121,9 @@ impl PlayerSession {
                 TrackListResetReason::TrackTopologyChanged,
             );
         };
+        if let Some(reason) = self.active_seek_blocks_handoff(&changed) {
+            return TrackListUpdateHandling::RequiresReset(reason);
+        }
         let ChangedSelectedDescriptions { video, audio } = *changed;
         if let Some(reason) = self.track_description_rejection(video.as_ref(), audio.as_ref()) {
             return TrackListUpdateHandling::RequiresReset(reason);
@@ -192,9 +204,11 @@ impl PlayerSession {
     }
 
     /// Причина, по которой эстафета сейчас невозможна в принципе.
+    ///
+    /// Активная перемотка сама по себе сюда не входит: её решает
+    /// [`Self::active_seek_blocks_handoff`] после разбора, что именно поменялось.
     fn track_list_update_blocker(&self) -> Option<TrackListResetReason> {
-        if self.seek_runtime.active_commit().is_some()
-            || self.prepared_demux_seek.receipt_pending()
+        if self.prepared_demux_seek.receipt_pending()
             || self.seek_runtime.active_seek_landing_is_live_scrub()
         {
             return Some(TrackListResetReason::SeekInProgress);
@@ -203,6 +217,52 @@ impl PlayerSession {
             return Some(TrackListResetReason::BackendReselectionPending);
         }
         None
+    }
+
+    /// Мешает ли эстафете идущая перемотка (one-shot seek commit).
+    ///
+    /// Сброс с перепривязкой перемотки (`media_lifecycle.rs`) рассчитан на МЕТКУ самой
+    /// перемотки: HLS/fMP4 сообщают `TracksChanged` на сегменте-якоре, ДО первых packet-ов
+    /// цели, и выбрасывать там нечего. Настоящая смена описания, пришедшая ПОСЛЕ того, как
+    /// перемотка уже прочитала media, — обычная граница посреди потока (смена качества
+    /// через секунду после цели). Сброс выбрасывал прочитанное впрок: кадры от цели до
+    /// границы и звук на секунды вперёд, а demuxer их уже не перечитает — картинка стояла,
+    /// часы прыгали, звук начинался с дырой (мост 16d1, решение 323). Перечитать перемоткой
+    /// нельзя: на полке старое и новое описание, перемотка снова прошла бы ту же границу.
+    ///
+    /// Поэтому эстафета посреди перемотки — только при обоих условиях: описание выбранной
+    /// дорожки действительно другое и media ЭТОГО вида перемотка уже прочитала (видео — для
+    /// смены видео, звук — для смены звука). Метка без смены описаний и метка до первых
+    /// packet-ов своего вида идут прежним сбросом: склейщик видео+звук отдаёт первый звук
+    /// цели раньше видео, и метка-якорь видео после него — всё ещё метка перемотки.
+    fn active_seek_blocks_handoff(
+        &self,
+        changed: &ChangedSelectedDescriptions,
+    ) -> Option<TrackListResetReason> {
+        if !self.has_active_seek_commit() {
+            return None;
+        }
+        let video_boundary_after_video =
+            changed.video.is_none() || self.pipeline.has_unplayed_demuxed_video();
+        let audio_boundary_after_audio =
+            changed.audio.is_none() || self.pipeline.has_unplayed_demuxed_audio();
+        let boundary_after_read_media = changed.changes_any_description()
+            && video_boundary_after_video
+            && audio_boundary_after_audio;
+        (!boundary_after_read_media).then_some(TrackListResetReason::SeekInProgress)
+    }
+
+    /// Перемотка ещё идёт после передачи decoder-а новому описанию: заново ставит decoder-у
+    /// «пол» её цели (кадры раньше цели decoder не отдаёт).
+    ///
+    /// VA-API при настоящей смене кодека или размера пересоздаёт adapter и снимает пол
+    /// молча (`video-vaapi` `configure_stream`), а session считала бы его стоящим. Вне
+    /// перемотки и у decoder-а без пола (FFmpeg — отбор кадров на стороне плеера) — no-op.
+    pub(super) fn restore_seek_output_floor_after_video_handoff(&mut self) -> PlayerResult<()> {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            return Ok(());
+        };
+        self.apply_decoder_output_floor_for_seek(seek_commit)
     }
 
     /// Проверяет изменённые описания без мутаций.

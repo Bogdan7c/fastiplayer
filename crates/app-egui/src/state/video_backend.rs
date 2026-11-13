@@ -124,6 +124,21 @@ fn active_video_pipeline_satisfies_reselection(
         && request.decodable_by_active_backend
 }
 
+/// Увёл ли сам поток media с аппаратного декода: player сказал «активный decoder это не
+/// тянет», активным был аппаратный, а подбор дал программный (решение 324).
+///
+/// Подбор «по предпочтению» (`decodable_by_active_backend == true`) защёлку не ставит:
+/// это возврат к лучшему декодеру, а не вынужденный уход с него.
+fn hardware_could_not_decode_the_stream(
+    backend_before_switch: Option<VideoBackendKind>,
+    selected_plan: VideoPipelinePlan,
+    request: &VideoBackendSelectionRequest,
+) -> bool {
+    !request.decodable_by_active_backend
+        && backend_before_switch == Some(VideoBackendKind::HardwareZeroCopy)
+        && selected_plan.backend_kind() == VideoBackendKind::FfmpegSoftware
+}
+
 impl AppState {
     /// Инициализирует video pipeline и ставит импорт кадров decoder-а в активный рендер.
     pub fn init_video_pipeline(&mut self, import_target: RendererVideoImportTarget<'_>) {
@@ -302,7 +317,8 @@ impl AppState {
                 ) {
                     return;
                 }
-                if let Err(error) =
+                let backend_before_switch = self.current_video_backend_kind;
+                let rebuilt =
                     self.rebuild_video_pipeline_with_decoder_config(VideoPipelineRebuildRequest {
                         backend_preference: preference,
                         install_intent:
@@ -310,8 +326,15 @@ impl AppState {
                         decoder_thread_config,
                         stream_requirement: Some(&request.requirement),
                         import_target,
-                    })
+                    });
+                if rebuilt.is_ok()
+                    && hardware_could_not_decode_the_stream(backend_before_switch, plan, request)
                 {
+                    // Решение 324: до конца media — программный декод (см. метод защёлки).
+                    self.dma_buf_runtime_fallback
+                        .latch_software_for_this_media(self.video_backend_preference());
+                }
+                if let Err(error) = rebuilt {
                     warn!(error = %error, "Could not switch the video backend to the current stream");
                     if !request.decodable_by_active_backend {
                         self.reject_pending_video_backend(format!(
@@ -747,3 +770,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod stream_forced_software_tests;

@@ -35,12 +35,16 @@
 //! на самое раннее содержимое — как audio-only стартует с первого sample-а (и как mpv).
 //! Позиция показывает сырое время контейнера (решение s14: шкала не сдвигается).
 //!
-//! Live-timeline (dynamic) сюда не входит: база там — край эфира, а разрывы времени
-//! ведёт своя логика; поведение там прежнее.
+//! Эфир (live-timeline) входит сюда так же, как запись (мост 16d1, решение 322, общий
+//! бэклог п. 51). База эфира — точка входа или цель перемотки, и первый звук отрезка
+//! может лежать дальше неё: у эфира нет «конца media», который отсёк бы такой звук, а
+//! разрывы бывают и у источника, и у нас (полный сброс выбрасывал звук, прочитанный
+//! впрок). Раньше эфир писал такой звук прямо в базу: звук уходил вперёд картинки на весь
+//! разрыв. Правило здесь касается только НАЧАЛА отрезка. Дыры посреди эфира `audio_gap.rs`
+//! по-прежнему не ведёт (`audio_gap_policy_applies` — только запись).
 
 use std::time::{Duration, Instant};
 
-use media_core::TimelineMode;
 use tracing::debug;
 
 use crate::PlaybackState;
@@ -226,8 +230,8 @@ impl PlayerSession {
     /// Классифицирует первый pending звук текущего отрезка относительно базы часов.
     #[must_use]
     pub(in crate::session) fn segment_start_audio_schedule(&self) -> SegmentStartAudioSchedule {
-        if self.snapshot.timeline.mode != TimelineMode::Static
-            || !self.pipeline.has_selected_video_track()
+        // Вид шкалы (запись или эфир) не проверяется: правило одно для обоих (решение 322).
+        if !self.video_continues_the_presentation()
             || !self.pipeline.has_selected_audio_track()
             || !self.pipeline.audio_segment_awaits_first_pcm()
         {

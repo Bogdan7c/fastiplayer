@@ -50,11 +50,15 @@ impl PlayerSession {
     /// Первый PCM после очистки output-а звучит в базе часов (цели), поэтому без этой
     /// поправки позиция отставала бы от слышимого звука на весь разрыв. Разрыв в пределах
     /// допуска тишины — шум меток, а неправдоподобный (битые метки) позицию не уводит.
+    ///
+    /// Видео, ждущее смены backend-а, — не audio-only (`video_continues_the_presentation`,
+    /// 16d1): иначе перемотка во время смены закрывалась на первом звуке, и позиция уходила
+    /// вперёд картинки (окно браузерного режима: 0,24 → 1,17 с).
     fn final_seek_audio_only_landing_position(
         &self,
         seek_commit: SeekCommitState,
     ) -> Option<Duration> {
-        if self.pipeline.has_selected_video_track() || !self.pipeline.has_selected_audio_track() {
+        if self.video_continues_the_presentation() || !self.pipeline.has_selected_audio_track() {
             return None;
         }
         let first_sample = self.pipeline.audio_segment_first_sample()?;

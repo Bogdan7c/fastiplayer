@@ -27,37 +27,37 @@ use crate::session::audio_runtime::leading_silence::AudioSegmentStartPlan;
 use crate::{PendingAudioPacket, PlaybackRate};
 
 /// Частота PCM тестового звука.
-const SAMPLE_RATE: u32 = 48_000;
+pub(super) const SAMPLE_RATE: u32 = 48_000;
 
 /// Каналов в тестовом PCM.
 const CHANNELS: u32 = 2;
 
 /// PCM frames одного decoded packet-а (20 мс при 48 кГц).
-const PACKET_FRAMES: usize = 960;
+pub(super) const PACKET_FRAMES: usize = 960;
 
 /// Значение каждого sample-а decoded packet-а: заведомо не тишина.
 const TONE: f32 = 0.5;
 
 /// Выбранная аудиодорожка.
-const AUDIO_TRACK: TrackId = TrackId::new(2);
+pub(super) const AUDIO_TRACK: TrackId = TrackId::new(2);
 
 /// Выбранная видеодорожка.
-const VIDEO_TRACK: TrackId = TrackId::new(1);
+pub(super) const VIDEO_TRACK: TrackId = TrackId::new(1);
 
 /// Звук начинается на 2 с позже базы (больше потолка тишины 1 с).
-const LATE_AUDIO: Duration = Duration::from_secs(2);
+pub(super) const LATE_AUDIO: Duration = Duration::from_secs(2);
 
 /// Цель preroll-а звука для ворот старта (как `PlayerTickConfig` по умолчанию).
 const AUDIO_PREROLL_TARGET_MS: f64 = 50.0;
 
 /// PCM frames в длительности (тестовая частота).
-fn frames_in(duration: Duration) -> usize {
+pub(super) fn frames_in(duration: Duration) -> usize {
     usize::try_from(duration.as_nanos() * u128::from(SAMPLE_RATE) / 1_000_000_000)
         .expect("test durations fit usize")
 }
 
 /// Decoder, который на каждый packet отдаёт 20 мс «тона».
-fn tone_decoder() -> Box<RecordingPcmDecoder> {
+pub(super) fn tone_decoder() -> Box<RecordingPcmDecoder> {
     Box::new(RecordingPcmDecoder::new(
         Arc::new(Mutex::new(Vec::new())),
         vec![TONE; PACKET_FRAMES * CHANNELS as usize],
@@ -92,7 +92,7 @@ fn session_with_audio(
 }
 
 /// Кладёт audio packet текущего поколения в очередь (как demux).
-fn enqueue_audio_packet(session: &mut PlayerSession, packet_pts: Duration) {
+pub(super) fn enqueue_audio_packet(session: &mut PlayerSession, packet_pts: Duration) {
     let generation = session.pipeline.seek_generation();
     session
         .pipeline
@@ -107,7 +107,7 @@ fn enqueue_audio_packet(session: &mut PlayerSession, packet_pts: Duration) {
 }
 
 /// Отдаёт один audio packet прямо в decode/output (минуя очередь).
-fn feed_audio_packet(session: &mut PlayerSession, packet_pts: Duration) {
+pub(super) fn feed_audio_packet(session: &mut PlayerSession, packet_pts: Duration) {
     let generation = session.pipeline.seek_generation();
     session.process_audio_packet(
         AUDIO_TRACK,
@@ -120,7 +120,7 @@ fn feed_audio_packet(session: &mut PlayerSession, packet_pts: Duration) {
 }
 
 /// PCM, записанный в последний созданный output.
-fn written_pcm(output_factory_handle: &ScriptedAudioOutputFactoryHandle) -> Vec<f32> {
+pub(super) fn written_pcm(output_factory_handle: &ScriptedAudioOutputFactoryHandle) -> Vec<f32> {
     output_factory_handle
         .last_output_handle()
         .expect("audio output must be created by the first PCM")
@@ -137,7 +137,7 @@ fn leading_silence_frames(pcm: &[f32]) -> usize {
 }
 
 /// Сколько PCM frames записано всего.
-fn written_frames(pcm: &[f32]) -> usize {
+pub(super) fn written_frames(pcm: &[f32]) -> usize {
     pcm.len() / CHANNELS as usize
 }
 
@@ -201,7 +201,7 @@ fn audio_within_the_silence_cap_is_not_held_and_gets_leading_silence() {
 }
 
 #[test]
-fn hold_applies_only_to_the_first_audio_of_an_av_segment_on_a_static_timeline() {
+fn hold_applies_only_to_the_first_audio_of_an_av_segment() {
     // Audio-only: смотреть нечего — звук не ждёт, часы переносятся к нему.
     let (mut audio_only, _audio_only_outputs) = session_with_audio(SelectedVideo::None);
     enqueue_audio_packet(&mut audio_only, LATE_AUDIO);
@@ -219,17 +219,21 @@ fn hold_applies_only_to_the_first_audio_of_an_av_segment_on_a_static_timeline() 
         SegmentStartAudioSchedule::NotApplicable
     );
 
-    // Live-timeline: база — край эфира, поведение прежнее.
+    // Эфир: то же правило, что у записи (решение 322) — звук ждёт своего PTS.
+    // Сквозная проверка эфира — `session/tests/live_scheduled_audio_start.rs`.
     let (mut live, _live_outputs) = session_with_audio(SelectedVideo::Selected);
     live.snapshot.timeline.mode = TimelineMode::Live;
     enqueue_audio_packet(&mut live, LATE_AUDIO);
     assert_eq!(
         live.segment_start_audio_schedule(),
-        SegmentStartAudioSchedule::NotApplicable
+        SegmentStartAudioSchedule::ScheduledLater {
+            clock_base: Duration::ZERO,
+            audio_start: LATE_AUDIO,
+        }
     );
     assert_eq!(
         live.pending_audio_output_admission(),
-        PendingAudioOutputAdmission::Admit
+        PendingAudioOutputAdmission::HoldUntilScheduledAudioStart
     );
 }
 

@@ -71,6 +71,7 @@ mod exact_media_transport;
 mod installed_media_restore;
 mod live_join_position;
 mod live_same_item_restore;
+mod live_scheduled_audio_start;
 mod live_seek_refusal;
 mod media_lifecycle;
 mod paused_poster_frame;

@@ -176,8 +176,10 @@ pub(in crate::session) enum AudioSegmentStartPlan {
         room: SilenceOutputRoom,
     },
 
-    /// Есть видео, разрыв больше потолка и правдоподобен, но удержание звука до его PTS
-    /// здесь не действует (live-timeline): прежнее поведение — PCM пишется сразу в базу.
+    /// Есть видео, разрыв больше потолка и правдоподобен, но звук до decode не удержали
+    /// (`audio_gap/scheduled_audio_start.rs` судит по первому pending packet-у, а PCM мог
+    /// начаться позже его PTS или packet миновал очередь): прежнее поведение — PCM пишется
+    /// сразу в базу. С 16d1 и у эфира это запасная ветка, а не обычный путь.
     GapAboveSilenceCap {
         /// Разрыв между базой часов и первым sample-ом.
         gap: Duration,
@@ -265,8 +267,8 @@ impl PlayerSession {
                     gap_ms = gap.as_millis(),
                     max_silence_ms = LeadingSilencePolicy::SEGMENT_START.max_silence.as_millis(),
                     clock_base_ms = clock_base.as_millis(),
-                    "Audio starts too far after the clock base and was not held until its PTS \
-                     (live timeline); it is written at the clock base ahead of video"
+                    "Audio starts too far after the clock base and was not held until its PTS; \
+                     it is written at the clock base ahead of video"
                 );
                 Ok(())
             }
@@ -276,7 +278,7 @@ impl PlayerSession {
                     first_sample_ms = first_sample_time.as_millis(),
                     clock_base_ms = clock_base.as_millis(),
                     plausibility = ?plausibility,
-                    has_video = self.pipeline.has_selected_video_track(),
+                    has_video = self.video_continues_the_presentation(),
                     "Audio start is implausibly far from the clock base (broken timestamps?); \
                      it is written at the clock base"
                 );
@@ -332,7 +334,9 @@ impl PlayerSession {
             sample_rate,
             LeadingSilencePolicy::SEGMENT_START,
         );
-        if self.pipeline.has_selected_video_track() {
+        // Видео, ждущее смены backend-а, — тоже видео: иначе ветка audio-only перенесла бы
+        // часы на первый звук (`video_continues_the_presentation`).
+        if self.video_continues_the_presentation() {
             return match leading_silence {
                 LeadingSilence::None => AudioSegmentStartPlan::OnTime,
                 LeadingSilence::Pad {

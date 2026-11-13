@@ -28,7 +28,7 @@ use super::generation_switch_clicks::{
     FRAME_US, PageSourceBuffers, SplitMedia, page_seek, recorded_message, split_fmp4,
     split_fmp4_bytes,
 };
-use super::session_ends::{last_clock_us, send_all, wait_until_playing_past};
+use super::session_ends::{send_all, wait_until_playing_past};
 use super::*;
 
 /// Объявление эфира: длительность «бесконечна», как её сообщает экстеншен для Twitch.
@@ -72,6 +72,21 @@ const NEW_TIMELINE_END_US: u64 = 5_400_000;
 /// Сколько кадров могут не показаться вокруг перемотки и смены качества (кадры, опоздавшие
 /// на доли кадра); дыра в картинке от старой шкалы или шва — десятки кадров.
 const FRAMES_LOST_AROUND_SWITCHES: u64 = 6;
+/// Самый большой шаг часов вперёд между соседними тиками странице (тик — 250 мс,
+/// запас на медленную машину). Прыжок часов вперёд — пропущенная картинка: так в окне
+/// смена backend-а видео перематывала на первый звук новой шкалы (+3,5 с, 16d1).
+const MAX_FORWARD_CLOCK_STEP_US: u64 = 1_000_000;
+/// Конец новой шкалы: звук `audio-6s.mp4` и видео `video-64-6s.mp4` кончаются на 6 с.
+const NEW_TIMELINE_END_OF_MEDIA_US: u64 = 6_000_000;
+/// Сколько звука может не прозвучать вокруг перемоток (обрезка по цели, старт устройства);
+/// выброшенный прочитанный впрок звук — секунды.
+const AUDIO_LOST_AROUND_SWITCHES_MS: u64 = 300;
+/// Строка журнала о запуске декодера видео.
+const VIDEO_BACKEND_STARTED: &str = "Video backend started";
+/// Сколько раз декодер может запуститься за тест: в окне — аппаратный на старте и один
+/// вынужденный программный (новое качество VA-API не тянет), плюс одна в запас. Петля
+/// «аппаратный ↔ программный» давала ~150 запусков за 2 с.
+const MAX_VIDEO_BACKEND_STARTS: usize = 3;
 /// Пауза страницы между «выгрузкой» и новыми байтами (сеть Twitch).
 const RELOAD_DELAY: Duration = Duration::from_millis(500);
 /// Пауза между первыми байтами новой шкалы и остальными.
@@ -240,6 +255,27 @@ fn unload_everything() -> Vec<Message> {
     messages
 }
 
+/// Самый большой шаг вперёд между соседними часами странице (назад — не считается).
+///
+/// Часы любого состояния: в окне прыжок приходился между «жду» на цели перемотки и первым
+/// «играю» (смена backend-а видео перематывала на уехавшую позицию до первого тика игры).
+/// Сообщения читаются после обеих перемоток страницы, поэтому честных прыжков вперёд нет.
+fn largest_forward_clock_step_us(messages: &[PlayerSessionMessage]) -> u64 {
+    let clock_positions_us = messages.iter().filter_map(|message| match message {
+        PlayerSessionMessage::Clock { position_us, .. } => Some(position_us.as_micros()),
+        _ => None,
+    });
+    let mut previous_us = None;
+    let mut largest_step_us = 0;
+    for position_us in clock_positions_us {
+        if let Some(previous) = previous_us {
+            largest_step_us = largest_step_us.max(position_us.saturating_sub(previous));
+        }
+        previous_us = Some(position_us);
+    }
+    largest_step_us
+}
+
 /// Часы «играю» внутри новой шкалы, далеко за стыком смены качества и старой шкалой.
 fn is_playing_the_new_timeline(message: &PlayerSessionMessage) -> bool {
     matches!(
@@ -259,6 +295,7 @@ fn live_restart_by_the_page(mode: VideoMode) {
     let bus = &process.bus;
     // Любая прочитанная строка с отказом перемотки роняет тест сразу.
     bus.forbid_in_log(&EXPIRY_LINES);
+    bus.count_in_log(VIDEO_BACKEND_STARTED);
     let mut socket = process.open_attached_session();
     let mut page = LivePage::new();
     send_all(&mut socket, page.old_timeline());
@@ -288,18 +325,46 @@ fn live_restart_by_the_page(mode: VideoMode) {
         "the stream was rejected: {messages:?}"
     );
 
-    let new_position_us = last_clock_us(&messages).expect("a clock");
-
+    // Часы новой шкалы идут без прыжков вперёд: ни одна секунда картинки не пропущена.
+    let forward_step_us = largest_forward_clock_step_us(&messages);
+    assert!(
+        forward_step_us <= MAX_FORWARD_CLOCK_STEP_US,
+        "the clock jumped forward by {forward_step_us} us: {messages:?}"
+    );
     send_tab_gone_and_expect_close(&mut socket);
     let summary = bus.wait_for_log_line_without("Browser playback summary kind=final", &[]);
+    // Итог — по итоговой позиции: после ухода вкладки плеер досматривает скачанное до конца
+    // новой шкалы, и картинка, и звук обязаны покрыть всё это время.
+    let played_to_us =
+        (log_number(&summary, "position_ms") * 1_000).min(NEW_TIMELINE_END_OF_MEDIA_US);
     // Картинка шла вровень с часами: до выгрузки — кадры старой шкалы от её первого кадра до
-    // позиции часов, после неё — от цели до позиции часов. Застывшая картинка при идущем звуке
-    // не показала бы десятки этих кадров.
+    // позиции часов, после неё — от цели до конца. Застывшая картинка или кадры, выброшенные
+    // сбросом, не показали бы десятки этих кадров.
     let old_frames = (old_position_us - FIRST_FRAME_US) / FRAME_US;
-    let new_frames = (new_position_us - NEW_TIMELINE_SEEK_US) / FRAME_US;
+    let new_frames = (played_to_us - NEW_TIMELINE_SEEK_US) / FRAME_US;
+    let presented_frames = log_number(&summary, "presented_frames");
     assert!(
-        log_number(&summary, "presented_frames")
-            >= old_frames + new_frames - FRAMES_LOST_AROUND_SWITCHES,
+        presented_frames >= old_frames + new_frames - FRAMES_LOST_AROUND_SWITCHES,
         "{summary}"
+    );
+    // И не больше: лишние перемотки назад показали бы те же кадры ещё раз.
+    assert!(
+        presented_frames <= old_frames + new_frames + FRAMES_LOST_AROUND_SWITCHES,
+        "frames were presented again: {summary}"
+    );
+    // Смена декодера не ходит по кругу (решение 324): старт окна и не больше одной
+    // вынужденной смены на программный, с запасом на одну.
+    let backend_starts = bus.log_count(VIDEO_BACKEND_STARTED);
+    assert!(
+        backend_starts <= MAX_VIDEO_BACKEND_STARTS,
+        "the video backend was started {backend_starts} times"
+    );
+    // Звук новой шкалы слышен от цели перемотки, а не с того места, докуда страница успела
+    // прочитать впрок (полный сброс выбрасывал прочитанный звук: −3,5 с, 16d1).
+    let expected_audio_ms = (old_position_us + played_to_us - NEW_TIMELINE_SEEK_US) / 1_000;
+    assert!(
+        log_number(&summary, "audio_played_ms") + AUDIO_LOST_AROUND_SWITCHES_MS
+            >= expected_audio_ms,
+        "expected about {expected_audio_ms} ms of audio: {summary}"
     );
 }

@@ -26,10 +26,27 @@ impl PlaybackPipeline {
     /// на самом первом чтении после открытия или перемотки.
     #[must_use]
     pub(crate) fn has_unplayed_demuxed_media(&self) -> bool {
-        self.pending_audio_packet_len() > 0
-            || self.video_decoder_has_input_work()
+        self.has_unplayed_demuxed_audio() || self.has_unplayed_demuxed_video()
+    }
+
+    /// Видео-часть [`Self::has_unplayed_demuxed_media`]: пакеты видео в очереди или у
+    /// decoder-а, готовые кадры, кадры внутри decoder-а.
+    ///
+    /// Отдельно от звука её спрашивает выбор «эстафета или сброс» посреди перемотки
+    /// (`session/track_transition.rs`): смена описания ВИДЕО — граница посреди потока,
+    /// только если перемотка уже прочитала видео. Склейщик видео+звук отдаёт первый звук
+    /// цели раньше видео, и метка-якорь видео после него — всё ещё метка самой перемотки.
+    #[must_use]
+    pub(crate) fn has_unplayed_demuxed_video(&self) -> bool {
+        self.video_decoder_has_input_work()
             || self.video_present_queue_len() > 0
             || self.video_decoder_may_hold_decoded_frames()
+    }
+
+    /// Звуковая часть [`Self::has_unplayed_demuxed_media`]: прочитанные пакеты звука.
+    #[must_use]
+    pub(crate) fn has_unplayed_demuxed_audio(&self) -> bool {
+        self.pending_audio_packet_len() > 0
     }
 
     /// Возвращает `true`, если в звуковом выходе есть записанный и ещё не

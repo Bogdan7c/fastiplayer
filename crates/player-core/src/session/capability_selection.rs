@@ -314,6 +314,13 @@ impl PlayerSession {
         requirement: VideoDecodeRequirement,
         decodable_by_active_backend: bool,
     ) {
+        // Shell может сменить backend и на «активный справляется» (подбор по предпочтению),
+        // поэтому каждое сообщение видно в журнале: по нему разбираются смены backend-а.
+        debug!(
+            requirement = %requirement.describe(),
+            decodable_by_active_backend,
+            "Video stream requirement announced to the shell"
+        );
         self.push_player_event(PlayerEvent::VideoBackendSelectionRequested(
             VideoBackendSelectionRequest {
                 requirement,
