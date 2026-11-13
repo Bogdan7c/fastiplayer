@@ -152,6 +152,7 @@ fn live_suspend_resume_uses_explicit_keep_start_without_fake_position() {
     let mut live_snapshot = snapshot(active, PlaybackState::Paused, Duration::from_secs(137));
     live_snapshot.duration = None;
     live_snapshot.timeline.mode = media_core::TimelineMode::Live;
+    live_snapshot.timeline_origin = player_core::TimelineOrigin::Live;
     live_snapshot.timeline.seekable = true;
     live_snapshot.timeline.seekable_range = media_core::TimelineRange::new(
         media_core::MediaTime::from_secs(100),
@@ -169,6 +170,34 @@ fn live_suspend_resume_uses_explicit_keep_start_without_fake_position() {
     let attempt = runtime
         .begin_suspended_media_resume(false)
         .expect("live resume attempt");
+
+    assert_eq!(attempt.position, SuspendedTimelineResumePosition::KeepStart);
+}
+
+/// Эфир кончился и стал записью: после сна законченный плейлист откроется с другим
+/// отсчётом, поэтому место не переносится — как у эфира (решение 328).
+#[test]
+fn an_ended_live_stream_resumes_after_suspend_without_carrying_its_position() {
+    let mut runtime = runtime();
+    let binding = runtime.bind_resumed_app_state().expect("binding");
+    let active = install_external(&mut runtime, binding, 15);
+    let mut ended_live = snapshot(active, PlaybackState::Paused, Duration::from_secs(137));
+    ended_live.duration = Some(Duration::from_secs(140));
+    ended_live.timeline.mode = media_core::TimelineMode::Static;
+    ended_live.timeline.seekable = true;
+    ended_live.timeline_origin = player_core::TimelineOrigin::Live;
+
+    assert_eq!(
+        runtime
+            .capture_suspended_media_checkpoint(binding, &ended_live)
+            .expect("ended live checkpoint capture"),
+        SuspendCheckpointOutcome::Captured
+    );
+    runtime.suspend_app_state_binding();
+    let _new_binding = runtime.bind_resumed_app_state().expect("new binding");
+    let attempt = runtime
+        .begin_suspended_media_resume(false)
+        .expect("ended live resume attempt");
 
     assert_eq!(attempt.position, SuspendedTimelineResumePosition::KeepStart);
 }

@@ -676,8 +676,9 @@ impl AppState {
                     };
                     let installed_snapshot = self.refresh_player_snapshot();
                     if installed_snapshot.media_instance_id == Some(media_instance_id) {
+                        // Происхождение эфира, а не вид шкалы (решение 328).
                         let checkpoint_position =
-                            if installed_snapshot.timeline.mode == media_core::TimelineMode::Live {
+                            if installed_snapshot.timeline_origin.opened_as_live() {
                                 crate::playlist_runtime::InstalledCheckpointPosition::Live
                             } else if installed_snapshot.timeline.seekable {
                                 crate::playlist_runtime::InstalledCheckpointPosition::Seekable(

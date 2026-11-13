@@ -847,6 +847,14 @@ def write_player_session(manifest: Manifest) -> None:
                 seekable=window_range(0, MAX_JSON_SAFE_INTEGER),
             ),
         ),
+        # Протокол 1.11 (решения 325–327): шкала поколения стала записью.
+        ("recording-window-range", recording_window()),
+        ("recording-window-none", recording_window(seekable={"kind": "none"})),
+        # Края договора включительно: окно в одну точку ровно на конце записи.
+        (
+            "recording-window-point-at-end",
+            recording_window(end_us=61_000_000, seekable=window_range(61_000_000, 61_000_000)),
+        ),
         ("stream-rejected", {"type": "stream_rejected", "generation": 1, "reason": "protected_content"}),
         (
             "stream-rejected-file-unavailable",
@@ -884,6 +892,7 @@ def write_player_session(manifest: Manifest) -> None:
     write_invalid_clock_generation(manifest)
     write_invalid_fetch_resource(manifest)
     write_invalid_live_window(manifest)
+    write_invalid_recording_window(manifest)
     write_invalid_reopen_page(manifest)
     write_invalid_show_page(manifest)
 
@@ -997,6 +1006,41 @@ def write_invalid_live_window(manifest: Manifest) -> None:
         ("seekable-range-without-end", live_window(seekable={"kind": "range", "start_us": 0}), "missing_field"),
         ("seekable-range-unknown-field", live_window(seekable={**window_range(0, 1), "duration_us": 1}), "unknown_field"),
         ("unknown-field", {**whole, "duration_us": 0}, "unknown_field"),
+    ]:
+        manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
+
+
+def recording_window(**overrides: Any) -> dict[str, Any]:
+    """`recording_window` (протокол 1.11, решения 325–327) в каноническом порядке полей."""
+    message: dict[str, Any] = {
+        "type": "recording_window",
+        "generation": 3,
+        "end_us": 61_000_000,
+        "seekable": window_range(0, 61_000_000),
+    }
+    message.update(overrides)
+    return message
+
+
+def write_invalid_recording_window(manifest: Manifest) -> None:
+    """Неверные `recording_window`: тот же инвариант `start ≤ end ≤ конца записи`.
+
+    Вывернутое окно — `empty_range`, конец окна дальше конца записи —
+    `number_out_of_range` (как у `live_window`); форма — строгая.
+    """
+    schema = "player_session"
+    invalid = "session/invalid/player-recording-window-"
+    whole = recording_window()
+    without_end = {key: value for key, value in whole.items() if key != "end_us"}
+    for name, message, kind in [
+        ("start-after-end", recording_window(seekable=window_range(50_000_001, 50_000_000)), "empty_range"),
+        (
+            "window-end-beyond-end",
+            recording_window(end_us=60_000_000, seekable=window_range(0, 60_000_001)),
+            "number_out_of_range",
+        ),
+        ("end-missing", without_end, "missing_field"),
+        ("unknown-field", {**whole, "edge_us": 0}, "unknown_field"),
     ]:
         manifest.invalid(f"{invalid}{name}.json", schema, compact_json(message), kind)
 
@@ -1713,6 +1757,7 @@ MESSAGE_VERSIONS: dict[str, dict[str, str]] = {
         },
         "fetch_resource": "1.1",
         "live_window": "1.2",
+        "recording_window": "1.11",
         "reopen_page": "1.4",
         "show_page": "1.6",
         "subtitle_choice": "1.7",

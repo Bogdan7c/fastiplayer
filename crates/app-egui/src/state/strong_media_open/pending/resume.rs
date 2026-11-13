@@ -225,8 +225,9 @@ impl AppState {
                 StrongMediaOpenError::MissingTerminal,
             );
         }
-        let is_live = snapshot.timeline.mode == media_core::TimelineMode::Live;
-        let initial_checkpoint_position = if is_live {
+        // Эфир кончился ещё до установки — по происхождению всё равно эфир (решение 328).
+        let opened_as_live = snapshot.timeline_origin.opened_as_live();
+        let initial_checkpoint_position = if opened_as_live {
             crate::playlist_runtime::InstalledCheckpointPosition::Live
         } else if snapshot.timeline.seekable {
             crate::playlist_runtime::InstalledCheckpointPosition::Seekable(

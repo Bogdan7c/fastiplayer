@@ -60,6 +60,10 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page_unsupported_in("hls-vod-long", &[BrowserKind::Firefox]),
     // 10a3: родной HLS LIVE (скользящее окно, без ENDLIST, `duration = Infinity`); команда `hls-live`.
     page_unsupported_in("hls-live", &[BrowserKind::Firefox]),
+    // 16d1: эфир, который становится записью. HLS с `ENDLIST` играет только Chromium; MSE-эфир — оба.
+    // Команда `live-ends`.
+    page_unsupported_in("hls-live-ends", &[BrowserKind::Firefox]),
+    page("mse-live-ends"),
     // 10a2: плейлист публичный, сегменты в нём абсолютные на 127.0.0.1 (сценарий `local-address`).
     page_unsupported_in("hls-local-segments", &[BrowserKind::Firefox]),
     // Нативного HLS в <video> у Firefox на Linux нет.

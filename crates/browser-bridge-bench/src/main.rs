@@ -1,4 +1,4 @@
-//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|page-subtitles|quality|series|episodes|entries|page-return|tab-return|page-reload|auto-handoff|blocker-matrix|all>`.
+//! Точка входа стенда: `browser-bridge-bench [ОПЦИИ] <pages|smoke|capture|page-ends|player-commands|extension-status|codecs|attacks|local-address|hls-live|live-ends|page-subtitles|quality|series|episodes|entries|page-return|tab-return|page-reload|auto-handoff|blocker-matrix|all>`.
 //!
 //! Здесь только ввод-вывод и код выхода: сценарии (`scenarios`) возвращают типизированные
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
@@ -98,6 +98,7 @@ fn run(invocation: Invocation) -> ExitCode {
                     results.extend(scenarios::run_local_address(&stand, browser));
                 }
                 Command::HlsLive => results.push(scenarios::run_hls_live(&stand, browser)),
+                Command::LiveEnds => results.extend(scenarios::run_live_ends(&stand, browser)),
                 Command::PageSubtitles => {
                     results.extend(scenarios::run_page_subtitles(&stand, browser, &pages));
                 }
@@ -169,6 +170,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::Attacks,
             Command::LocalAddress,
             Command::HlsLive,
+            Command::LiveEnds,
             Command::PageSubtitles,
             Command::Quality,
             Command::Series,
@@ -208,6 +210,7 @@ mod tests {
                 Command::Attacks,
                 Command::LocalAddress,
                 Command::HlsLive,
+                Command::LiveEnds,
                 Command::PageSubtitles,
                 Command::Quality,
                 Command::Series,

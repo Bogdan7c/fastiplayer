@@ -16,6 +16,7 @@ use pushed_media_source::{
 use super::*;
 use crate::browser_session::hls_bridge::factory::bridge_resource_policy;
 use crate::browser_session::hls_bridge::opener::HlsPresentation;
+use crate::browser_session::playback::live_window::ObservedSeekRange;
 
 struct Silent;
 impl RangeRequestNotifier for Silent {
@@ -168,6 +169,37 @@ fn a_vod_hls_generation_sends_no_window() {
     harness.media.drive(Instant::now());
 
     assert!(live_windows(&harness.page.take_sent()).is_empty());
+}
+
+/// HLS-ролик, который страница могла принять за эфир (эфир кончился ровно к открытию
+/// плеером, бэклог п. 41): странице 1.11 уходит окно записи — тень эфира станет записью,
+/// тень файла его не заметит (решение 327).
+#[test]
+fn a_vod_hls_generation_tells_a_1_11_page_it_is_a_recording() {
+    let (mut harness, ticket, _queue) =
+        harness_with_loaded_hls(HlsPresentation::OnDemand, ProtocolVersion::V1_11);
+    harness.player.observation.borrow_mut().live_window = LiveWindowObservation::Recording {
+        end: Duration::from_secs(60),
+        seekable: Some(ObservedSeekRange {
+            start: Duration::ZERO,
+            end: Duration::from_secs(60),
+        }),
+    };
+    harness
+        .player
+        .show_load(ticket, Duration::from_secs(17), PlaybackState::Playing);
+
+    harness.media.drive(Instant::now());
+
+    let sent = harness.page.take_sent();
+    assert!(live_windows(&sent).is_empty(), "{sent:?}");
+    assert!(
+        sent.iter().any(|message| matches!(
+            message,
+            PlayerSessionMessage::RecordingWindow { end_us, .. } if end_us.as_micros() == 60_000_000
+        )),
+        "{sent:?}"
+    );
 }
 
 /// Перемотка страницы до показа эфира — в её времени, не в времени плеера: не копится

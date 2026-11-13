@@ -5,7 +5,9 @@
 //! - длина записи растёт — перемотка не срезается до первой длины (дефект, найденный зондом
 //!   16d1 на процессе браузерного режима);
 //! - смена дорожек не переписывает длину, которой владеет табло (один писатель шкалы);
-//! - «пока неизвестно» — без перемотки, пока источник не узнал длину.
+//! - «пока неизвестно» — без перемотки, пока источник не узнал длину;
+//! - эфир HLS получил `ENDLIST`, но ещё дочитывается: длина сразу окончательная, а перемотка
+//!   за прочитанное садится на край прочитанного, а не уходит в demuxer (решение 325).
 
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
@@ -18,8 +20,13 @@ use media_core::{
     TimelineNotSeekableReason, TimelineRange, TrackKind, dynamic_media_timeline,
 };
 
+use crossbeam_channel::bounded;
+
 use super::test_support::{FakeDemuxer, fake_track};
-use crate::{PlayerCommand, PlayerSession, PreparedMedia, SeekRequest};
+use crate::{
+    ExactTimelineSeekRequest, PlayerCommand, PlayerSession, PreparedMedia, SeekRequest,
+    TimelineOrigin, TimelineSeekKind, TimelineSeekRequestId,
+};
 
 /// Эпоха источника: тесты публикуют в одной эпохе, как MSE-полка одного поколения.
 const EPOCH: DynamicMediaTimelineEpoch = DynamicMediaTimelineEpoch::new(1);
@@ -268,4 +275,123 @@ fn a_seek_to_the_end_of_a_growing_recording_is_not_expired_by_the_growth() {
         "no SeekTargetExpired: {:?}",
         session.snapshot().last_error
     );
+}
+
+/// Законченный эфир, который плеер ещё дочитывает: край 130 с, прочитано 100–124 с.
+fn ended_stream_still_being_read() -> RecordingTimelineState {
+    let read_so_far = TimelineRange::new(MediaTime::from_secs(100), MediaTime::from_secs(124))
+        .expect("ordered test range");
+    RecordingTimelineState::ending_at(MediaTime::from_secs(130), read_so_far)
+        .expect("valid ended stream")
+}
+
+#[test]
+fn an_ended_stream_shows_its_final_length_and_seeks_only_where_it_was_read() {
+    let (prepared_media, publisher, seek_log) = media_with_timeline(live_window(100, 124).into());
+    let mut session = installed(prepared_media);
+    publisher
+        .publish_view(EPOCH, ended_stream_still_being_read().into())
+        .expect("the end of the stream is published");
+    assert!(session.refresh_dynamic_timeline());
+
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.duration, Some(Duration::from_secs(130)));
+    assert_eq!(
+        snapshot.timeline.seekable_range,
+        TimelineRange::new(MediaTime::from_secs(100), MediaTime::from_secs(124))
+    );
+
+    // За прочитанным у HLS-эфира нет ключевого кадра — demuxer такую цель не примет.
+    seek_to(&mut session, 128);
+    assert_eq!(last_demux_seek(&seek_log), Some(Duration::from_secs(124)));
+    // Начало окна сайта уехало: раньше 100 с перематывать некуда.
+    seek_to(&mut session, 50);
+    assert_eq!(last_demux_seek(&seek_log), Some(Duration::from_secs(100)));
+}
+
+#[test]
+fn an_exact_seek_past_what_was_read_lands_at_the_read_edge_instead_of_failing() {
+    let (prepared_media, publisher, seek_log) = media_with_timeline(live_window(100, 124).into());
+    let mut session = installed(prepared_media);
+    publisher
+        .publish_view(EPOCH, ended_stream_still_being_read().into())
+        .expect("the end of the stream is published");
+    assert!(session.refresh_dynamic_timeline());
+    let media_instance_id = session
+        .snapshot()
+        .media_instance_id
+        .expect("installed media");
+
+    // MPRIS SetPosition внутри длины записи, но за прочитанным.
+    let (outcome_tx, _outcome_rx) = bounded(1);
+    session.begin_exact_timeline_seek(
+        ExactTimelineSeekRequest {
+            request_id: TimelineSeekRequestId::new(NonZeroU64::MIN),
+            media_instance_id,
+            target: MediaTime::from_secs(128),
+            kind: TimelineSeekKind::SetPosition,
+        },
+        outcome_tx,
+    );
+
+    assert_eq!(last_demux_seek(&seek_log), Some(Duration::from_secs(124)));
+    assert!(
+        session.snapshot().last_error.is_none(),
+        "the seek is not a failure: {:?}",
+        session.snapshot().last_error
+    );
+}
+
+#[test]
+fn an_ended_live_stream_keeps_its_live_origin_and_the_next_file_does_not_inherit_it() {
+    let (prepared_media, publisher, _seek_log) = media_with_timeline(live_window(20, 60).into());
+    let mut session = installed(prepared_media);
+    assert_eq!(session.snapshot().timeline_origin, TimelineOrigin::Live);
+
+    publisher
+        .publish_view(EPOCH, recording(61).into())
+        .expect("the end of the stream is published");
+    assert!(session.refresh_dynamic_timeline());
+    // Шкала — уже запись, но время отсчитано от окна эфира (решение 328).
+    assert_eq!(session.snapshot().timeline.mode, TimelineMode::Static);
+    assert_eq!(session.snapshot().timeline_origin, TimelineOrigin::Live);
+
+    // Следующий ролик — обычный файл: происхождение не переходит к нему.
+    let file = FakeDemuxer::new(
+        vec![fake_track(1, TrackKind::Video)],
+        Some(Duration::from_secs(45)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    session.load_prepared_media_with_autoplay(
+        PreparedMedia::from_external_label("fake-file", Box::new(file)),
+        false,
+    );
+    assert_eq!(session.snapshot().timeline.mode, TimelineMode::Static);
+    assert_eq!(
+        session.snapshot().timeline_origin,
+        TimelineOrigin::Recording
+    );
+}
+
+#[test]
+fn a_recording_from_the_start_has_a_recording_origin() {
+    let (prepared_media, _publisher, _seek_log) = media_with_timeline(recording(30).into());
+    let session = installed(prepared_media);
+    assert_eq!(
+        session.snapshot().timeline_origin,
+        TimelineOrigin::Recording
+    );
+}
+
+#[test]
+fn a_live_stream_that_ended_before_install_still_counts_as_opened_live() {
+    let (prepared_media, publisher, _seek_log) = media_with_timeline(live_window(20, 60).into());
+    // ENDLIST пришёл, пока ролик готовился: установка видит уже запись.
+    publisher
+        .publish_view(EPOCH, recording(61).into())
+        .expect("the end of the stream is published before install");
+    let session = installed(prepared_media);
+
+    assert_eq!(session.snapshot().timeline.mode, TimelineMode::Static);
+    assert_eq!(session.snapshot().timeline_origin, TimelineOrigin::Live);
 }

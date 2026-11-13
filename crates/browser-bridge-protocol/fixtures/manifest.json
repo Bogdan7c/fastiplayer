@@ -1135,6 +1135,27 @@
       }
     },
     {
+      "file": "session/valid/player-recording-window-range.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-recording-window-none.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
+      "file": "session/valid/player-recording-window-point-at-end.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "ok"
+      }
+    },
+    {
       "file": "session/valid/player-stream-rejected.json",
       "schema": "player_session",
       "expect": {
@@ -1493,6 +1514,38 @@
     },
     {
       "file": "session/invalid/player-live-window-unknown-field.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "unknown_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-recording-window-start-after-end.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "empty_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-recording-window-window-end-beyond-end.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "number_out_of_range"
+      }
+    },
+    {
+      "file": "session/invalid/player-recording-window-end-missing.json",
+      "schema": "player_session",
+      "expect": {
+        "result": "error",
+        "kind": "missing_field"
+      }
+    },
+    {
+      "file": "session/invalid/player-recording-window-unknown-field.json",
       "schema": "player_session",
       "expect": {
         "result": "error",

@@ -243,6 +243,9 @@ export class ShadowController implements ShadowBehavior {
         case "live_window":
           this.#timeSource.acceptLiveWindow(command);
           return;
+        case "recording_window":
+          this.#timeSource.acceptRecordingWindow(command);
+          return;
       }
     });
   }
@@ -673,12 +676,17 @@ export class ShadowController implements ShadowBehavior {
   /** Время источника по виду передачи: эфир HLS — со сдвигом к P0, остальные — время плеера как есть. */
   #timeSourceFor(source: ShadowSourceKind, handoffPositionUs: MediaTimeMicros): ShadowTimeSource {
     if (source !== "live_hls") return PLAYER_TIME_IS_PAGE_TIME;
-    return createLiveHlsTimeSource(handoffPositionUs, { originals: this.#originals, pagePositionUs: () => this.#timeline.positionUs(this.#env.now()) });
+    return createLiveHlsTimeSource(handoffPositionUs, {
+      originals: this.#originals,
+      pagePositionUs: () => this.#timeline.positionUs(this.#env.now()),
+      announceDurationChange: () => this.#queue.enqueueEvent("durationchange"),
+    });
   }
 
   #durationUs(): MediaTimeMicros | undefined {
-    if (this.#file !== null) return this.#file.view.durationUs;
-    const seconds = Number(readOriginal(this.#originals.media.duration, this.#element));
+    // Длину отвечает вид источника: у файла — снимок, у эфира HLS — `Infinity`, пока он не стал записью (16d1).
+    const seconds =
+      this.#file !== null ? (this.sourceView()?.duration() ?? Number.NaN) : Number(readOriginal(this.#originals.media.duration, this.#element));
     return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds * MICROS_PER_SECOND) : undefined;
   }
 

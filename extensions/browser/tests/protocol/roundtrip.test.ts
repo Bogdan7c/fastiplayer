@@ -190,8 +190,23 @@ function playerSession(random: Random): PlayerSessionMessage {
     { type: "next_episode" },
     { type: "fetch_range", request_id: random.next(), offset: random.safeInt(), length: 1 + random.int(16 * 1024 * 1024) },
     { type: "reopen_page", position_us: random.safeInt() },
+    // Протокол 1.11: окно записи; окно всегда внутри записи (`start <= end <= end_us`).
+    recordingWindow(random),
     { type: "stream_rejected", generation: generation(random), reason: random.pick(["protected_content", "unsupported_codec", "unparsable_media", "file_unavailable", "playback_failed"] as const) },
   ]);
+}
+
+/** `recording_window` с непротиворечивым окном: начало не позже конца окна, конец окна не дальше конца записи. */
+function recordingWindow(random: Random): PlayerSessionMessage {
+  const recordingEnd = random.safeInt();
+  const windowEnd = random.int(recordingEnd + 1);
+  const windowStart = random.int(windowEnd + 1);
+  return {
+    type: "recording_window",
+    generation: generation(random),
+    end_us: recordingEnd,
+    seekable: random.pick([{ kind: "none" }, { kind: "range", start_us: windowStart, end_us: windowEnd }] as const),
+  };
 }
 
 function checkRoundTrip<Message>(
@@ -245,5 +260,5 @@ test("player_session: encode(decode(x)) == x на сгенерированных
     seenTypes.add(message.type);
     checkRoundTrip("player_session", message, encodePlayerSession, decodePlayerSession);
   }
-  assert.equal(seenTypes.size, 13, "генератор покрыл все типы сообщений плеера");
+  assert.equal(seenTypes.size, 14, "генератор покрыл все типы сообщений плеера");
 });

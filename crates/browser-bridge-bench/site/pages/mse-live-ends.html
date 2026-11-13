@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mse-live-ends</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>mse-live-ends</h1>
+
+<script type="module">
+import { runMseLiveEnds } from '../lib/mse-live-ends-page.js';
+
+// Сессия 16d1: MSE-эфир (duration = Infinity), который посреди игры становится записью (конечная длина + endOfStream).
+await runMseLiveEnds('mse-live-ends');
+</script>
+</body>
+</html>

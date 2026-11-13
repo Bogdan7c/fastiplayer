@@ -25,6 +25,7 @@ mod session;
 mod snapshot;
 mod state;
 mod subtitle_feed;
+mod timeline_origin;
 mod worker;
 mod worker_scheduler;
 
@@ -152,6 +153,7 @@ pub use subtitle_feed::{
     SubtitleFeedCapacity, SubtitleFeedMediaStart, SubtitleFeedMessage, SubtitleFeedPacket,
     SubtitleFeedReceiver, SubtitleReadRun, SubtitleTrackHeader,
 };
+pub use timeline_origin::TimelineOrigin;
 pub use worker::{
     AutomaticSurfacePool, MediaInstallControlReceipt, MediaInstallControlReceiptError,
     PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,

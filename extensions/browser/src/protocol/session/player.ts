@@ -105,6 +105,17 @@ export type PlayerSessionMessage =
       readonly seekable: LiveSeekable;
     }
   /**
+   * Протокол 1.11 (решения 325-327, мост 16d1): шкала HLS-поколения стала записью - эфир кончился через
+   * `EXT-X-ENDLIST` или плейлист с начала был записью. `end_us` - конец записи, `seekable` - куда можно
+   * перематывать; всё во времени плеера (как `clock.position_us`). `start_us <= end_us(окна) <= end_us`.
+   */
+  | {
+      readonly type: "recording_window";
+      readonly generation: StreamGeneration;
+      readonly end_us: MediaTimeMicros;
+      readonly seekable: LiveSeekable;
+    }
+  /**
    * Протокол 1.4 (решение 241): зритель нажал play, пока страница ушла, - вернуть страницу на
    * этой секунде (время плеера, как `clock.position_us`). Ответ - `page_returned` или
    * `page_reopen_failed`.
@@ -160,6 +171,11 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
     edge_us: mediaTimeCodec,
     seekable: liveSeekableCodec,
   },
+  recording_window: {
+    generation: streamGenerationCodec,
+    end_us: mediaTimeCodec,
+    seekable: liveSeekableCodec,
+  },
   reopen_page: { position_us: mediaTimeCodec },
   show_page: {},
   subtitle_choice: { choice: subtitleChoiceCodec },
@@ -179,7 +195,8 @@ export const playerSessionCodec: TaggedUnionCodec<PlayerSessionMessage> = tagged
  * Проверки между полями (виды ошибок - как в Rust):
  * - `fetch_resource`: кусок длиннее потолка ответа - запрос сам себе противоречит
  *   (`number_out_of_range` у `max_bytes`);
- * - `live_window`: начало окна не позже конца, конец не дальше края (`checkLiveWindowWithinEdge`).
+ * - `live_window`: начало окна не позже конца, конец не дальше края (`checkLiveWindowWithinEdge`);
+ * - `recording_window`: то же правило, краем служит конец записи `end_us`.
  */
 export function validatePlayerSession(message: PlayerSessionMessage): void {
   if (message.type === "fetch_resource" && message.byte_range.kind === "slice" && message.byte_range.length > message.max_bytes) {
@@ -187,5 +204,8 @@ export function validatePlayerSession(message: PlayerSessionMessage): void {
   }
   if (message.type === "live_window") {
     checkLiveWindowWithinEdge(message.edge_us, message.seekable);
+  }
+  if (message.type === "recording_window") {
+    checkLiveWindowWithinEdge(message.end_us, message.seekable);
   }
 }

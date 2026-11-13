@@ -9,6 +9,10 @@
 //   данные честно будут (плеер качает их сам), дальше края их нет ни у кого. Края нет — пусто;
 // - `networkState` = NETWORK_LOADING: эфир качается всё время (у записи-файла — «загружено», NETWORK_IDLE);
 // - адрес, `srcObject` и размер кадра — из снимка элемента при передаче, как у тени файла.
+//
+// Эфир кончился (`recording_window`, 16d1): `duration` — конечный край записи во времени страницы (как у
+// настоящего элемента после `ENDLIST`: зонд Chromium 156 — `durationchange` и конечная длительность),
+// `buffered` — до края записи, `networkState` = NETWORK_IDLE (качать больше нечего, плеер дочитывает сам).
 
 import type { MediaTimeMicros } from "../../../protocol/time.ts";
 import type { ShadowSourceView } from "../file-source-mode.ts";
@@ -18,6 +22,8 @@ import type { LiveHlsTimeSource, PageSpanUs } from "./live-hls-time-source.ts";
 
 /** `HTMLMediaElement.NETWORK_LOADING`: браузер сейчас качает данные. */
 const NETWORK_LOADING = 2;
+/** `HTMLMediaElement.NETWORK_IDLE`: источник выбран, сейчас ничего не качается. */
+const NETWORK_IDLE = 1;
 const MICROS_PER_SECOND = 1_000_000;
 
 /** Что виду нужно снаружи. */
@@ -25,6 +31,8 @@ export interface LiveViewInputs {
   readonly originals: ElementOriginals;
   /** Позиция страницы сейчас (модель тени), мкс. */
   readonly pagePositionUs: () => MediaTimeMicros;
+  /** Отправить странице `durationchange`: эфир стал записью или край записи сменился. */
+  readonly announceDurationChange: () => void;
 }
 
 export class LiveHlsSourceView implements ShadowSourceView {
@@ -39,7 +47,8 @@ export class LiveHlsSourceView implements ShadowSourceView {
   }
 
   duration(): number {
-    return Number.POSITIVE_INFINITY;
+    const durationUs = this.#source.pageDurationUs();
+    return durationUs === undefined ? Number.POSITIVE_INFINITY : durationUs / MICROS_PER_SECOND;
   }
 
   seekable(): TimeRangesShape {
@@ -56,7 +65,7 @@ export class LiveHlsSourceView implements ShadowSourceView {
   }
 
   networkState(): number {
-    return NETWORK_LOADING;
+    return this.#source.pageTimelineKind() === "recording" ? NETWORK_IDLE : NETWORK_LOADING;
   }
 
   currentSrc(): string {

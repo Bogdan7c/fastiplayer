@@ -44,6 +44,7 @@
     "stream_rejected": "1.0",
     "fetch_resource": "1.1",
     "live_window": "1.2",
+    "recording_window": "1.11",
     "reopen_page": "1.4",
     "show_page": "1.6",
     "subtitle_choice": "1.7"

@@ -15,18 +15,18 @@ use super::session_ends::{send_all, six_seconds_downloaded, wait_until_playing_p
 use super::*;
 
 /// Эфир: длительность бесконечна (так её называет экстеншен для `+Infinity`).
-const LIVE_DURATION: &str =
+pub(super) const LIVE_DURATION: &str =
     r#"{"type":"duration_changed","generation":1,"duration":{"kind":"live"}}"#;
 /// Эфир кончился и стал записью: страница назвала конечную длительность — 6 с, весь ролик.
-const RECORDING_DURATION: &str = r#"{"type":"duration_changed","generation":1,"duration":{"kind":"finite","duration_us":6000000}}"#;
+pub(super) const RECORDING_DURATION: &str = r#"{"type":"duration_changed","generation":1,"duration":{"kind":"finite","duration_us":6000000}}"#;
 /// Страница поставила `endOfStream()` после конечной длительности.
-const END_OF_STREAM: &str = r#"{"type":"end_of_stream","generation":1}"#;
+pub(super) const END_OF_STREAM: &str = r#"{"type":"end_of_stream","generation":1}"#;
 /// Первая длительность, которую назвала страница: меньше скачанного (как у эфира YouTube,
 /// чья длительность растёт на ходу).
 const FIRST_DURATION: &str = r#"{"type":"duration_changed","generation":1,"duration":{"kind":"finite","duration_us":3000000}}"#;
 
 /// Длина 6-секундного ролика фикстуры в MPRIS (мкс).
-const RECORDING_LENGTH_US: u64 = 6_000_000;
+pub(super) const RECORDING_LENGTH_US: u64 = 6_000_000;
 /// Кадров в 6-секундном ролике фикстуры (25 к/с) минус пара кадров у краёв.
 const RECORDING_FRAMES_AT_LEAST: u64 = 148;
 /// Цель перемотки страницы — за первой длительностью (3 с), внутри скачанного (6 с).
@@ -35,7 +35,7 @@ const SEEK_PAST_FIRST_DURATION_US: u64 = 4_000_000;
 const LANDING_SLACK_US: u64 = 400_000;
 
 /// Ролик 6 с одним куском на полосу, объявленный длительностью `duration_message`.
-fn six_seconds_announced_as(duration_message: &'static str) -> Vec<Message> {
+pub(super) fn six_seconds_announced_as(duration_message: &'static str) -> Vec<Message> {
     let mut messages = six_seconds_downloaded();
     // Второе сообщение фикстуры — её длительность; заменяем словом страницы из теста.
     messages[1] = Message::text(duration_message);

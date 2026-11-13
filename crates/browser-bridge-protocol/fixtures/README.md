@@ -202,3 +202,16 @@ Rust-константы (`extension_identity.rs`) сверяет с этим ф�
 - Плеер шлёт поле только при общей версии не ниже 1.10 (`CLOCK_GENERATION_INTRODUCED_IN` — одно имя в Rust и TypeScript); тик с полем требует 1.10 (`PlayerSessionMessage::required_version` / `playerSessionRequiredVersion`), без поля — 1.0.
 
 Фикстуры — `session/valid/player-clock-with-generation.json`, `player-clock-ended-of-generation-1.json`, `player-clock-generation-u32-max.json` (без поля — прежние `player-clock-playing.json`, `player-clock-waiting.json`) и `session/invalid/player-clock-generation-*`; договор — `tests/protocol_1_10.rs`.
+
+## Окно записи (протокол 1.11, решения 325–327, мост 16d1, бэклог п. 41)
+
+Версия протокола — **1.11**. Новое сообщение плеер → страница `recording_window{generation, end_us, seekable}` (`message-versions.json`): шкала этого HLS-поколения — запись (эфир кончился через `EXT-X-ENDLIST` или плейлист с самого начала был записью). `end_us` — конец записи, `seekable` — куда можно перематывать (тот же `LiveSeekable`, что у `live_window`); все моменты во времени плеера, как `clock.position_us`.
+
+```json
+{"type":"recording_window","generation":3,"end_us":61000000,"seekable":{"kind":"range","start_us":0,"end_us":61000000}}
+```
+
+- Договор: `start_us ≤ end_us(окна) ≤ end_us(записи)`; вывернутое окно — `empty_range`, конец окна дальше конца записи — `number_out_of_range`. Все поля обязательны, лишнее поле — `unknown_field`.
+- Плеер шлёт сообщение только при общей версии не ниже 1.11; частота — как у `live_window` (`MIN_LIVE_WINDOW_INTERVAL_MS`, отдельной константы нет).
+
+Фикстуры — `session/valid/player-recording-window-*` и `session/invalid/player-recording-window-*`; договор — `tests/protocol_1_11.rs`.

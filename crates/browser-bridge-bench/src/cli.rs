@@ -25,6 +25,7 @@ pub enum Command {
     Attacks,
     LocalAddress,
     HlsLive,
+    LiveEnds,
     PageSubtitles,
     Quality,
     Series,
@@ -155,6 +156,10 @@ Commands:
                     sees duration = Infinity and a moving seekable window, the player keeps up
                     with the live edge, after closing the player window the element is back
                     at the live edge
+  live-ends         a live stream that turns into a recording mid-play (16d): MSE (the page sets a
+                    finite duration + endOfStream) and native HLS (#EXT-X-ENDLIST; Chromium only):
+                    the player log says 'Live timeline became a recording', frames keep growing,
+                    the page sees a finite duration (HLS: exactly one durationchange) and 'ended'
   entries           REAL mouse and keyboard in an invisible kwin: click the extension button on
                     the browser toolbar, Tab / Enter in the popup; entry x page matrix, each
                     row proven by player / host / server logs (needs spectacle and ffmpeg)
@@ -212,7 +217,7 @@ Commands:
                     replaces the session in the same window; no video ends it after ~10 s; another site
                     ends it at once
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return, page-reload and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, live-ends, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return, page-reload and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -429,6 +434,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "attacks" => Ok(Command::Attacks),
         "local-address" => Ok(Command::LocalAddress),
         "hls-live" => Ok(Command::HlsLive),
+        "live-ends" => Ok(Command::LiveEnds),
         "page-subtitles" => Ok(Command::PageSubtitles),
         "quality" => Ok(Command::Quality),
         "series" => Ok(Command::Series),
@@ -651,6 +657,13 @@ mod tests {
     fn hls_live_is_a_command_of_its_own_without_a_page_filter() {
         assert_eq!(invocation(&["hls-live"]).command, Command::HlsLive);
         assert!(parse_words(&["hls-live", "--page", "hls-live"]).is_err());
+    }
+
+    #[test]
+    fn live_ends_is_a_command_of_its_own_listed_in_the_help() {
+        assert_eq!(invocation(&["live-ends"]).command, Command::LiveEnds);
+        assert!(parse_words(&["live-ends", "--page", "hls-live-ends"]).is_err());
+        assert!(USAGE.contains("  live-ends "));
     }
 
     #[test]

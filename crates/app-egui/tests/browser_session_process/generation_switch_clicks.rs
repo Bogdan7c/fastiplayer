@@ -258,7 +258,7 @@ pub(super) fn wait_until_controllable(bus: &PrivateBusWithBrowserSession) {
 }
 
 /// Клик зрителя: относительная перемотка MPRIS (тот же путь, что кнопка окна).
-fn viewer_seek_by(bus: &PrivateBusWithBrowserSession, offset_us: i64) {
+pub(super) fn viewer_seek_by(bus: &PrivateBusWithBrowserSession, offset_us: i64) {
     busctl(
         bus,
         &[

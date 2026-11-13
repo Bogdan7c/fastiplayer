@@ -127,6 +127,20 @@ describe("окно эфира: от плеера к тени", () => {
     });
   });
 
+  it("переводчик: окно записи (протокол 1.11) — то же правило поколения, без номера в команде тени", () => {
+    const recording = {
+      type: "recording_window",
+      generation: 3,
+      end_us: 70_000_000,
+      seekable: { kind: "range", start_us: 41_000_000, end_us: 66_000_000 },
+    } as const;
+    assert.deepEqual(translatePlayerMessage(recording, generationsAt(3)), {
+      kind: "shadow",
+      command: { kind: "recording_window", end_us: 70_000_000, seekable: { kind: "range", start_us: 41_000_000, end_us: 66_000_000 } },
+    });
+    assert.deepEqual(translatePlayerMessage(recording, generationsAt(4)), { kind: "ignore" }, "окно записи прошлого поколения");
+  });
+
   it("сеанс: окно текущего поколения доходит до страницы, окно чужого поколения — нет", async () => {
     const world = liveWorld(PROTOCOL_VERSION_1_2);
     await startHandoff(world);

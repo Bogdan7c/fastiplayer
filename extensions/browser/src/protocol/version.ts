@@ -35,6 +35,9 @@
 // плеер -> страница `clock` может нести `generation` - номер поколения, которое он описывает. Без номера тень не
 // отличает часы прошлого видео от часов нового. Первая двузначная minor: версии сравниваются числами, а не текстом
 // ("1.10" как строка меньше "1.9"). Договор - `session/clock-generation.ts`.
+// 1.11 (мост 16d1, решения 325-327) - окно записи: плеер -> страница `recording_window{generation, end_us, seekable}`:
+// шкала HLS-поколения стала записью (эфир кончился через EXT-X-ENDLIST или плейлист с начала был записью). Тот же
+// `LiveSeekable`, что у `live_window`; частота - `MIN_LIVE_WINDOW_INTERVAL_MS`. Договор - `session/live-window.ts`.
 
 import { plainInteger } from "./numbers.ts";
 import { type Codec, stringEnum, struct } from "./schema.ts";
@@ -78,8 +81,11 @@ export const PROTOCOL_VERSION_1_9: ProtocolVersion = Object.freeze({ major: 1, m
 /** Номер поколения в тике часов: необязательное поле `clock.generation` (сессия 16a2, решение 311). */
 export const PROTOCOL_VERSION_1_10: ProtocolVersion = Object.freeze({ major: 1, minor: 10 });
 
+/** Окно записи HLS-поколения: сообщение `recording_window` (мост 16d1, решения 325-327). */
+export const PROTOCOL_VERSION_1_11: ProtocolVersion = Object.freeze({ major: 1, minor: 11 });
+
 /** Версия протокола, которую реализует этот экстеншен. */
-export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_10;
+export const CURRENT_PROTOCOL_VERSION: ProtocolVersion = PROTOCOL_VERSION_1_11;
 
 /**
  * Входит ли в версию `agreed` (обычно - общую версию сеанса) то, что появилось в

@@ -4,6 +4,7 @@
 mod error;
 mod host_evidence;
 mod page_subtitle_log;
+mod playback_end;
 mod player_log;
 mod quality_log;
 mod summary_digest;
@@ -15,6 +16,7 @@ pub use page_subtitle_log::{
     PageSubtitleTrackLine, max_subtitle_overlay_frames, parse_page_subtitle_document,
     parse_page_subtitle_track_ready,
 };
+pub use playback_end::{PLAYBACK_ENDED_MARKER, parse_playback_ended_frames};
 pub use player_log::{
     EndNotice, FrameEvidence, FrameGrowth, PlayerLog, parse_end_notice, parse_loads, parse_summary,
 };

@@ -37,7 +37,7 @@ use crate::media::safe_path::resolve_existing_file;
 /// Префикс маршрута (под `/cdn/`, чтобы запросы попадали в журнал `request_log`).
 pub const ROUTE_PREFIX: &str = "/cdn/hls-live/";
 /// Каталог исходного VOD-ролика внутри каталога медиа.
-const SOURCE_DIRECTORY: &str = "hls-ts-live";
+pub(super) const SOURCE_DIRECTORY: &str = "hls-ts-live";
 /// Имя плейлиста в маршруте и в каталоге исходного ролика.
 pub const PLAYLIST_NAME: &str = "stream.m3u8";
 /// Сколько сегментов опубликовано в момент первого запроса плейлиста (8 с эфира).
@@ -45,7 +45,7 @@ pub const INITIAL_WINDOW_SEGMENTS: usize = 4;
 /// Сколько последних опубликованных сегментов показывает плейлист (скользящее окно).
 pub const WINDOW_SEGMENTS: usize = 4;
 /// Тип содержимого плейлиста.
-const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
+pub(super) const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 /// Сколько прогонов запоминают часы: стенд живёт один прогон команды, а запас защищает от утечки.
 const MAX_REMEMBERED_RUNS: usize = 256;
 
@@ -173,7 +173,7 @@ pub(super) struct LiveClocks {
 impl LiveClocks {
     /// Время эфира прогона `token` на момент `now`; первый вызов запускает часы (эфир с нуля).
     /// `None` — память часов переполнена, новый эфир не начинаем.
-    fn start_or_elapsed(&self, token: &str, now: Instant) -> Option<Duration> {
+    pub(super) fn start_or_elapsed(&self, token: &str, now: Instant) -> Option<Duration> {
         let mut started = self
             .started
             .lock()
@@ -186,7 +186,7 @@ impl LiveClocks {
     }
 
     /// Время эфира, если прогон уже запрашивал плейлист (сегменты без плейлиста часы не запускают).
-    fn elapsed_if_started(&self, token: &str, now: Instant) -> Option<Duration> {
+    pub(super) fn elapsed_if_started(&self, token: &str, now: Instant) -> Option<Duration> {
         let started = self
             .started
             .lock()
@@ -198,7 +198,7 @@ impl LiveClocks {
 }
 
 /// Токен прогона допустим в пути: непустой, буквы, цифры, `-`, `_`.
-fn is_valid_token(token: &str) -> bool {
+pub(super) fn is_valid_token(token: &str) -> bool {
     !token.is_empty()
         && token
             .bytes()
@@ -251,13 +251,13 @@ pub(super) fn serve(context: &RouteContext, relative: &str, range: Option<&str>)
 }
 
 /// Читает и разбирает исходный плейлист ролика (каждый запрос: файл маленький, кэш не нужен).
-fn load_source(media_root: &std::path::Path) -> Option<SourcePlaylist> {
+pub(super) fn load_source(media_root: &std::path::Path) -> Option<SourcePlaylist> {
     let path = resolve_existing_file(media_root, &format!("{SOURCE_DIRECTORY}/{PLAYLIST_NAME}"))?;
     parse_source_playlist(&std::fs::read_to_string(path).ok()?)
 }
 
 /// Заголовки эфира: ничего не кэшировать, CORS для страницы с другого origin.
-fn live_headers(response: Response) -> Response {
+pub(super) fn live_headers(response: Response) -> Response {
     response
         .with_header("Cache-Control", "no-store")
         .with_header("Access-Control-Allow-Origin", "*")

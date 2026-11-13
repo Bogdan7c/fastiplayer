@@ -89,26 +89,33 @@ pub enum DynamicMediaTimelineViewKind {
 
 /// Запись: край шкалы и доступный для перемотки диапазон.
 ///
-/// Край — это длительность media (конец диапазона). Начало обычно ноль (MSE: страница может
-/// скачать любую часть записи), но у скользящего HLS-эфира, который получил `ENDLIST`,
-/// доступно только последнее окно — начало не ноль. Поле закрыто: пустой диапазон собрать
-/// в обход проверки нельзя.
+/// Край — это длительность media. Доступный диапазон лежит внутри `[0, край]`:
+/// - MSE: страница может скачать любую часть записи, диапазон — вся запись `[0, край]`;
+/// - скользящий HLS-эфир, получивший `ENDLIST` (16d1, решение 325): начало — первое место
+///   окна, где плеер видел ключевой кадр (не ноль), конец — докуда плеер уже прочитал. Край
+///   при этом сразу окончательный, хотя последние куски ещё дочитываются.
+///
+/// Поля закрыты: пустой диапазон или диапазон за краем собрать в обход проверки нельзя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RecordingTimelineState {
+    end: MediaTime,
     available_range: TimelineRange,
 }
 
 impl RecordingTimelineState {
     /// Запись, доступная целиком: от нуля до `duration`.
     pub fn from_start(duration: MediaTime) -> Result<Self, DynamicMediaTimelineValidationError> {
-        Self::with_available_range(TimelineRange::from_bounds_saturating(
-            MediaTime::ZERO,
+        Self::ending_at(
             duration,
-        ))
+            TimelineRange::from_bounds_saturating(MediaTime::ZERO, duration),
+        )
     }
 
-    /// Запись, у которой доступен только диапазон `available_range`; его конец — край записи.
-    pub fn with_available_range(
+    /// Запись с краем `end`, по которой пока можно перематывать только внутри `available_range`.
+    ///
+    /// Диапазон не пуст и не выходит за край: перематывать за конец записи нельзя.
+    pub fn ending_at(
+        end: MediaTime,
         available_range: TimelineRange,
     ) -> Result<Self, DynamicMediaTimelineValidationError> {
         if available_range.start >= available_range.end {
@@ -116,13 +123,24 @@ impl RecordingTimelineState {
                 available_range,
             });
         }
-        Ok(Self { available_range })
+        if available_range.end > end {
+            return Err(
+                DynamicMediaTimelineValidationError::RecordingRangeBeyondEnd {
+                    end,
+                    available_range,
+                },
+            );
+        }
+        Ok(Self {
+            end,
+            available_range,
+        })
     }
 
     /// Край записи на шкале источника — её длительность.
     #[must_use]
     pub const fn duration(self) -> MediaTime {
-        self.available_range.end
+        self.end
     }
 
     /// Диапазон, по которому можно перематывать.
@@ -198,9 +216,32 @@ mod tests {
     #[test]
     fn a_sliding_window_that_ended_keeps_its_non_zero_start() {
         let window = TimelineRange::new(seconds(100), seconds(130)).expect("range");
-        let recording = RecordingTimelineState::with_available_range(window).expect("recording");
+        let recording = RecordingTimelineState::ending_at(seconds(130), window).expect("recording");
         assert_eq!(recording.duration(), seconds(130));
         assert_eq!(recording.available_range().start, seconds(100));
+    }
+
+    #[test]
+    fn an_ended_stream_still_being_read_has_its_final_end_and_a_shorter_seek_range() {
+        // ENDLIST пришёл, плеер дочитал до 124 с из 130 (решение 325).
+        let read_so_far = TimelineRange::new(seconds(100), seconds(124)).expect("range");
+        let recording =
+            RecordingTimelineState::ending_at(seconds(130), read_so_far).expect("recording");
+        assert_eq!(recording.duration(), seconds(130));
+        assert_eq!(recording.available_range(), read_so_far);
+    }
+
+    #[test]
+    fn a_seek_range_past_the_end_of_the_recording_is_rejected() {
+        let window = TimelineRange::new(seconds(100), seconds(131)).expect("range");
+        let error = RecordingTimelineState::ending_at(seconds(130), window).expect_err("beyond");
+        assert_eq!(
+            error,
+            DynamicMediaTimelineValidationError::RecordingRangeBeyondEnd {
+                end: seconds(130),
+                available_range: window,
+            }
+        );
     }
 
     #[test]
@@ -274,6 +315,18 @@ mod publisher_tests {
             DynamicMediaTimelinePublishOutcome::Published { .. }
         ));
         assert_eq!(port.observe().snapshot.state.as_recording(), Some(ended));
+        // Табло уже запись, но открылся источник эфиром (решение 328).
+        assert_eq!(port.opened_as(), DynamicMediaTimelineViewKind::Live);
+    }
+
+    #[test]
+    fn a_source_that_opened_undetermined_keeps_that_opening_after_learning_the_length() {
+        let (port, publisher) = undetermined_pair();
+        let recording = RecordingTimelineState::from_start(seconds(20)).expect("recording");
+        publisher
+            .publish_view(DynamicMediaTimelineEpoch::new(0), recording.into())
+            .expect("recording is published");
+        assert_eq!(port.opened_as(), DynamicMediaTimelineViewKind::Undetermined);
     }
 
     #[test]

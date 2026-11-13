@@ -946,3 +946,13 @@ mod clock_generation;
 // кадры до показа), перемотка за первой объявленной длительностью приземляется.
 #[path = "browser_session_process/live_timeline_changes.rs"]
 mod live_timeline_changes;
+
+// Сессия 16d1: перемотка зрителя у эфира, ставшего записью — за скачанное уходит странице
+// и играет у цели; после ухода вкладки — внутрь скачанного садится.
+#[path = "browser_session_process/live_recording_seeks.rs"]
+mod live_recording_seeks;
+
+// Сессия 16d1: эфир HLS по номеркам получает `ENDLIST` — доигрывается до конца, а странице
+// 1.11 уходит окно записи `recording_window` (протокол 1.11, решения 325–327).
+#[path = "browser_session_process/hls_live_endlist.rs"]
+mod hls_live_endlist;

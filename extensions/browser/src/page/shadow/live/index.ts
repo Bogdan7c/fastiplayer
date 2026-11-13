@@ -16,5 +16,9 @@ export { LiveHlsTimeSource } from "./live-hls-time-source.ts";
 
 /** Время тени эфира; `handoffPageUs` — секунда страницы в момент передачи (P0). */
 export function createLiveHlsTimeSource(handoffPageUs: MediaTimeMicros, inputs: LiveViewInputs): LiveHlsTimeSource {
-  return new LiveHlsTimeSource(handoffPageUs, (source, snapshot) => new LiveHlsSourceView(source, snapshot, inputs));
+  return new LiveHlsTimeSource(
+    handoffPageUs,
+    (source, snapshot) => new LiveHlsSourceView(source, snapshot, inputs),
+    inputs.announceDurationChange,
+  );
 }

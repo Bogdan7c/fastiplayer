@@ -16,18 +16,23 @@
 //! (`PreparedMediaTimelineModeError`). Поэтому окно отсюда и позиция часов — одно время
 //! плеера, без перевода.
 //!
-//! Тип не прячет смысл в `Option`/`bool`: «не эфир», «эфир, край ещё неизвестен»,
-//! «эфир без перемотки» и «эфир с окном» — разные варианты, и отправитель решает по ним
-//! явно (`outbound::live_window`).
+//! Тип не прячет смысл в `Option`/`bool`: «окна нет», «эфир, край ещё неизвестен»,
+//! «эфир без перемотки», «эфир с окном» и «запись» — разные варианты, и отправитель решает
+//! по ним явно (`outbound::live_window`).
+//!
+//! **Запись** (16d1, решения 325–327): шкала с длиной — у ролика с открытия или у эфира,
+//! который кончился (`EXT-X-ENDLIST`, MSE с длиной). Её край — длительность, перемотка —
+//! опубликованный ядром диапазон (у законченного HLS-эфира он может быть короче длины:
+//! перемотка — только туда, где плеер видел ключевой кадр).
 
 use std::time::Duration;
 
 use media_core::{TimelineMode, TimelineSnapshot};
 
-/// Окно эфира показанного медиа.
+/// Окно шкалы показанного медиа: эфир или запись.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LiveWindowObservation {
-    /// Медиа не эфир (ролик, файл) или медиа нет: окна нет.
+    /// Окна нет: медиа нет или у записи ещё нет длины.
     #[default]
     NotLive,
     /// Эфир, но ядро ещё не знает край (шкала только поставлена): сказать нечего.
@@ -47,6 +52,32 @@ pub(crate) enum LiveWindowObservation {
         /// Самое позднее место перемотки.
         end: Duration,
     },
+    /// Запись с длиной `end` (ролик или эфир, который кончился).
+    Recording {
+        /// Край записи — её длительность.
+        end: Duration,
+        /// Куда можно перематывать; `None` — ядро перемотку не разрешает.
+        seekable: Option<ObservedSeekRange>,
+    },
+}
+
+/// Диапазон перемотки из снимка ядра (`start ≤ end`, гарантирует `TimelineRange`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservedSeekRange {
+    /// Самое раннее место перемотки.
+    pub(crate) start: Duration,
+    /// Самое позднее место перемотки.
+    pub(crate) end: Duration,
+}
+
+impl LiveWindowObservation {
+    /// Шкала — эфир (с краем или без): время ещё скользит.
+    pub(crate) const fn is_live(self) -> bool {
+        matches!(
+            self,
+            Self::LiveEdgeUnknown | Self::LiveWithoutDvr { .. } | Self::LiveWithDvr { .. }
+        )
+    }
 }
 
 impl LiveWindowObservation {
@@ -56,7 +87,7 @@ impl LiveWindowObservation {
     /// причина `LiveWindowUnavailable`): так ядро говорит «эфир без DVR».
     pub(crate) fn from_timeline(timeline: &TimelineSnapshot) -> Self {
         if timeline.mode != TimelineMode::Live {
-            return Self::NotLive;
+            return Self::recording_of(timeline);
         }
         let Some(edge) = timeline.live_edge else {
             return Self::LiveEdgeUnknown;
@@ -69,6 +100,24 @@ impl LiveWindowObservation {
                 end: range.end.as_duration(),
             },
             None => Self::LiveWithoutDvr { edge },
+        }
+    }
+
+    /// Шкала записи: окно есть, только когда известна длина.
+    fn recording_of(timeline: &TimelineSnapshot) -> Self {
+        let Some(duration) = timeline.duration else {
+            return Self::NotLive;
+        };
+        let seekable = timeline
+            .seekable_range
+            .filter(|_| timeline.seekable)
+            .map(|range| ObservedSeekRange {
+                start: range.start.as_duration(),
+                end: range.end.as_duration(),
+            });
+        Self::Recording {
+            end: duration.as_duration(),
+            seekable,
         }
     }
 }
@@ -94,16 +143,47 @@ mod tests {
     }
 
     #[test]
-    fn a_static_timeline_is_not_live_even_with_a_seekable_range() {
+    fn a_static_timeline_with_a_length_is_a_recording_not_live() {
         let vod =
             TimelineSnapshot::seekable_vod(MediaDuration::from_duration(Duration::from_secs(60)));
+        let observed = LiveWindowObservation::from_timeline(&vod);
         assert_eq!(
-            LiveWindowObservation::from_timeline(&vod),
-            LiveWindowObservation::NotLive
+            observed,
+            LiveWindowObservation::Recording {
+                end: Duration::from_secs(60),
+                seekable: Some(ObservedSeekRange {
+                    start: Duration::ZERO,
+                    end: Duration::from_secs(60),
+                }),
+            }
         );
+        assert!(!observed.is_live());
         assert_eq!(
             LiveWindowObservation::from_timeline(&TimelineSnapshot::default()),
             LiveWindowObservation::NotLive
+        );
+    }
+
+    #[test]
+    fn an_ended_live_stream_still_being_read_seeks_only_where_it_was_read() {
+        // ENDLIST: длина 130 с сразу, перемотка — по прочитанному 100–124 с (решение 325).
+        let read = TimelineRange::new(at(100), at(124)).expect("range");
+        let ended = TimelineSnapshot {
+            mode: TimelineMode::Static,
+            duration: Some(MediaDuration::from_duration(Duration::from_secs(130))),
+            seekable_range: Some(read),
+            seekable: true,
+            ..TimelineSnapshot::default()
+        };
+        assert_eq!(
+            LiveWindowObservation::from_timeline(&ended),
+            LiveWindowObservation::Recording {
+                end: Duration::from_secs(130),
+                seekable: Some(ObservedSeekRange {
+                    start: Duration::from_secs(100),
+                    end: Duration::from_secs(124),
+                }),
+            }
         );
     }
 

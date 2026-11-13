@@ -5,7 +5,8 @@ use frame_server_core::CancelScrubReason;
 use media_core::{
     DynamicMediaTimelineEpoch, DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration,
     DynamicMediaTimelineRevision, DynamicMediaTimelineSnapshot, DynamicMediaTimelineState,
-    DynamicMediaTimelineView, MediaTime, TimelineMode, TimelineNotSeekableReason, TimelineRange,
+    DynamicMediaTimelineView, DynamicMediaTimelineViewKind, MediaTime, TimelineMode,
+    TimelineNotSeekableReason, TimelineRange,
 };
 
 use crate::seek_state::SeekTargetRetention;
@@ -73,6 +74,11 @@ impl PlayerSession {
             }
             PreparedMediaTimelineMode::Dynamic { port } => {
                 self.playback_window = None;
+                // Происхождение — по тому, как источник открылся: эфир мог кончиться между
+                // подготовкой и установкой, и свежий снимок ниже — уже запись.
+                if port.opened_as() == DynamicMediaTimelineViewKind::Live {
+                    self.snapshot.timeline_origin = crate::TimelineOrigin::Live;
+                }
                 let initial = port.observe().snapshot;
                 // Длину commit уже поставил из `PreparedMedia`, но табло могло обновиться после
                 // подготовки (источник публикует из своего потока): главный — свежий снимок
@@ -284,6 +290,9 @@ impl PlayerSession {
         let live_edge = live.live_edge();
         let seekable_range = live.seekable_range();
         self.snapshot.timeline.mode = TimelineMode::Live;
+        // Эфир решается при открытии (в эфир из другого вида табло не переходит), поэтому
+        // любой показ эфира значит «ролик открылся эфиром» (решение 328).
+        self.snapshot.timeline_origin = crate::TimelineOrigin::Live;
         self.snapshot.timeline.duration = None;
         self.snapshot.duration = None;
         self.snapshot.timeline.live_edge = Some(live_edge);

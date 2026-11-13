@@ -270,7 +270,8 @@ impl PlaylistResumePersistenceOwner {
         if immediate_position.is_none() && !periodic_due {
             return;
         }
-        let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+        // Происхождение, а не текущий вид: эфир, ставший записью, место не пишет (решение 328).
+        let position = if snapshot.timeline_origin.opened_as_live() {
             InstalledCheckpointPosition::Live
         } else if snapshot.timeline.seekable {
             InstalledCheckpointPosition::Seekable(
@@ -346,7 +347,8 @@ impl PlaylistResumePersistenceOwner {
         {
             return;
         }
-        let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+        // Происхождение, а не текущий вид: эфир, ставший записью, место не пишет (решение 328).
+        let position = if snapshot.timeline_origin.opened_as_live() {
             InstalledCheckpointPosition::Live
         } else if snapshot.timeline.seekable {
             InstalledCheckpointPosition::Seekable(

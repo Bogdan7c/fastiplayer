@@ -7,7 +7,7 @@ use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
 use crate::{
     MediaInstanceId, MediaSourceInfo, PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState,
-    PlayerError, QualityId, SubtitleReadRun, TrackId,
+    PlayerError, QualityId, SubtitleReadRun, TimelineOrigin, TrackId,
 };
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
@@ -36,6 +36,9 @@ pub struct PlayerSnapshot {
 
     /// Typed timeline/seek состояние для UI, renderer и desktop integration.
     pub timeline: TimelineSnapshot,
+
+    /// Был ли ролик эфиром при открытии; не меняется, когда эфир кончился (решение 328).
+    pub timeline_origin: TimelineOrigin,
 
     /// Текущий проход чтения демуксера для пакетов субтитров (см. [`SubtitleReadRun`]).
     /// Растёт при seek/scrub/перестановке чтения и при потере пакета в трубе субтитров.
@@ -104,8 +107,12 @@ impl PlayerSnapshot {
     }
 
     /// Обновляет typed и legacy-представление длительности одновременно.
+    ///
+    /// Длина от demuxer-а — это шкала записи: происхождение сбрасывается вместе со шкалой
+    /// (эфир с табло длину так не получает, его шкалу ведёт табло).
     pub fn set_timeline_duration(&mut self, duration: Option<MediaDuration>) {
         self.duration = duration.map(MediaDuration::as_duration);
+        self.timeline_origin = TimelineOrigin::Recording;
         let current_position = self.timeline.current_position;
         self.timeline = match duration {
             Some(duration) => {
@@ -126,6 +133,7 @@ impl PlayerSnapshot {
         self.duration = None;
         self.current_position = Duration::ZERO;
         self.timeline = TimelineSnapshot::default();
+        self.timeline_origin = TimelineOrigin::Recording;
     }
 }
 
@@ -141,6 +149,7 @@ impl Default for PlayerSnapshot {
             duration: None,
             current_position: Duration::ZERO,
             timeline: TimelineSnapshot::default(),
+            timeline_origin: TimelineOrigin::Recording,
             subtitle_read_run: SubtitleReadRun::INITIAL,
             volume: 1.0,
             muted: false,

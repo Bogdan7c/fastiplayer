@@ -37,7 +37,7 @@ use super::generation_placement::{
 use super::generation_start::{
     AfterLoad, GenerationStart, is_positionable, position_segments_demuxer,
 };
-use super::scrub_range::{SegmentsTimeline, segments_downloaded_range};
+use super::scrub_range::{SegmentsDownloadedRange, SegmentsTimeline, ShownTimeline};
 use crate::browser_session::hls_bridge::capabilities::DecodeCapabilitiesSource;
 use crate::browser_session::hls_bridge::opener::{
     HlsGenerationOpener, HlsOpenProgress, HlsPresentation,
@@ -92,8 +92,8 @@ pub(super) enum LoadedFeed {
     Segments {
         /// Монитор буфера потока.
         monitor: PushedStreamMonitor,
-        /// Что скачано (вопрос к полке; у эфира — неизвестно), для живого скраба окна.
-        downloaded_range: DownloadedRange,
+        /// Что скачано (вопрос к полке; пока шкала — эфир, неизвестно), для живого скраба.
+        downloaded_range: SegmentsDownloadedRange,
     },
     /// Файл: запросы байтов, которые источник продолжает выдавать (чтение, перемотка).
     File {
@@ -259,7 +259,7 @@ impl PendingFeed {
                         prepared: Box::new(prepared),
                         feed: LoadedFeed::Segments {
                             monitor: monitor.clone(),
-                            downloaded_range: segments_downloaded_range(monitor, timeline),
+                            downloaded_range: SegmentsDownloadedRange::new(monitor, timeline),
                         },
                         // Позиция ролика уже внутри `PreparedMedia`; эфиру — перемотка
                         // к клику зрителя после показа.
@@ -362,9 +362,16 @@ impl LoadedFeed {
         }
     }
 
-    /// Эфир HLS по номеркам (10a3): у него своя шкала плеера, которую страница знает
-    /// только из `live_window` и часов показанного поколения. Эфир MSE (сегменты) сюда
-    /// не входит: его окно страница видит сама в своих `SourceBuffer`.
+    /// HLS по номеркам (10a, 10a3, 16d1): у него своя шкала плеера, которую страница знает
+    /// только из окна шкалы (`live_window` / `recording_window`) и часов показанного
+    /// поколения. MSE (сегменты) сюда не входит: его окно страница видит сама в своих
+    /// `SourceBuffer`.
+    pub(super) const fn is_native_hls(&self) -> bool {
+        matches!(self, Self::Hls { .. })
+    }
+
+    /// Эфир HLS по номеркам — как его открыл плеер (10a3): перемотки страницы до первого
+    /// окна в её собственном времени.
     pub(super) const fn is_native_hls_live(&self) -> bool {
         matches!(
             self,
@@ -378,11 +385,14 @@ impl LoadedFeed {
     /// Что скачано у поколения — для живого скраба окна. У файла и HLS — неизвестно:
     /// полки нет, байты идут по запросам странице (что из сегментов HLS уже лежит у
     /// движка, он наружу не говорит, а «известно» без правды хуже «неизвестно»).
-    pub(super) fn downloaded_range(&self) -> DownloadedRange {
+    ///
+    /// У сегментов ответ зависит от шкалы, которую плеер показывает сейчас: эфир, ставший
+    /// записью, снова знает скачанное (16d1).
+    pub(super) fn downloaded_range(&self, shown: ShownTimeline) -> DownloadedRange {
         match self {
             Self::Segments {
                 downloaded_range, ..
-            } => downloaded_range.clone(),
+            } => downloaded_range.while_showing(shown),
             Self::File { .. } | Self::Hls { .. } => DownloadedRange::Unknown,
         }
     }

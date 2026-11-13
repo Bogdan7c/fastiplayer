@@ -203,6 +203,23 @@ pub enum PlayerSessionMessage {
         /// Куда можно перемотать.
         seekable: LiveSeekable,
     },
+    /// Шкала этого HLS-поколения стала записью (протокол 1.11, решения 325–327, мост 16d1,
+    /// бэклог п. 41): эфир кончился через `EXT-X-ENDLIST` или плейлист с самого начала был
+    /// записью. Плеер говорит странице край записи и то, куда можно перематывать — во времени
+    /// плеера (как `clock.position_us`).
+    ///
+    /// Инвариант `start_us ≤ end_us ≤ записи` проверяет [`LiveSeekable::check_within_edge`]
+    /// (край здесь — конец записи). Частота — та же, что у `live_window`:
+    /// [`crate::limits::MIN_LIVE_WINDOW_INTERVAL_MS`]. Плеер шлёт сообщение только собеседнику
+    /// с общей версией не ниже 1.11.
+    RecordingWindow {
+        /// Поколение, к которому относится запись (как у `live_window`).
+        generation: StreamGeneration,
+        /// Конец записи: самое позднее время шкалы.
+        end_us: MediaTime,
+        /// Куда можно перемотать.
+        seekable: LiveSeekable,
+    },
     /// Зритель нажал play, пока страница ушла (протокол 1.4, решение 241): вернуть страницу
     /// на этой секунде. Позиция — во времени плеера (как `clock.position_us`). Ответ —
     /// `page_returned` или `page_reopen_failed`.
@@ -247,6 +264,7 @@ impl ProtocolMessage for PlayerSessionMessage {
         "fetch_range",
         "fetch_resource",
         "live_window",
+        "recording_window",
         "reopen_page",
         "show_page",
         "subtitle_choice",
@@ -266,6 +284,10 @@ impl ProtocolMessage for PlayerSessionMessage {
             Self::LiveWindow {
                 edge_us, seekable, ..
             } => seekable.check_within_edge(*edge_us),
+            // Окно записи: то же правило, край — конец записи.
+            Self::RecordingWindow {
+                end_us, seekable, ..
+            } => seekable.check_within_edge(*end_us),
             // Остальные правила выражены типами полей.
             _ => Ok(()),
         }
@@ -280,6 +302,7 @@ impl PlayerSessionMessage {
     #[must_use]
     pub const fn introduced_in(&self) -> ProtocolVersion {
         match self {
+            Self::RecordingWindow { .. } => ProtocolVersion::V1_11,
             Self::SubtitleChoice { .. } => SUBTITLE_CHOICE_INTRODUCED_IN,
             Self::ShowPage {} => ProtocolVersion::V1_6,
             Self::ReopenPage { .. } => ProtocolVersion::V1_4,

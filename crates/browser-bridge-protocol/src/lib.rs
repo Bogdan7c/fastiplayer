@@ -35,7 +35,8 @@
 //! 270–274) — субтитры страницы: `subtitle_track_offered` и рамка вида 3
 //! (`crate::session::page_subtitles`); 1.6 (решение 278) — `show_page` (плеер → страница);
 //! 1.7 (сессия 14a) — `page_navigation`, `subtitle_preference` (страница → плеер),
-//! `subtitle_choice` (плеер → страница).
+//! `subtitle_choice` (плеер → страница); 1.11 (решения 325–327) — `recording_window`
+//! (плеер → страница, шкала HLS-поколения стала записью).
 //! История версий — `crate::version`.
 
 pub mod capability;

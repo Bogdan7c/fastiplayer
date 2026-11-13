@@ -9,6 +9,9 @@ use media_core::{
 use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
+use super::timeline_publication::{
+    HlsStreamEnd, HlsTimelinePublication, PublishedHlsView, timeline_publication,
+};
 use super::{
     HlsLiveComponentSnapshot, HlsLiveRandomAccessSource, HlsLiveSegmentIdentity,
     HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence, hold_back,
@@ -31,6 +34,8 @@ struct HlsLiveTimelineCoordinatorState {
     /// пересчитывается на refresh: часы плеера уже стартовали с неё, а demux читает
     /// с соответствующего ей сегмента.
     join_position: std::time::Duration,
+    /// Какой вид табло уже опубликован: после записи эфир не возвращается (16d1).
+    published_view: PublishedHlsView,
 }
 
 #[derive(Clone)]
@@ -74,6 +79,7 @@ impl HlsLiveTimelineCoordinator {
                 source_epoch,
                 publisher,
                 join_position,
+                published_view: PublishedHlsView::Live,
             }),
         });
         (coordinator, port)
@@ -259,6 +265,7 @@ impl HlsLiveTimelineCoordinator {
     }
 }
 
+/// Единственная точка публикации табло: эфир, а после `ENDLIST` — запись (решение 325).
 fn publish_latest(state: &mut HlsLiveTimelineCoordinatorState) -> Result<()> {
     let live_edge = shared_live_edge(&state.main, state.audio.as_ref());
     let main_range = state.main_evidence.proven_range(&state.main);
@@ -267,23 +274,29 @@ fn publish_latest(state: &mut HlsLiveTimelineCoordinatorState) -> Result<()> {
         .as_ref()
         .zip(state.audio_evidence.as_ref())
         .and_then(|(snapshot, evidence)| evidence.proven_range(snapshot));
-    let seekable_range = match (main_range, state.audio.as_ref(), audio_range) {
+    let proven_range = match (main_range, state.audio.as_ref(), audio_range) {
         (Some(main), None, _) => Some(main),
         (Some(main), Some(_), Some(audio)) => intersect_ranges(main, audio),
         _ => None,
     };
-    let timeline = match seekable_range {
-        Some(range) if range.start < range.end && range.end <= live_edge => {
-            DynamicMediaTimelineState::with_dvr(live_edge, range)
-                .context("HLS live DVR intersection violated neutral timeline contract")?
+    let stream_end = HlsStreamEnd::of(&state.main, state.audio.as_ref());
+    match timeline_publication(stream_end, state.published_view, live_edge, proven_range) {
+        HlsTimelinePublication::Live(timeline) => {
+            let timeline = with_join(timeline, state.join_position);
+            state
+                .publisher
+                .publish(state.source_epoch, timeline)
+                .context("HLS live timeline publisher rejected refresh")?;
         }
-        _ => DynamicMediaTimelineState::without_dvr(live_edge),
-    };
-    let timeline = with_join(timeline, state.join_position);
-    state
-        .publisher
-        .publish(state.source_epoch, timeline)
-        .context("HLS live timeline publisher rejected refresh")?;
+        HlsTimelinePublication::Recording(recording) => {
+            state
+                .publisher
+                .publish_view(state.source_epoch, recording.into())
+                .context("HLS live timeline publisher rejected the ended stream")?;
+            state.published_view = PublishedHlsView::Recording;
+        }
+        HlsTimelinePublication::KeepPublishedRecording => {}
+    }
     Ok(())
 }
 

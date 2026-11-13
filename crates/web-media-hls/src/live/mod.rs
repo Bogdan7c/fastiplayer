@@ -10,6 +10,7 @@ mod open;
 mod refresh;
 mod snapshot;
 mod timeline;
+mod timeline_publication;
 
 pub(crate) use av::TransactionalHlsLiveAvDemuxer;
 pub(crate) use demux::{HlsLiveComponentDemuxer, HlsLiveComponentFactory};

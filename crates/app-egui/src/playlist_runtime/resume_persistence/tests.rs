@@ -266,6 +266,34 @@ fn live_media_never_writes_or_clears_persistent_resume_checkpoint() {
     assert!(!resume_path.exists());
 }
 
+/// Эфир HLS кончился посреди просмотра: шкала — запись с длиной и перемоткой, но время
+/// отсчитано от окна эфира, поэтому место не пишется (решение 328).
+#[test]
+fn a_live_stream_that_became_a_recording_writes_no_resume_position() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let resume_path = directory.path().join("ended-live-resume.json");
+    let store = Arc::new(PlaylistResumeStore::new(&resume_path));
+    let (controller, generation, instance) = exact_controller("ended-live.m3u8");
+    let binding = PlaylistRuntimeBinding {
+        lifecycle_generation: super::super::PlaylistLifecycleGeneration(1),
+        binding_generation: generation,
+    };
+    let mut owner = PlaylistResumePersistenceOwner::new(5_000, true);
+    owner.install_store(store);
+    owner.activate_lineage(PlaylistLineagePersistence::Persistent);
+    let start = Instant::now();
+
+    let mut paused = seekable_snapshot(instance, PlaybackState::Paused, Duration::from_secs(47));
+    paused.timeline_origin = player_core::TimelineOrigin::Live;
+    owner.observe_snapshot(&controller, binding, &paused, start);
+    let mut ended = seekable_snapshot(instance, PlaybackState::Ended, Duration::from_secs(120));
+    ended.timeline_origin = player_core::TimelineOrigin::Live;
+    owner.observe_snapshot(&controller, binding, &ended, start + Duration::from_secs(1));
+
+    assert_eq!(owner.next_revision, 1, "no capture was submitted");
+    assert!(!resume_path.exists());
+}
+
 #[test]
 fn clear_writes_null_even_when_regular_resume_capture_is_disabled() {
     let directory = tempfile::tempdir().expect("temp directory");

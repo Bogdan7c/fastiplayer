@@ -144,8 +144,9 @@ impl AppState {
         outcome: ExactTimelineSeekOutcome,
     ) -> Option<RelativeBeyondEndNavigation> {
         let playlist_binding = self.playlist_runtime_binding();
+        // Место эфира (и эфира, ставшего записью) не пишется (решение 328).
         let resume_seek_checkpoint_allowed =
-            self.last_player_snapshot.timeline.mode != media_core::TimelineMode::Live;
+            !self.last_player_snapshot.timeline_origin.opened_as_live();
         match outcome {
             ExactTimelineSeekOutcome::Applied {
                 request_id,

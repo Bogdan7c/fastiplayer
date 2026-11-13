@@ -632,10 +632,15 @@ impl PageOutbound {
 /// Место неотправленного события: новое событие того же места заменяет старое.
 ///
 /// У `play` и `pause` место общее: обе — воля «играть/пауза», и уйти должна последняя.
-/// У `select_variant` — своё на каждый вид меню. У остальных место — их вид.
+/// У `live_window` и `recording_window` тоже общее: это одно окно шкалы, и неотправленное
+/// окно эфира устаревает, когда эфир стал записью (16d1). У `select_variant` — своё на
+/// каждый вид меню. У остальных место — их вид.
 const fn replacement_slot(message: &PlayerSessionMessage) -> &'static str {
     match message {
         PlayerSessionMessage::Play {} | PlayerSessionMessage::Pause {} => "play_state",
+        PlayerSessionMessage::LiveWindow { .. } | PlayerSessionMessage::RecordingWindow { .. } => {
+            "timeline_window"
+        }
         // Ящик «один на вид» (14a): выбор озвучки не вытесняет выбор качества.
         PlayerSessionMessage::SelectVariant { kind, .. } => {
             page_variants::select_variant_slot(*kind)
@@ -660,6 +665,7 @@ const fn message_kind(message: &PlayerSessionMessage) -> &'static str {
         PlayerSessionMessage::FetchRange { .. } => "fetch_range",
         PlayerSessionMessage::FetchResource { .. } => "fetch_resource",
         PlayerSessionMessage::LiveWindow { .. } => "live_window",
+        PlayerSessionMessage::RecordingWindow { .. } => "recording_window",
         PlayerSessionMessage::StreamRejected { .. } => "stream_rejected",
         PlayerSessionMessage::SkipAd {} => "skip_ad",
         PlayerSessionMessage::ReopenPage { .. } => "reopen_page",

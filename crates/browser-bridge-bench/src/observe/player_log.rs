@@ -361,6 +361,22 @@ impl PlayerLog {
             .collect())
     }
 
+    /// Дочитывает файл до конца и возвращает В ПОРЯДКЕ ЖУРНАЛА все строки, содержащие любую из
+    /// `needles`, за ВСЁ время (курсор ожидания не трогает). Порядок важен, когда судят, что
+    /// случилось ДО события, а что ПОСЛЕ него (сводки кадров вокруг смены шкалы эфира).
+    pub fn snapshot_lines_containing_any(
+        &mut self,
+        needles: &[&str],
+    ) -> Result<Vec<String>, ObserveError> {
+        self.refresh()?;
+        Ok(self
+            .lines
+            .iter()
+            .filter(|line| needles.iter().any(|needle| line.contains(needle)))
+            .cloned()
+            .collect())
+    }
+
     /// Наибольшее `loads=` среди всех сводок воспроизведения за ВСЁ время (курсор ожидания не
     /// трогает). `None` — сводок с этим полем ещё не было.
     pub fn snapshot_max_loads(&mut self) -> Result<Option<u64>, ObserveError> {

@@ -102,6 +102,13 @@ function parseShadowCommand(candidate: unknown): ShadowCommand | null {
       const seekable = parseLiveSeekable(fields["seekable"], fields["edge_us"]);
       return seekable === null ? null : { kind: "live_window", edge_us: fields["edge_us"], seekable };
     }
+    case "recording_window": {
+      // То же правило, что у окна эфира: окно перемотки не выходит за край — здесь край записи.
+      const fields = exactObject(candidate, ["kind", "end_us", "seekable"]);
+      if (fields === null || !isMediaTime(fields["end_us"])) return null;
+      const seekable = parseLiveSeekable(fields["seekable"], fields["end_us"]);
+      return seekable === null ? null : { kind: "recording_window", end_us: fields["end_us"], seekable };
+    }
     default:
       return null;
   }

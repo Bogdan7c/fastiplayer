@@ -86,6 +86,11 @@
 //!   получатель 1.9 разобрал бы его как незнакомое поле. Версию поля знает
 //!   `PlayerSessionMessage::required_version` и общая таблица `fixtures/field-versions.json`.
 //!   Договор — `crate::session::clock_generation`.
+//! - **1.11** (мост 16d1, решения 325–327, бэклог п. 41) — `recording_window` (плеер →
+//!   страница): шкала HLS-поколения стала записью (эфир кончился через `EXT-X-ENDLIST` или
+//!   плейлист с начала был записью); несёт `generation`, `end_us` и `seekable` (то же
+//!   `LiveSeekable`, что у `live_window`). При общей версии ниже 1.11 плеер сообщения не шлёт,
+//!   а сторож получателя 1.10 отверг бы его как незнакомое. Частота — как у `live_window`.
 
 use crate::strict_shape::{strict_label, strict_object};
 use serde::{Deserialize, Serialize};
@@ -148,6 +153,12 @@ impl ProtocolVersion {
         minor: 10,
     };
 
+    /// Окно записи HLS-поколения (мост 16d1, решения 325–327): `recording_window`.
+    pub const V1_11: Self = Self {
+        major: 1,
+        minor: 11,
+    };
+
     /// Входит ли в эту версию (обычно — общую версию сеанса) то, что появилось
     /// в версии `introduced_in`.
     ///
@@ -160,7 +171,7 @@ impl ProtocolVersion {
 }
 
 /// Версия протокола, которую реализует этот crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_10;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_11;
 
 /// Кто из участников моста.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -242,10 +253,12 @@ mod tests {
     }
 
     #[test]
-    fn this_crate_speaks_protocol_1_10() {
-        // Сессия 16a2: номер поколения в тике часов. Число закреплено — его же зеркалит
+    fn this_crate_speaks_protocol_1_11() {
+        // Мост 16d1: окно записи `recording_window`. Число закреплено — его же зеркалит
         // экстеншен (`CURRENT_PROTOCOL_VERSION` в `version.ts`).
-        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 10));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, version(1, 11));
+        assert!(ProtocolVersion::V1_11.includes(ProtocolVersion::V1_10));
+        assert!(!ProtocolVersion::V1_10.includes(ProtocolVersion::V1_11));
         assert!(ProtocolVersion::V1_10.includes(ProtocolVersion::V1_9));
         assert!(!ProtocolVersion::V1_9.includes(ProtocolVersion::V1_10));
         // Двузначная minor сравнивается числом: 1.10 новее и 1.9, и 1.1.
@@ -254,9 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn a_1_10_player_agrees_on_the_older_minor_of_an_older_extension() {
+    fn a_1_11_player_agrees_on_the_older_minor_of_an_older_extension() {
         // Новый плеер со старым экстеншеном говорит на языке старого (правило 3).
         for older in [
+            ProtocolVersion::V1_10,
             ProtocolVersion::V1_9,
             ProtocolVersion::V1_8,
             ProtocolVersion::V1_7,
@@ -269,11 +283,11 @@ mod tests {
             ProtocolVersion::V1_0,
         ] {
             assert_eq!(
-                negotiate_protocol_version(ProtocolVersion::V1_10, older),
+                negotiate_protocol_version(ProtocolVersion::V1_11, older),
                 Ok(older)
             );
             assert_eq!(
-                negotiate_protocol_version(older, ProtocolVersion::V1_10),
+                negotiate_protocol_version(older, ProtocolVersion::V1_11),
                 Ok(older)
             );
         }

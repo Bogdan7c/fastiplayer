@@ -70,7 +70,7 @@ fn first_generation_long_head() -> Vec<Message> {
 }
 
 /// Ответ страницы на `seek` плеера: она начала перемотку (`seek_started{player_seek}`).
-fn player_seek_started(seek_id: u32, target_us: u64) -> Message {
+pub(super) fn player_seek_started(seek_id: u32, target_us: u64) -> Message {
     Message::text(format!(
         r#"{{"type":"seek_started","target_us":{target_us},"cause":{{"kind":"player_seek","seek_id":{seek_id}}}}}"#
     ))

@@ -110,5 +110,9 @@ export function translatePlayerMessage(message: PlayerSessionMessage, generation
       // запоздавшее окно после смены источника) до неё не доходит и не сдвигает `seekable` страницы.
       if (message.generation !== latestGeneration) return { kind: "ignore" };
       return { kind: "shadow", command: { kind: "live_window", edge_us: message.edge_us, seekable: message.seekable } };
+    case "recording_window":
+      // Окно записи (протокол 1.11, 16d1): то же правило поколения, что у окна эфира.
+      if (message.generation !== latestGeneration) return { kind: "ignore" };
+      return { kind: "shadow", command: { kind: "recording_window", end_us: message.end_us, seekable: message.seekable } };
   }
 }

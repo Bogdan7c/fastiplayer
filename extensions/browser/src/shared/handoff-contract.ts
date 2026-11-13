@@ -446,7 +446,13 @@ export type ShadowCommand =
    * (как `clock.position_us`). Поколение сверил фон: сюда доходит окно только последнего поколения
    * сеанса. Перевод во время страницы — дело тени (`shadow/live/`). `start_us <= end_us <= edge_us`.
    */
-  | { readonly kind: "live_window"; readonly edge_us: MediaTimeMicros; readonly seekable: LiveSeekable };
+  | { readonly kind: "live_window"; readonly edge_us: MediaTimeMicros; readonly seekable: LiveSeekable }
+  /**
+   * Окно записи HLS (протокол 1.11, 16d1, решения 325–327): шкала поколения — запись (эфир кончился или
+   * плейлист был записью с открытия). Край записи и окно перемотки ВО ВРЕМЕНИ ПЛЕЕРА; поколение сверил фон.
+   * Тень эфира становится записью, тень файла его пропускает. `start_us <= end_us <= end_us записи`.
+   */
+  | { readonly kind: "recording_window"; readonly end_us: MediaTimeMicros; readonly seekable: LiveSeekable };
 
 /** Куда поставить настоящий элемент при снятии тени. */
 export type HandoffEndPosition =

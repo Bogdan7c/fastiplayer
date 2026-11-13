@@ -27,7 +27,7 @@ const COMMIT_TIMEOUT_MS: u64 = 1_500;
 const PAGE_DELAY: Duration = Duration::from_secs(3);
 /// Цель перемотки страницы: начало 5-го фрагмента видео (4,8 с) — у скачанного
 /// (видео 0–2,4 с) её нет.
-const TARGET_US: u64 = 4 * VIDEO_FRAGMENT_US;
+pub(super) const TARGET_US: u64 = 4 * VIDEO_FRAGMENT_US;
 /// Первый фрагмент звука, который страница кладёт для цели (~3 с: YouTube кладёт звук с
 /// более ранней коробки).
 const FIRST_AUDIO_FRAGMENT_FOR_TARGET: usize = 3;
@@ -71,14 +71,14 @@ fn start_with_short_seek_timeout(mode: VideoMode) -> Option<SessionProcessUnderT
 
 /// Страница одного поколения: объявление записи, init и скачанное начало (видео 0–2,4 с,
 /// звук 0–3 с); номера кусков продолжаются при следующих байтах.
-struct OneGenerationPage {
+pub(super) struct OneGenerationPage {
     buffers: PageSourceBuffers,
     audio: Vec<Vec<u8>>,
     video: Vec<Vec<u8>>,
 }
 
 impl OneGenerationPage {
-    fn start() -> (Self, Vec<Message>) {
+    pub(super) fn start() -> (Self, Vec<Message>) {
         let audio = split_fmp4("audio-6s.mp4");
         let video = split_fmp4("video-64-6s.mp4");
         let mut buffers = PageSourceBuffers::new(1);
@@ -103,7 +103,7 @@ impl OneGenerationPage {
     }
 
     /// Байты от цели до конца ролика и честный конец потока.
-    fn bytes_from_the_target(&mut self) -> Vec<Message> {
+    pub(super) fn bytes_from_the_target(&mut self) -> Vec<Message> {
         let mut messages = Vec::new();
         for fragment in &self.audio[FIRST_AUDIO_FRAGMENT_FOR_TARGET..] {
             messages.push(self.buffers.frame(0, fragment));

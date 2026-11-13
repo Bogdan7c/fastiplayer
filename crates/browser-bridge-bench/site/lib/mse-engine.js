@@ -56,6 +56,9 @@ export class MseEngine {
    * @param {number} [options.firstRequestDelayMs] не делать НИ ОДНОГО запроса (ни init, ни
    *   сегмента) первые N мс после `start()`: MediaSource открыт, SourceBuffer-ы добавлены, а
    *   данных ещё нет (медленный CDN при смене поколения)
+   * @param {boolean} [options.broadcastLive] играть как ЭФИР: `MediaSource.duration = Infinity`, а
+   *   конец потока (`endOfStream`) ставит не движок по концу данных, а страница вызовом `endBroadcast()`
+   *   (как hls.js / Shaka / dash.js в конце прямого эфира)
    * @param {(line:string) => void} [options.log]
    */
   constructor(options) {
@@ -67,6 +70,7 @@ export class MseEngine {
     this.bufferAheadS = options.bufferAheadS ?? DEFAULT_BUFFER_AHEAD_S;
     this.hangAt = options.hangAt ?? null;
     this.firstRequestDelayMs = options.firstRequestDelayMs ?? 0;
+    this.broadcastLive = options.broadcastLive ?? false;
     /** Момент (performance.now), раньше которого запросов нет; задаётся в `start()`. */
     this.requestsAllowedAt = 0;
     this.log = options.log ?? (() => {});
@@ -82,7 +86,8 @@ export class MseEngine {
 
   /** Создаёт SourceBuffer-ы и запускает подкачку с позиции `positionS`. */
   start(positionS = 0) {
-    this.ms.duration = this.durationS;
+    // Эфир объявляется бесконечной длиной; запись — длиной ролика.
+    this.ms.duration = this.broadcastLive ? Infinity : this.durationS;
     if (this.firstRequestDelayMs > 0) {
       this.requestsAllowedAt = performance.now() + this.firstRequestDelayMs;
       this.log(`delaying the first request by ${this.firstRequestDelayMs} ms`);
@@ -129,6 +134,28 @@ export class MseEngine {
   /** Загрузить заново с `positionS` в том же MediaSource (после `unload`). */
   reload(positionS) {
     this.#launchLoops(positionS);
+  }
+
+  /**
+   * Конец прямого эфира, как у настоящих плееров: подкачка стоит, длина становится конечной
+   * (по концу того, что реально лежит в буферах), затем `endOfStream()`. Возвращает эту длину, с.
+   * Только для движка в режиме `broadcastLive`.
+   */
+  async endBroadcast() {
+    if (!this.broadcastLive) throw new Error('endBroadcast: the engine was not started as a live broadcast');
+    await this.#stopLoops();
+    while (this.lanes.some((lane) => lane.sourceBuffer.updating)) await sleep(POLL_MS);
+    if (this.ms.readyState !== 'open') throw new Error(`endBroadcast: MediaSource is ${this.ms.readyState}`);
+    // `duration` нельзя сделать меньше конца буфера (InvalidStateError), поэтому берём наибольший конец.
+    const bufferedEndS = Math.max(...this.lanes.map((lane) => {
+      const { buffered } = lane.sourceBuffer;
+      return buffered.length > 0 ? buffered.end(buffered.length - 1) : 0;
+    }));
+    this.ms.duration = bufferedEndS;
+    this.ms.endOfStream();
+    this.endedStream = true;
+    this.log(`live broadcast ended: duration=${bufferedEndS.toFixed(2)} s, then endOfStream`);
+    return bufferedEndS;
   }
 
   /** Останавливает подкачку и ждёт завершения активных операций. */
@@ -312,6 +339,8 @@ export class MseEngine {
   async #finishStreamIfAllDone(epoch) {
     if (!this.lanes.every((lane) => lane.done)) return;
     while (this.lanes.some((lane) => lane.sourceBuffer.updating)) await sleep(POLL_MS);
+    // Эфир заканчивает страница (`endBroadcast`), а не конец данных ролика.
+    if (this.broadcastLive) return;
     if (this.#alive(epoch) && this.ms.readyState === 'open' && !this.endedStream) {
       this.endedStream = true;
       this.ms.endOfStream();

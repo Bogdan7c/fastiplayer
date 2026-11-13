@@ -23,6 +23,7 @@ mod evidence;
 mod extension_status;
 mod handoff_run;
 mod hls_live;
+mod live_ends;
 mod live_unload;
 mod outcome;
 mod page_catalog;
@@ -180,6 +181,12 @@ pub fn auto_handoff_page_ids() -> Vec<&'static str> {
 /// `seekable`, после закрытия окна плеера элемент стоит у края эфира.
 pub fn run_hls_live(stand: &Stand, browser: BrowserKind) -> StepResult {
     hls_live::run(stand, browser)
+}
+
+/// Эфир, который становится записью (16d1): MSE (страница ставит конечную длину и `endOfStream()`) и
+/// родной HLS (`ENDLIST` в плейлисте); плеер доигрывает запись, страница видит конечную длину и `ended`.
+pub fn run_live_ends(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
+    live_ends::run(stand, browser)
 }
 
 /// Субтитры страницы (13b2): `<track>`, `fetch`, XHR и `addTextTrack` доходят до плеера, слой

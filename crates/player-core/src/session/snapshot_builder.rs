@@ -43,6 +43,7 @@ impl<'session> PlayerSnapshotBuilder<'session> {
             duration: base.duration,
             current_position: base.current_position,
             timeline: base.timeline,
+            timeline_origin: base.timeline_origin,
             volume: base.volume,
             muted: base.muted,
             playback_rate: base.playback_rate,

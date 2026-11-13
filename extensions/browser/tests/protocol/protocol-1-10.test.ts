@@ -63,7 +63,7 @@ test("в 1.10 нет новых сообщений, новое - ровно по
   assert.deepEqual(playerSessionIntroducedIn("clock"), PROTOCOL_VERSION_1_0);
   assert.deepEqual(readTable("field-versions.json"), { page_session: {}, player_session: { "clock.generation": "1.10" } });
   assert.deepEqual(CLOCK_GENERATION_INTRODUCED_IN, PROTOCOL_VERSION_1_10);
-  assert.deepEqual(CURRENT_PROTOCOL_VERSION, PROTOCOL_VERSION_1_10);
+  assert.ok(CURRENT_PROTOCOL_VERSION.minor >= PROTOCOL_VERSION_1_10.minor);
 });
 
 test("тик пишется ровно задокументированным JSON с номером и без и читается обратно", () => {

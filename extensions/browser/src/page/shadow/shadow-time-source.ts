@@ -23,7 +23,16 @@ export type MappedTime = { readonly kind: "mapped"; readonly us: MediaTimeMicros
  *   браузер входит в эфир при свежей загрузке (решение 232, факты Chromium 156 — пакет D 10a3). Позиция T
  *   эфира плеера элементу ничего не значит: у нативного элемента после перезагрузки своя шкала от нуля.
  */
-export type ReturnPosition = { readonly kind: "at"; readonly targetUs: MediaTimeMicros } | { readonly kind: "where_browser_joins_live" };
+export type ReturnPosition =
+  | { readonly kind: "at"; readonly targetUs: MediaTimeMicros }
+  | { readonly kind: "where_browser_joins_live" }
+  /**
+   * Эфир HLS, который кончился (`recording_window`, 16d1, решение 326): элемент заново загружает уже законченный
+   * плейлист и видит запись длиной в последнее окно сайта с отсчётом от его начала (зонд Chromium 156). Общий у
+   * плеера и браузера только конец — последний кусок, поэтому та же секунда считается от конца:
+   * `длительность элемента − untilEndUs`, не раньше нуля (секунда выпала из окна сайта — начало окна).
+   */
+  | { readonly kind: "counted_from_the_end"; readonly untilEndUs: MediaTimeMicros };
 
 /**
  * Играть ли настоящему элементу после возврата. `requestedPlaying` — что просил плеер (или что видела страница).
@@ -44,6 +53,12 @@ export interface PlayerLiveWindow {
   readonly seekable: LiveSeekable;
 }
 
+/** Окно записи от плеера (команда тени `recording_window`, протокол 1.11): край записи и перемотка, время плеера. */
+export interface PlayerRecordingWindow {
+  readonly end_us: MediaTimeMicros;
+  readonly seekable: LiveSeekable;
+}
+
 /** Время источника тени (см. шапку). Методы не трогают ни элемент, ни модель тени: только числа. */
 export interface ShadowTimeSource {
   /** Тик часов плеера → тик, который увидит модель тени (во времени страницы). */
@@ -61,6 +76,11 @@ export interface ShadowTimeSource {
   pageSeekRange(): PageSeekRange;
   /** Плеер прислал окно эфира (поколение уже сверил фон). Источник без эфира окна не ждёт и пропускает его. */
   acceptLiveWindow(window: PlayerLiveWindow): void;
+  /**
+   * Плеер сказал, что шкала поколения — запись (эфир кончился или плейлист был записью с открытия, решение 327).
+   * Тень эфира становится записью; источник, у которого время плеера и есть время страницы, его пропускает.
+   */
+  acceptRecordingWindow(window: PlayerRecordingWindow): void;
   /** Куда ставить элемент при снятии тени; `shadowPositionUs` — где тень сейчас (время страницы). */
   returnPositionFor(end: HandoffEndPosition, shadowPositionUs: MediaTimeMicros): ReturnPosition;
   /**
@@ -84,6 +104,8 @@ export const PLAYER_TIME_IS_PAGE_TIME: ShadowTimeSource = {
   // Окно эфира шлётся только для поколения live HLS: у этих источников его быть не может, а чужое окно
   // не должно менять то, что видит страница записи или файла.
   acceptLiveWindow: () => {},
+  // Окно записи плеер шлёт любому HLS-поколению; у тени файла длина и так своя (снимок элемента) — не трогаем.
+  acceptRecordingWindow: () => {},
   returnPositionFor: (end, shadowPositionUs) => ({ kind: "at", targetUs: end.kind === "at" ? end.position_us : shadowPositionUs }),
   sourceView: (snapshot) => snapshot,
 };

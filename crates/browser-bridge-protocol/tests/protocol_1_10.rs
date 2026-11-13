@@ -122,7 +122,7 @@ fn protocol_1_10_adds_no_message_and_exactly_the_clock_generation_field() {
         [("clock.generation", ProtocolVersion::V1_10)]
     );
     assert_eq!(CLOCK_GENERATION_INTRODUCED_IN, ProtocolVersion::V1_10);
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::V1_10);
+    assert!(CURRENT_PROTOCOL_VERSION >= ProtocolVersion::V1_10);
 }
 
 #[test]

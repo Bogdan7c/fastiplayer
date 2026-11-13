@@ -16,6 +16,7 @@ import {
   PROTOCOL_VERSION_1_7,
   PROTOCOL_VERSION_1_8,
   PROTOCOL_VERSION_1_9,
+  PROTOCOL_VERSION_1_11,
   type ProtocolVersion,
 } from "../version.ts";
 import { CLOCK_GENERATION_INTRODUCED_IN } from "./clock-generation.ts";
@@ -68,6 +69,7 @@ const PLAYER_SESSION_INTRODUCED_IN: Readonly<Record<PlayerSessionMessage["type"]
   fetch_range: PROTOCOL_VERSION_1_0,
   fetch_resource: PROTOCOL_VERSION_1_1,
   live_window: PROTOCOL_VERSION_1_2,
+  recording_window: PROTOCOL_VERSION_1_11,
   reopen_page: PROTOCOL_VERSION_1_4,
   show_page: PROTOCOL_VERSION_1_6,
   subtitle_choice: PROTOCOL_VERSION_1_7,

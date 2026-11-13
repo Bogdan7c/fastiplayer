@@ -50,6 +50,7 @@ use super::SessionMedia;
 use super::generation_placement::PendingAim;
 use super::page_play_after_end::{HeldSeekDrop, ShownMediaEnd};
 use super::position_carry::CarryEnd;
+use super::scrub_range::ShownTimeline;
 use super::viewer_click_claim::ViewerClickClaim;
 use crate::ad_plate::AdPlateAction;
 use crate::browser_session::outbound::clock_rate;
@@ -274,9 +275,10 @@ impl SessionMedia {
 
     /// Скачано ли у загруженного поколения то, что нужно для перемотки к `target`.
     fn loaded_generation_holds(&self, target: Duration) -> bool {
+        let shown = ShownTimeline::of(self.last_observation.as_ref());
         self.loaded
             .as_ref()
-            .is_some_and(|loaded| loaded.feed.downloaded_range().covers(target))
+            .is_some_and(|loaded| loaded.feed.downloaded_range(shown).covers(target))
     }
 
     /// Перемотка загруженного поколения — общая для перемотки страницей и зрителем.

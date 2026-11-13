@@ -181,6 +181,7 @@ export {
   PROTOCOL_VERSION_1_8,
   PROTOCOL_VERSION_1_9,
   PROTOCOL_VERSION_1_10,
+  PROTOCOL_VERSION_1_11,
   negotiateProtocolVersion,
   versionIncludes,
 } from "./version.ts";

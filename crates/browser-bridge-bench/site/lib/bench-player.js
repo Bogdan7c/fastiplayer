@@ -92,6 +92,9 @@ export class BenchPlayer {
     this.stallSeconds = options.stallSeconds ?? null;
     this.hangAt = options.hangAt ?? null;
     this.useWorker = Boolean(options.worker ?? false);
+    /** Играть ролик как прямой эфир (`duration = Infinity`, конец ставит `endLiveBroadcast`). */
+    this.broadcastLive = Boolean(options.broadcastLive ?? false);
+    if (this.broadcastLive && this.useWorker) throw new Error('broadcastLive is a main-thread page');
     /** Вид воркера: классический (как Twitch) или модульный. */
     this.workerType = options.worker === 'classic' ? 'classic' : 'module';
     /** Handle от воркера, ещё не привязанные к элементу (по одному на поколение). */
@@ -227,6 +230,12 @@ export class BenchPlayer {
     await this.newGeneration({ positionS: 0, autoplay: false });
   }
 
+  /** Конец прямого эфира: конечная длина и `endOfStream()` (см. `MseEngine.endBroadcast`). */
+  async endLiveBroadcast() {
+    if (!this.engine) throw new Error('endLiveBroadcast: no engine is running');
+    return this.engine.endBroadcast();
+  }
+
   /** ABR: переключиться на другую дорожку той же полосы. */
   switchTrack(ref) {
     const track = resolveRef(this.catalog, ref);
@@ -306,6 +315,7 @@ export class BenchPlayer {
       bufferAheadS: this.bufferAheadS,
       hangAt: this.hangAt,
       firstRequestDelayMs,
+      broadcastLive: this.broadcastLive,
       log: this.logLine,
     });
     this.engine.start(positionS);

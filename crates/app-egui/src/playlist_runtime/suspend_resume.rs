@@ -474,7 +474,9 @@ impl PlaylistRuntime {
                 super::controller::StablePlaybackIntent::Paused => ResumePlaybackIntent::Paused,
             }
         };
-        let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+        // Эфир, ставший записью, после сна откроется с другим отсчётом: место не переносим
+        // (решение 328).
+        let position = if snapshot.timeline_origin.opened_as_live() {
             SuspendedTimelineResumePosition::KeepStart
         } else if consumed_eof_edge {
             SuspendedTimelineResumePosition::SeekTo(

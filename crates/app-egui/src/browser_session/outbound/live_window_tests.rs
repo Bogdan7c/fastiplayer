@@ -1,5 +1,5 @@
-//! `live_window`: версия протокола, предел частоты, сведение, первое окно поколения,
-//! сброс учёта и «не трогает чужое».
+//! `live_window` и `recording_window`: версия протокола, предел частоты, сведение, первое
+//! окно поколения, переход эфира в запись, сброс учёта и «не трогает чужое».
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -13,9 +13,11 @@ use browser_bridge_protocol::{
 use browser_bridge_session::SendToPageError;
 use pushed_media_source::{BufferIntake, BufferStatus};
 
-use super::{LIVE_WINDOW_INTERVAL, LIVE_WINDOW_SINCE, LiveWindowNote, LiveWindowTold};
+use super::{
+    LIVE_WINDOW_INTERVAL, LIVE_WINDOW_SINCE, LiveWindowNote, LiveWindowTold, RECORDING_WINDOW_SINCE,
+};
 use crate::browser_session::outbound::{PageOutbound, PageSender};
-use crate::browser_session::playback::live_window::LiveWindowObservation;
+use crate::browser_session::playback::live_window::{LiveWindowObservation, ObservedSeekRange};
 
 /// Страница-подделка: запоминает отправленное, может отказать заранее заданным отказом.
 #[derive(Clone, Default)]
@@ -446,4 +448,127 @@ fn a_reattached_page_gets_the_current_window_again_at_once() {
         outbound.live_window_told(generation(1)),
         LiveWindowTold::Told
     );
+}
+
+/// Запись (эфир кончился), моменты — в секундах: край и диапазон перемотки.
+fn recording(end: u64, start: u64, seekable_end: u64) -> LiveWindowObservation {
+    LiveWindowObservation::Recording {
+        end: Duration::from_secs(end),
+        seekable: Some(ObservedSeekRange {
+            start: Duration::from_secs(start),
+            end: Duration::from_secs(seekable_end),
+        }),
+    }
+}
+
+fn recording_message(
+    generation_number: u32,
+    end: u64,
+    start: u64,
+    seekable_end: u64,
+) -> PlayerSessionMessage {
+    PlayerSessionMessage::RecordingWindow {
+        generation: generation(generation_number),
+        end_us: us(end * 1_000_000),
+        seekable: LiveSeekable::Range {
+            start_us: us(start * 1_000_000),
+            end_us: us(seekable_end * 1_000_000),
+        },
+    }
+}
+
+#[test]
+fn the_recording_version_threshold_is_the_one_of_the_protocol_message() {
+    assert_eq!(
+        recording_message(1, 3, 1, 2).introduced_in(),
+        RECORDING_WINDOW_SINCE
+    );
+}
+
+/// Эфир кончился (ENDLIST): странице 1.11 уходит окно записи с окончательным краем и
+/// перемоткой по прочитанному (решения 325, 327) — в форме, которую примет её декодер.
+#[test]
+fn a_1_11_page_learns_that_the_live_stream_became_a_recording() {
+    let (mut outbound, page) = outbound_speaking(ProtocolVersion::V1_11);
+    let start = Instant::now();
+    outbound.note_live_window(generation(4), dvr(124, 100, 120), start);
+    outbound.flush(start);
+    assert_eq!(page.take_sent(), vec![dvr_message(4, 124, 100, 120)]);
+
+    let later = start + LIVE_WINDOW_INTERVAL;
+    let note = outbound.note_live_window(generation(4), recording(130, 100, 124), later);
+    outbound.flush(later);
+
+    assert_eq!(note, LiveWindowNote::Queued);
+    let sent = page.take_sent();
+    assert_eq!(sent, vec![recording_message(4, 130, 100, 124)]);
+    encode_message(&sent[0]).expect("the recording window passes the protocol checks");
+    assert_eq!(
+        outbound.live_window_told(generation(4)),
+        LiveWindowTold::Told
+    );
+}
+
+/// Страница 1.10 сообщения записи не знает: её декодер закрыл бы сеанс — не шлём.
+#[test]
+fn a_page_below_1_11_gets_no_recording_window() {
+    let (mut outbound, page) = outbound_speaking(ProtocolVersion::V1_10);
+    let now = Instant::now();
+
+    let note = outbound.note_live_window(generation(1), recording(60, 0, 60), now);
+    outbound.flush(now);
+
+    assert_eq!(note, LiveWindowNote::ProtocolTooOld);
+    assert!(page.take_sent().is_empty());
+    assert_eq!(
+        outbound.live_window_told(generation(1)),
+        LiveWindowTold::NotYet
+    );
+}
+
+/// Окно эфира, застрявшее в очереди (страница не принимала), устаревает, когда эфир стал
+/// записью: уходит только запись — одно место в очереди на окно шкалы.
+#[test]
+fn an_unsent_live_window_is_replaced_by_the_recording() {
+    let (mut outbound, page) = outbound_speaking(ProtocolVersion::V1_11);
+    let start = Instant::now();
+    page.refusals
+        .borrow_mut()
+        .push_back(SendToPageError::QueueFull);
+    outbound.note_live_window(generation(2), dvr(124, 100, 120), start);
+    outbound.flush(start);
+    assert!(
+        page.take_sent().is_empty(),
+        "the full queue held the live window"
+    );
+
+    let later = start + LIVE_WINDOW_INTERVAL;
+    outbound.note_live_window(generation(2), recording(130, 100, 124), later);
+    outbound.flush(later);
+
+    assert_eq!(page.take_sent(), vec![recording_message(2, 130, 100, 124)]);
+}
+
+/// Пока последние куски дочитываются, диапазон перемотки растёт: окно записи следует за
+/// ним не чаще предела, как окно эфира.
+#[test]
+fn a_growing_seek_range_of_a_recording_is_throttled_like_a_live_window() {
+    let (mut outbound, page) = outbound_speaking(ProtocolVersion::V1_11);
+    let start = Instant::now();
+    outbound.note_live_window(generation(5), recording(130, 100, 124), start);
+    outbound.flush(start);
+    page.take_sent();
+
+    let soon = start + LIVE_WINDOW_INTERVAL / 2;
+    assert_eq!(
+        outbound.note_live_window(generation(5), recording(130, 100, 127), soon),
+        LiveWindowNote::Throttled
+    );
+    let after_the_limit = start + LIVE_WINDOW_INTERVAL;
+    assert_eq!(
+        outbound.note_live_window(generation(5), recording(130, 100, 130), after_the_limit),
+        LiveWindowNote::Queued
+    );
+    outbound.flush(after_the_limit);
+    assert_eq!(page.take_sent(), vec![recording_message(5, 130, 100, 130)]);
 }

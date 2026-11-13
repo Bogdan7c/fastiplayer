@@ -66,6 +66,9 @@
 //! открывает пустую вкладку поверх страницы, и та становится скрытой (`tab_hiding.rs`). Строки журнала
 //! печатаются с секундой от передачи.
 //!
+//! Пауза → play (16d1): `--pause-play-after <с>` — через столько секунд после передачи окно ставится на паузу
+//! (MPRIS), через 10 с — play (`pause_play.rs`).
+//!
 //! Конец эфира (16d1): `--live-end-probe-every <с>` — раз в столько секунд после передачи печатать, что
 //! плеер сайта сделал с `MediaSource` и `<video>` во всех фреймах вкладки (`live_end_probe.rs`): так видно,
 //! как сайт кончает эфир — меняет длительность, зовёт `endOfStream`, ставит новый источник или снимает его.
@@ -76,6 +79,7 @@
 mod frame_survey_probe;
 mod live_end_probe;
 mod page_scroll;
+mod pause_play;
 mod playerjs_page;
 mod tab_hiding;
 mod youtube_page;
@@ -101,6 +105,7 @@ use browser_bridge_bench::site::{StandSite, StandSiteConfig};
 use frame_survey_probe::report_frame_survey;
 use live_end_probe::{report_live_end, tab_pattern_of};
 use page_scroll::scroll_page_to;
+use pause_play::PausePlay;
 use playerjs_page::{
     PlayerJsPick, parse_playerjs_pick, pick_on_playerjs_page, report_playerjs_page,
 };
@@ -237,6 +242,8 @@ struct Arguments {
     scroll_to: Option<String>,
     /// Через сколько после передачи скрыть вкладку страницы (`--hide-tab-after`, 16a), `None` — не скрывать.
     hide_tab_after: Option<Duration>,
+    /// Пауза и play в окне через столько секунд после передачи (`--pause-play-after`, 16d1).
+    pause_play_after: Option<Duration>,
 }
 
 /// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
@@ -313,6 +320,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut frame_survey_probe = false;
     let mut scroll_to = None;
     let mut hide_tab_after = None;
+    let mut pause_play_after = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -356,6 +364,9 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--screenshots", _) => screenshots = Some(PathBuf::from(value)),
             ("--seek-after", _) => seek_after = Some(parse_after_seconds(&name, &value)?),
             ("--hide-tab-after", _) => hide_tab_after = Some(parse_after_seconds(&name, &value)?),
+            ("--pause-play-after", _) => {
+                pause_play_after = Some(parse_after_seconds(&name, &value)?)
+            }
             ("--youtube-quality", _) => youtube_qualities.push(parse_youtube_quality(&value)?),
             // Форму проверяет сам плеер при старте: неверная строка — его ошибка в журнале, а не тихий пропуск.
             ("--select-variant", _) => page_variant_choices = Some(value),
@@ -426,6 +437,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         frame_survey_probe,
         scroll_to,
         hide_tab_after,
+        pause_play_after,
     })
 }
 
@@ -717,6 +729,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let mut pick_pending = arguments.playerjs_pick.as_ref();
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
     let mut tab_hiding = TabHiding::planned(handed_off_at, arguments.hide_tab_after);
+    let mut pause_play = PausePlay::planned(handed_off_at, arguments.pause_play_after);
     while started && Instant::now() < deadline {
         if let Some(shots) = &screenshots
             && Instant::now() >= next_screenshot
@@ -725,6 +738,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             next_screenshot = Instant::now() + SCREENSHOT_EVERY;
         }
         tab_hiding.poll(browser.as_mut(), Instant::now());
+        pause_play.poll(&control, Instant::now());
         if !tab_closed && tab_return_at.is_some_and(|at| Instant::now() >= at) {
             tab_closed = true;
             close_tab_and_ask_back(browser.as_mut(), &tab, &control);

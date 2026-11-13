@@ -7,6 +7,7 @@ use crate::media::safe_path::{join_inside, resolve_existing_file};
 
 use super::cdn_guard::{CdnGuard, CdnVerdict, RefererRule, login_cookie_header};
 use super::hls_live;
+use super::hls_live_ends;
 use super::hls_local_segments;
 use super::http::{Request, Response};
 use super::reports::{BrowserLogLine, PageReport, ReportStore};
@@ -26,6 +27,9 @@ pub(super) struct SharedState {
     pub recording: std::sync::Mutex<Option<PathBuf>>,
     /// Часы «живых» HLS-эфиров по прогонам (`hls_live`, сессия 10a3).
     pub hls_live: hls_live::LiveClocks,
+    /// Часы «кончающихся» HLS-эфиров по прогонам (`hls_live_ends`, сессия 16d1): свои, чтобы
+    /// эфиры `hls-live` и `hls-live-ends` одного прогона не делили начало отсчёта.
+    pub hls_live_ends: hls_live::LiveClocks,
 }
 
 /// Всё, что нужно обработчику запроса: общее состояние и origin именно ЭТОГО слушателя
@@ -130,6 +134,13 @@ fn route_request(context: &RouteContext, request: &Request) -> Response {
     if let Some(relative) = path.strip_prefix(hls_live::ROUTE_PREFIX) {
         return if is_read {
             hls_live::serve(context, relative, range)
+        } else {
+            method_not_allowed()
+        };
+    }
+    if let Some(relative) = path.strip_prefix(hls_live_ends::ROUTE_PREFIX) {
+        return if is_read {
+            hls_live_ends::serve(context, relative, range)
         } else {
             method_not_allowed()
         };

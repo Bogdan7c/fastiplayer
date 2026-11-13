@@ -18,6 +18,10 @@
 // `play()` возврата или страницы), и её события страница уже видит — как у любого элемента с
 // `preload="none"`; скрыть их нечем, тень к тому мигу снята.
 //
+// Законченный эфир HLS (16d1, решение 326) возвращается на ту же секунду, считая от конца: длительность
+// элемента известна только после метаданных, поэтому позиция `counted_from_the_end` ставится на
+// `loadedmetadata`, а при отложенной загрузке не ставится вовсе (считать не от чего).
+//
 // Эфир HLS (10a3, решение 232) возвращается не на T: позиция `where_browser_joins_live` значит «ничего не
 // писать» — после перезагрузки `src` нативный элемент сам встаёт в эфир (Chromium 156: на начало текущего
 // окна плейлиста, `currentTime` от нуля его новой шкалы; разведка пакета D). Возврат кончается на
@@ -126,7 +130,12 @@ export class FileReturn {
       this.#finish("restored");
       return;
     }
-    const targetUs = position.targetUs;
+    const targetUs = position.kind === "at" ? position.targetUs : this.#countedFromTheEnd(position.untilEndUs);
+    if (targetUs === undefined) {
+      // Длительности у загруженного элемента нет (браузер снова видит эфир): ставить нечего, элемент там, где встал.
+      this.#finish("restored");
+      return;
+    }
     const realUs = Number(readOriginal(originals.media.currentTime, element)) * MICROS_PER_SECOND;
     if (Math.abs(realUs - targetUs) <= SAME_POSITION_TOLERANCE_US) {
       this.#finish("restored");
@@ -134,6 +143,14 @@ export class FileReturn {
     }
     this.#stage = "seeking";
     writeOriginal(originals.media.currentTime, element, targetUs / MICROS_PER_SECOND);
+  }
+
+  /** Та же секунда законченного эфира в новой шкале элемента: от его конца (`counted_from_the_end`). */
+  #countedFromTheEnd(untilEndUs: number): number | undefined {
+    const { element, originals } = this.#parameters;
+    const durationSeconds = Number(readOriginal(originals.media.duration, element));
+    if (!Number.isFinite(durationSeconds) || durationSeconds < 0) return undefined;
+    return Math.max(0, durationSeconds * MICROS_PER_SECOND - untilEndUs);
   }
 
   /** `suspend` без метаданных и без сети: браузер ждёт просьбы пользователя (`preload="none"`). */

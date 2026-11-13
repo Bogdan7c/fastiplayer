@@ -32,3 +32,23 @@ describe("MAIN-мир: команда тени live_window", () => {
     for (const command of rejected) assert.equal(parseIncomingPageMessage(shadow(command)), null, JSON.stringify(command));
   });
 });
+
+describe("MAIN-мир: команда тени recording_window (протокол 1.11, 16d1)", () => {
+  it("принимает окно записи с перемоткой и без", () => {
+    const withRange = shadow({ kind: "recording_window", end_us: 70_000_000, seekable: range });
+    assert.deepEqual(parseIncomingPageMessage(withRange), withRange);
+    const withoutSeek = shadow({ kind: "recording_window", end_us: 70_000_000, seekable: { kind: "none" } });
+    assert.deepEqual(parseIncomingPageMessage(withoutSeek), withoutSeek);
+  });
+
+  it("отвергает перемотку за краем записи, лишние поля и чужие числа", () => {
+    const rejected: unknown[] = [
+      { kind: "recording_window", end_us: 60_000_000, seekable: range },
+      { kind: "recording_window", end_us: 70_000_000, seekable: range, generation: 3 },
+      { kind: "recording_window", end_us: -1, seekable: { kind: "none" } },
+      { kind: "recording_window", edge_us: 70_000_000, seekable: range },
+      { kind: "recording_window", end_us: 70_000_000 },
+    ];
+    for (const command of rejected) assert.equal(parseIncomingPageMessage(shadow(command)), null, JSON.stringify(command));
+  });
+});

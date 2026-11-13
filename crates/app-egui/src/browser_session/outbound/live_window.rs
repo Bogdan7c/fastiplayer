@@ -1,13 +1,21 @@
-//! `live_window` (протокол 1.2, сессия 10a3, решение 232): окно эфира live HLS странице.
+//! Окно шкалы HLS странице: `live_window` (протокол 1.2, сессия 10a3, решение 232) и
+//! `recording_window` (протокол 1.11, сессия 16d1, решения 325–327).
 //!
-//! Плеер сам ведёт live HLS и знает честное окно перемотки, страница — нет. Тень
-//! страницы показывает по этому сообщению `seekable` и прижимает перемотку страницы к
-//! краям окна. Всё — во времени плеера, том же, что у `clock.position_us`
-//! (`playback::live_window`).
+//! Плеер сам ведёт HLS и знает честное окно перемотки, страница — нет. Тень страницы
+//! показывает по этим сообщениям `seekable` и прижимает перемотку страницы к краям окна.
+//! Всё — во времени плеера, том же, что у `clock.position_us` (`playback::live_window`).
+//!
+//! **Эфир или запись решает плеер** (решение 327, бэклог п. 41): пока шкала — эфир, уходит
+//! `live_window`; когда шкала — запись (эфир кончился `EXT-X-ENDLIST` или плейлист был
+//! записью с открытия), — `recording_window` с краем записи. Тень эфира по нему становится
+//! записью (конечная длительность странице), тень файла его не замечает. Это одно «окно
+//! шкалы» с одним учётом: переход эфира в запись — просто изменённое окно, предел
+//! частоты общий.
 //!
 //! **Когда окно уходит** (договор `limits::MIN_LIVE_WINDOW_INTERVAL_MS`):
-//! - только странице, чья общая версия протокола включает 1.2 ([`LIVE_WINDOW_SINCE`]):
-//!   декодер страницы 1.1 отверг бы незнакомое сообщение и закрыл бы сеанс;
+//! - только странице, чья общая версия протокола включает версию сообщения
+//!   ([`LIVE_WINDOW_SINCE`], [`RECORDING_WINDOW_SINCE`]): декодер старой страницы отверг бы
+//!   незнакомое сообщение и закрыл бы сеанс;
 //! - только когда окно есть (эфир с известным краем) и изменилось с прошлого раза;
 //! - не чаще раза в [`LIVE_WINDOW_INTERVAL`] на поколение; первое окно поколения —
 //!   сразу. Частые изменения сводятся: в отправку встаёт то окно, которое плеер видит в
@@ -48,6 +56,9 @@ use crate::browser_session::playback::live_window::LiveWindowObservation;
 /// равенство закреплено тестом).
 pub(crate) const LIVE_WINDOW_SINCE: ProtocolVersion = ProtocolVersion::V1_2;
 
+/// С какой версии протокола есть `recording_window` (равенство закреплено тестом).
+pub(crate) const RECORDING_WINDOW_SINCE: ProtocolVersion = ProtocolVersion::V1_11;
+
 /// Наименьший промежуток между двумя `live_window` одного поколения (договор протокола).
 pub(crate) const LIVE_WINDOW_INTERVAL: Duration =
     Duration::from_millis(MIN_LIVE_WINDOW_INTERVAL_MS);
@@ -56,7 +67,7 @@ pub(crate) const LIVE_WINDOW_INTERVAL: Duration =
 // (описание модуля). Сборка не пройдёт, если кто-то сделает тик часов реже.
 const _: () = assert!(CLOCK_INTERVAL.as_millis() < LIVE_WINDOW_INTERVAL.as_millis());
 
-/// Окно словами протокола: край и куда можно перемотать, в микросекундах.
+/// Окно эфира словами протокола: край и куда можно перемотать, в микросекундах.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PageLiveWindow {
     /// Край эфира.
@@ -65,28 +76,85 @@ struct PageLiveWindow {
     seekable: LiveSeekable,
 }
 
-impl PageLiveWindow {
-    /// Наблюдение → слова протокола; `None` — окна нет (не эфир или край неизвестен).
+/// Окно записи словами протокола: край записи и куда можно перемотать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PageRecordingWindow {
+    /// Край записи — её длительность.
+    end_us: MediaTime,
+    /// Окно перемотки или «перемотки нет».
+    seekable: LiveSeekable,
+}
+
+/// Окно шкалы, которое страница должна знать: эфир или запись.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageTimelineWindow {
+    /// Шкала — эфир (`live_window`).
+    Live(PageLiveWindow),
+    /// Шкала — запись (`recording_window`).
+    Recording(PageRecordingWindow),
+}
+
+impl PageTimelineWindow {
+    /// Наблюдение → слова протокола; `None` — окна нет (медиа нет или край неизвестен).
     ///
-    /// Перевод в микросекунды у всех трёх моментов один и тот же (`clock_position`,
-    /// насыщение у 2⁵³), поэтому порядок `start ≤ end ≤ edge`, гарантированный ядром,
-    /// сохраняется. Нарушенный порядок не прячется: проверка протокола при отправке
-    /// отвергнет сообщение и запишет дефект в журнал (`PageOutbound::deliver`).
+    /// Перевод в микросекунды у всех моментов один и тот же (`clock_position`, насыщение у
+    /// 2⁵³), поэтому порядок `start ≤ end ≤ край`, гарантированный ядром, сохраняется.
+    /// Нарушенный порядок не прячется: проверка протокола при отправке отвергнет
+    /// сообщение и запишет дефект в журнал (`PageOutbound::deliver`).
     fn from_observation(window: LiveWindowObservation) -> Option<Self> {
         match window {
             LiveWindowObservation::NotLive | LiveWindowObservation::LiveEdgeUnknown => None,
-            LiveWindowObservation::LiveWithoutDvr { edge } => Some(Self {
+            LiveWindowObservation::LiveWithoutDvr { edge } => Some(Self::Live(PageLiveWindow {
                 edge_us: clock_position(edge),
                 seekable: LiveSeekable::None {},
-            }),
-            LiveWindowObservation::LiveWithDvr { edge, start, end } => Some(Self {
-                edge_us: clock_position(edge),
-                seekable: LiveSeekable::Range {
-                    start_us: clock_position(start),
+            })),
+            LiveWindowObservation::LiveWithDvr { edge, start, end } => {
+                Some(Self::Live(PageLiveWindow {
+                    edge_us: clock_position(edge),
+                    seekable: seekable_range(start, end),
+                }))
+            }
+            LiveWindowObservation::Recording { end, seekable } => {
+                Some(Self::Recording(PageRecordingWindow {
                     end_us: clock_position(end),
-                },
-            }),
+                    seekable: seekable.map_or(LiveSeekable::None {}, |range| {
+                        seekable_range(range.start, range.end)
+                    }),
+                }))
+            }
         }
+    }
+
+    /// С какой версии протокола страница знает это сообщение.
+    const fn introduced_in(self) -> ProtocolVersion {
+        match self {
+            Self::Live(_) => LIVE_WINDOW_SINCE,
+            Self::Recording(_) => RECORDING_WINDOW_SINCE,
+        }
+    }
+
+    /// Сообщение протокола для поколения `generation`.
+    const fn message(self, generation: StreamGeneration) -> PlayerSessionMessage {
+        match self {
+            Self::Live(window) => PlayerSessionMessage::LiveWindow {
+                generation,
+                edge_us: window.edge_us,
+                seekable: window.seekable,
+            },
+            Self::Recording(window) => PlayerSessionMessage::RecordingWindow {
+                generation,
+                end_us: window.end_us,
+                seekable: window.seekable,
+            },
+        }
+    }
+}
+
+/// Диапазон перемотки словами протокола.
+fn seekable_range(start: Duration, end: Duration) -> LiveSeekable {
+    LiveSeekable::Range {
+        start_us: clock_position(start),
+        end_us: clock_position(end),
     }
 }
 
@@ -96,17 +164,18 @@ struct QueuedLiveWindow {
     /// Поколение, к которому окно относится.
     generation: StreamGeneration,
     /// Само окно.
-    window: PageLiveWindow,
+    window: PageTimelineWindow,
     /// Когда поставлено (от этого момента считается предел частоты).
     queued_at: Instant,
 }
 
-/// Учёт «что и когда уже сказано странице про окно эфира» одного сеанса.
+/// Учёт «что и когда уже сказано странице про окно шкалы» одного сеанса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct LiveWindowCadence {
     /// Последнее поставленное окно (`None` — в этом сеансе ещё ни одного).
     last_queued: Option<QueuedLiveWindow>,
-    /// Последнее поколение, чьё окно уже доставлено странице (`None` — ни одного).
+    /// Последнее поколение, чьё окно (эфира или записи) уже доставлено странице (`None` —
+    /// ни одного): тень сопоставляет своё время со временем плеера по любому из них.
     told_generation: Option<StreamGeneration>,
 }
 
@@ -129,11 +198,12 @@ pub(crate) enum LiveWindowNote {
     /// Окно изменилось, но предел частоты ещё не истёк: уйдёт то окно, которое плеер
     /// увидит на первом проходе после срока.
     Throttled,
-    /// Окна нет: медиа не эфир или край ещё неизвестен.
+    /// Окна нет: медиа нет, край эфира ещё неизвестен или у записи нет длины.
     NoWindow,
     /// Страница ещё не подключилась: версия неизвестна, окно уйдёт после `Attached`.
     NotAttachedYet,
-    /// Общая версия ниже 1.2: страница такого сообщения не знает, не шлём никогда.
+    /// Общая версия ниже версии сообщения (1.2 у эфира, 1.11 у записи): страница такого
+    /// сообщения не знает, не шлём никогда.
     ProtocolTooOld,
 }
 
@@ -146,12 +216,12 @@ impl PageOutbound {
         window: LiveWindowObservation,
         now: Instant,
     ) -> LiveWindowNote {
-        let Some(window) = PageLiveWindow::from_observation(window) else {
+        let Some(window) = PageTimelineWindow::from_observation(window) else {
             return LiveWindowNote::NoWindow;
         };
         match self.page_protocol {
             PageProtocol::NotAttachedYet => return LiveWindowNote::NotAttachedYet,
-            PageProtocol::Agreed(version) if !version.includes(LIVE_WINDOW_SINCE) => {
+            PageProtocol::Agreed(version) if !version.includes(window.introduced_in()) => {
                 return LiveWindowNote::ProtocolTooOld;
             }
             PageProtocol::Agreed(_) => {}
@@ -172,11 +242,7 @@ impl PageOutbound {
             window,
             queued_at: now,
         });
-        self.queue_event_replacing_same_kind(PlayerSessionMessage::LiveWindow {
-            generation,
-            edge_us: window.edge_us,
-            seekable: window.seekable,
-        });
+        self.queue_event_replacing_same_kind(window.message(generation));
         LiveWindowNote::Queued
     }
 
@@ -197,9 +263,12 @@ impl PageOutbound {
         self.live_window = LiveWindowCadence::default();
     }
 
-    /// Сообщение ушло странице: если это окно эфира — его поколение теперь «сказано».
+    /// Сообщение ушло странице: если это окно шкалы (эфира или записи) — его поколение
+    /// теперь «сказано».
     pub(super) fn note_sent_live_window(&mut self, sent: &PlayerSessionMessage) {
-        if let PlayerSessionMessage::LiveWindow { generation, .. } = sent {
+        if let PlayerSessionMessage::LiveWindow { generation, .. }
+        | PlayerSessionMessage::RecordingWindow { generation, .. } = sent
+        {
             self.live_window.told_generation = Some(*generation);
         }
     }
