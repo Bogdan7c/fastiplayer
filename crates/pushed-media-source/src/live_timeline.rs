@@ -1,4 +1,8 @@
-//! Шкала живого эфира: что из эфира уже лежит на полке и где эфир страницы точно есть.
+//! Табло шкалы потока: что из эфира уже лежит на полке и где эфир страницы точно есть.
+//!
+//! **Табло есть у каждого потока** (мост 16d1, решения 318–320): вид табло — эфир, запись или
+//! «пока неизвестно» — следует за длительностью, которую назвала страница, и меняется на ходу
+//! (правила вида — `crate::timeline_view`). Ниже — как устроен вид «эфир».
 //!
 //! У живого потока (MSE `duration = +Infinity`, [`crate::PushedDuration::Live`])
 //! нет конца и нет длительности. Плееру нужна динамическая шкала
@@ -39,11 +43,13 @@ use std::num::NonZeroU64;
 use media_core::{
     DynamicMediaTimelineEpoch, DynamicMediaTimelineInitial, DynamicMediaTimelinePort,
     DynamicMediaTimelinePortGeneration, DynamicMediaTimelinePublishError,
-    DynamicMediaTimelinePublisher, DynamicMediaTimelineState, TimelineRange,
-    dynamic_media_timeline,
+    DynamicMediaTimelinePublisher, DynamicMediaTimelineState, DynamicMediaTimelineView,
+    DynamicMediaTimelineViewKind, TimelineRange, dynamic_media_timeline,
 };
 
+use crate::PushedDuration;
 use crate::framing::{MediaTime, MediaTimeSpan};
+use crate::timeline_view::{next_view, view_for};
 
 /// Поколение порта: у потока ровно один порт на всю жизнь (новое поколение
 /// `MediaSource` — новый поток и новый порт), поэтому номер постоянный.
@@ -65,11 +71,15 @@ pub(crate) struct LiveShelfView {
     pub(crate) join: Option<MediaTime>,
 }
 
-/// Публикатор шкалы эфира (живёт в буфере потока).
+/// Публикатор табло шкалы (живёт в буфере потока).
 #[derive(Debug)]
 pub(crate) struct LiveTimelineFeed {
     /// Сторона источника пары «порт — публикатор».
     publisher: DynamicMediaTimelinePublisher,
+    /// Длительность, которую последней назвала страница: по ней выбирается вид табло.
+    declared: PushedDuration,
+    /// Вид последней публикации: запрещённые контрактом переходы не публикуются.
+    published_kind: DynamicMediaTimelineViewKind,
     /// Окно перемотки последней публикации: основа окна, пока позиция полкой не
     /// покрыта. `None` — по полке ещё ничего не публиковали.
     last_window: Option<MediaTimeSpan>,
@@ -79,20 +89,39 @@ pub(crate) struct LiveTimelineFeed {
 
 impl LiveTimelineFeed {
     /// Создаёт пару: порт — плееру (`PreparedMedia::with_dynamic_timeline`),
-    /// публикатор — буферу.
-    pub(crate) fn open(view: LiveShelfView) -> (Self, DynamicMediaTimelinePort) {
+    /// публикатор — буферу. `declared` — длительность, названная страницей к открытию.
+    pub(crate) fn open(
+        view: LiveShelfView,
+        declared: PushedDuration,
+        downloaded_end: Option<MediaTime>,
+    ) -> (Self, DynamicMediaTimelinePort) {
         let window = seek_window(view, None, None);
+        let initial = view_for(declared, || state_for(window, view.join), downloaded_end);
         let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
             port_generation: PORT_GENERATION,
             source_epoch: SOURCE_EPOCH,
-            state: state_for(window, view.join),
+            state: initial,
         });
         let feed = Self {
             publisher,
+            declared,
+            published_kind: initial.kind(),
             last_window: window,
             page_seek_target: None,
         };
         (feed, port)
+    }
+
+    /// Страница назвала новую длительность: вид табло пересчитает следующая публикация
+    /// (буфер публикует сразу же).
+    pub(crate) fn note_declared_duration(&mut self, declared: PushedDuration) {
+        self.declared = declared;
+    }
+
+    /// Нужен ли публикации вид полки (`LiveShelfView`): только эфиру — его окно строится по
+    /// полке; записи и «неизвестно» хватает дальнего конца скачанного.
+    pub(crate) fn follows_the_shelf(&self) -> bool {
+        self.declared == PushedDuration::Live
     }
 
     /// Страница сама перематывается к `target`: плеер пойдёт следом, окно держит цель
@@ -107,23 +136,45 @@ impl LiveTimelineFeed {
         self.page_seek_target = None;
     }
 
-    /// Публикует новое состояние эфира.
+    /// Публикует новое состояние табло.
     ///
     /// `Err` — публиковать больше некуда (плеер уничтожил порт) или нельзя; буфер
     /// тогда перестаёт публиковать.
+    ///
+    /// `shelf` — вид полки: его считает буфер, только если [`Self::follows_the_shelf`];
+    /// `downloaded_end` — самый дальний конец скачанного.
     pub(crate) fn publish(
         &mut self,
-        view: LiveShelfView,
+        shelf: Option<LiveShelfView>,
+        downloaded_end: Option<MediaTime>,
     ) -> Result<(), DynamicMediaTimelinePublishError> {
-        // Ни полки вокруг позиции, ни прошлой публикации: строить окно не из чего —
-        // остаётся начальное состояние.
-        let Some(window) = seek_window(view, self.last_window, self.page_seek_target) else {
+        let candidate = match (self.declared, shelf) {
+            (PushedDuration::Live, Some(view)) => {
+                // Ни полки вокруг позиции, ни прошлой публикации: строить окно не из чего —
+                // остаётся прежнее состояние.
+                let Some(window) = seek_window(view, self.last_window, self.page_seek_target)
+                else {
+                    return Ok(());
+                };
+                self.last_window = Some(window);
+                DynamicMediaTimelineView::Live(state_for(Some(window), view.join))
+            }
+            // Эфир без вида полки: буфер его не посчитал — публиковать нечего.
+            (PushedDuration::Live, None) => return Ok(()),
+            (declared, _) => view_for(declared, || state_for(None, None), downloaded_end),
+        };
+        let Some(next) = next_view(self.published_kind, candidate) else {
+            // Запись → эфир и возврат в «неизвестно» контракт не допускает: табло прежнее.
+            tracing::debug!(
+                published = ?self.published_kind,
+                declared = ?self.declared,
+                "Pushed timeline keeps its view: the page named a duration the timeline cannot go back to"
+            );
             return Ok(());
         };
-        self.last_window = Some(window);
-        self.publisher
-            .publish(SOURCE_EPOCH, state_for(Some(window), view.join))
-            .map(|_| ())
+        self.publisher.publish_view(SOURCE_EPOCH, next)?;
+        self.published_kind = next.kind();
+        Ok(())
     }
 }
 
@@ -165,6 +216,8 @@ fn state_for(window: Option<MediaTimeSpan>, join: Option<MediaTime>) -> DynamicM
 mod tests {
     use std::time::Duration;
 
+    use crate::PushedDuration;
+
     use super::{LiveShelfView, LiveTimelineFeed};
     use crate::framing::{MediaTime, MediaTimeSpan};
 
@@ -190,7 +243,14 @@ mod tests {
     }
 
     fn seekable_ms(port: &media_core::DynamicMediaTimelinePort) -> (u64, u64) {
-        let range = port.observe().snapshot.state.seekable_range().expect("dvr");
+        let range = port
+            .observe()
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .seekable_range()
+            .expect("dvr");
         let millis = |time: media_core::MediaTime| {
             u64::try_from(time.as_duration().as_millis()).expect("millis")
         };
@@ -203,76 +263,109 @@ mod tests {
 
     #[test]
     fn covered_shelf_is_the_dvr_range_and_its_end_is_the_live_edge() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(10_000, 12_000, 10_000));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(10_000, 12_000, 10_000), PushedDuration::Live, None);
         let first = port.observe().snapshot;
-        assert_eq!(first.state.live_edge(), player_ms(12_000));
-        assert_eq!(first.state.join_position(), player_ms(10_000));
-        let range = first.state.seekable_range().expect("dvr");
+        assert_eq!(
+            first.state.as_live().expect("live view").live_edge(),
+            player_ms(12_000)
+        );
+        assert_eq!(
+            first.state.as_live().expect("live view").join_position(),
+            player_ms(10_000)
+        );
+        let range = first
+            .state
+            .as_live()
+            .expect("live view")
+            .seekable_range()
+            .expect("dvr");
         assert_eq!(
             (range.start, range.end),
             (player_ms(10_000), player_ms(12_000))
         );
 
         // Новые сегменты: край эфира идёт вперёд, ревизия растёт.
-        feed.publish(view(10_000, 14_000, 10_000))
+        feed.publish(Some(view(10_000, 14_000, 10_000)), None)
             .expect("published");
         let second = port.observe().snapshot;
-        assert_eq!(second.state.live_edge(), player_ms(14_000));
+        assert_eq!(
+            second.state.as_live().expect("live view").live_edge(),
+            player_ms(14_000)
+        );
         assert!(second.revision > first.revision);
     }
 
     #[test]
     fn uncovered_position_keeps_the_last_published_state() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(0, 2_000, 0));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(0, 2_000, 0), PushedDuration::Live, None);
         let before = port.observe().snapshot;
-        feed.publish(uncovered(1_000)).expect("nothing to publish");
+        feed.publish(Some(uncovered(1_000)), None)
+            .expect("nothing to publish");
         assert_eq!(port.observe().snapshot, before);
     }
 
     #[test]
     fn negative_shelf_times_are_clamped_to_zero() {
-        let (_feed, port) = LiveTimelineFeed::open(view(-500, 1_000, -500));
-        let state = port.observe().snapshot.state;
+        let (_feed, port) =
+            LiveTimelineFeed::open(view(-500, 1_000, -500), PushedDuration::Live, None);
+        let state = port.observe().snapshot.state.as_live().expect("live view");
         assert_eq!(state.join_position(), player_ms(0));
         assert_eq!(state.seekable_range().expect("dvr").start, player_ms(0));
     }
 
     #[test]
     fn publishing_after_the_player_dropped_the_port_is_an_error_not_a_hang() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(0, 2_000, 0));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(0, 2_000, 0), PushedDuration::Live, None);
         drop(port);
-        assert!(feed.publish(view(0, 4_000, 0)).is_err());
+        assert!(feed.publish(Some(view(0, 4_000, 0)), None).is_err());
     }
 
     /// Twitch на паузе: страница стёрла полку (53,9–56,8 с) и перемоталась на 0 — окно
     /// держит цель страницы, иначе плеер отверг бы её перемотку как «вне DVR».
     #[test]
     fn a_page_seek_outside_the_shelf_stays_inside_the_seek_window() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(53_900, 56_800, 27_700));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(53_900, 56_800, 27_700), PushedDuration::Live, None);
         feed.note_page_seek(at_ms(0));
-        feed.publish(uncovered(56_600)).expect("published");
+        feed.publish(Some(uncovered(56_600)), None)
+            .expect("published");
         assert_eq!(seekable_ms(&port), (0, 56_800));
         // Край эфира не придуман: его даёт прошлое окно, а не цель страницы.
-        assert_eq!(port.observe().snapshot.state.live_edge(), player_ms(56_800));
+        assert_eq!(
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .live_edge(),
+            player_ms(56_800)
+        );
     }
 
     /// Перемотка плеера к цели страницы ждёт байтов: новая шкала легла чуть позже цели
     /// (0,089 с) — окно по полке не «просрочивает» уже идущую перемотку к 0.
     #[test]
     fn a_seek_waiting_for_page_bytes_keeps_its_target_when_the_new_timeline_starts_later() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(53_900, 56_800, 27_700));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(53_900, 56_800, 27_700), PushedDuration::Live, None);
         feed.note_page_seek(at_ms(0));
         feed.note_player_seek();
-        feed.publish(uncovered(0)).expect("published");
-        feed.publish(LiveShelfView {
-            covered: MediaTimeSpan::new(at_ms(89), at_ms(2_089)),
-            player_position: Some(at_ms(0)),
-            join: Some(at_ms(27_700)),
-        })
+        feed.publish(Some(uncovered(0)), None).expect("published");
+        feed.publish(
+            Some(LiveShelfView {
+                covered: MediaTimeSpan::new(at_ms(89), at_ms(2_089)),
+                player_position: Some(at_ms(0)),
+                join: Some(at_ms(27_700)),
+            }),
+            None,
+        )
         .expect("published");
         // Окно — новая шкала (старое забыто), расширенная до цели; край — её конец.
         assert_eq!(seekable_ms(&port), (0, 2_089));
-        let state = port.observe().snapshot.state;
+        let state = port.observe().snapshot.state.as_live().expect("live view");
         assert_eq!(state.live_edge(), player_ms(2_089));
         // Вход старой шкалы позже нового края — вход на краю, а не в будущем.
         assert_eq!(state.join_position(), player_ms(2_089));
@@ -282,13 +375,14 @@ mod tests {
     /// плеер ушёл в другое место, публикует ровно полку.
     #[test]
     fn a_player_seek_releases_the_page_target() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(10_000, 12_000, 10_000));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(10_000, 12_000, 10_000), PushedDuration::Live, None);
         feed.note_page_seek(at_ms(2_000));
-        feed.publish(view(10_000, 12_000, 10_000))
+        feed.publish(Some(view(10_000, 12_000, 10_000)), None)
             .expect("published");
         assert_eq!(seekable_ms(&port), (2_000, 12_000));
         feed.note_player_seek();
-        feed.publish(view(10_000, 13_000, 10_000))
+        feed.publish(Some(view(10_000, 13_000, 10_000)), None)
             .expect("published");
         assert_eq!(seekable_ms(&port), (10_000, 13_000));
     }
@@ -296,14 +390,18 @@ mod tests {
     /// Якоря внутри полки окно не меняют: обычный эфир публикует ровно полку.
     #[test]
     fn anchors_inside_the_shelf_change_nothing() {
-        let (mut feed, port) = LiveTimelineFeed::open(view(10_000, 12_000, 10_000));
+        let (mut feed, port) =
+            LiveTimelineFeed::open(view(10_000, 12_000, 10_000), PushedDuration::Live, None);
         let before = port.observe().snapshot;
         feed.note_page_seek(at_ms(10_500));
-        feed.publish(LiveShelfView {
-            covered: MediaTimeSpan::new(at_ms(10_000), at_ms(12_000)),
-            player_position: Some(at_ms(11_000)),
-            join: Some(at_ms(10_000)),
-        })
+        feed.publish(
+            Some(LiveShelfView {
+                covered: MediaTimeSpan::new(at_ms(10_000), at_ms(12_000)),
+                player_position: Some(at_ms(11_000)),
+                join: Some(at_ms(10_000)),
+            }),
+            None,
+        )
         .expect("published");
         assert_eq!(port.observe().snapshot, before);
     }
@@ -311,11 +409,15 @@ mod tests {
     /// Без полки и без прошлой публикации окна нет: одна цель — не диапазон.
     #[test]
     fn anchors_without_any_shelf_publish_nothing() {
-        let (mut feed, port) = LiveTimelineFeed::open(uncovered(5_000));
+        let (mut feed, port) = LiveTimelineFeed::open(uncovered(5_000), PushedDuration::Live, None);
         let before = port.observe().snapshot;
         feed.note_page_seek(at_ms(0));
-        feed.publish(uncovered(5_000)).expect("nothing to publish");
+        feed.publish(Some(uncovered(5_000)), None)
+            .expect("nothing to publish");
         assert_eq!(port.observe().snapshot, before);
-        assert_eq!(before.state.seekable_range(), None);
+        assert_eq!(
+            before.state.as_live().expect("live view").seekable_range(),
+            None
+        );
     }
 }

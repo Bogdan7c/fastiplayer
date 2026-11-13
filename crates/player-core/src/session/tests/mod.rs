@@ -82,6 +82,7 @@ mod prepared_demux_seek;
 mod prepared_demux_seek_av;
 mod prepared_initial_position;
 mod progressive_scrub_preview;
+mod recording_timeline;
 mod redundant_video_track_selection;
 mod restored_user_volume;
 mod scheduled_audio_start;

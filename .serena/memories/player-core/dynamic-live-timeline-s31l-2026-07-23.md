@@ -1,5 +1,7 @@
 # S31L — neutral dynamic live/DVR timeline (2026-07-23)
 
+> 16d1 (2026-11-13): тот же port несёт и запись — `DynamicMediaTimelineView`, `PreparedMediaTimelineMode::Dynamic` (было `Live`), `snapshot.state.as_live()`. Подробно — `mem:player-core/source-timeline-view-16d1`.
+
 ## Ownership and boundaries
 
 - `media-core::dynamic_timeline` owns the provider-neutral contract. `dynamic_media_timeline(initial)` returns one move-only `DynamicMediaTimelinePort` and a source-side `DynamicMediaTimelinePublisher`.

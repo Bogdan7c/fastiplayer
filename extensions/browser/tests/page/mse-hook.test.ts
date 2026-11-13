@@ -292,3 +292,20 @@ test("endOfStream() that changes the duration reports the new duration before th
     { kind: "end_of_stream", media_source: "ms-1" },
   ]);
 });
+
+test("an endless finite duration (Twitch in Firefox) reaches the player as a live stream (16d1, decision 319)", () => {
+  const harness = startHarness();
+  const { page } = harness;
+  const mediaSource = page.attachMediaSource(page.addVideo());
+  mediaSource.addSourceBuffer(MIME);
+  // Twitch в Firefox ставит не `Infinity`, а «максимум»; элемент показывает 9 223 372 036 854,775 с.
+  mediaSource.duration = 9_223_372_036_854.775;
+  // Эфир кончился записью: конечная длительность в том же MediaSource.
+  mediaSource.duration = 3_600;
+
+  assert.deepEqual(eventsOf(journalOf(harness, mediaSource)), [
+    { kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: MIME },
+    { kind: "duration_changed", media_source: "ms-1", duration: { kind: "live" } },
+    { kind: "duration_changed", media_source: "ms-1", duration: { kind: "finite", duration_us: 3_600_000_000 } },
+  ]);
+});

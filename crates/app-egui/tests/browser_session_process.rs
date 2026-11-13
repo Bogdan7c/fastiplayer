@@ -917,3 +917,8 @@ mod page_play_after_end;
 // Сессия 16a2: номер поколения в часах (протокол 1.10) — MSE, файл, HLS; страница 1.9 без поля.
 #[path = "browser_session_process/clock_generation.rs"]
 mod clock_generation;
+
+// Сессия 16d1: шкала потока меняется на ходу — эфир становится записью (длина в MPRIS,
+// кадры до показа), перемотка за первой объявленной длительностью приземляется.
+#[path = "browser_session_process/live_timeline_changes.rs"]
+mod live_timeline_changes;

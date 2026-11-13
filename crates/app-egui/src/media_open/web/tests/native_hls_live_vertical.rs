@@ -120,7 +120,13 @@ fn wait_for_shifted_window(
         let PreparedNativeHlsLifecycle::Live { timeline_port } = &prepared.lifecycle else {
             panic!("Supported sliding manifest must create a live timeline port");
         };
-        if let Some(range) = timeline_port.observe().snapshot.state.availability_range()
+        if let Some(range) = timeline_port
+            .observe()
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .availability_range()
             && range.start > initial_start
             && server.request_count("/live.m3u8") >= 4
         {
@@ -176,6 +182,8 @@ fn assert_retained_dvr_seek(prepared: &crate::startup_media::native_hls::Prepare
         .observe()
         .snapshot
         .state
+        .as_live()
+        .expect("live view")
         .seekable_range()
         .expect("Consumer packets must be able to demonstrate the DVR range.")
         .start
@@ -268,6 +276,8 @@ fn n14b_lifecycle_hls_live_dvr_expiry_recovery_switch_has_no_false_eof() {
             .observe()
             .snapshot
             .state
+            .as_live()
+            .expect("live view")
             .availability_range()
             .expect("Consumer packages must be able to prove initial availability"),
         PreparedNativeHlsLifecycle::Vod { .. } => {

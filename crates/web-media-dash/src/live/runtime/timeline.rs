@@ -50,7 +50,7 @@ impl DashLiveTimelineCoordinator {
         let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
             port_generation,
             source_epoch,
-            state: initial_timeline,
+            state: initial_timeline.into(),
         });
         Ok((
             Arc::new(Self {
@@ -254,7 +254,12 @@ mod tests {
         .expect("valid initial availability");
 
         assert_eq!(
-            port.observe().snapshot.state.availability_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .availability_range(),
             Some(media_core::TimelineRange {
                 start: MediaTime::ZERO,
                 end: MediaTime::from_duration(Duration::from_secs(10)),
@@ -267,13 +272,26 @@ mod tests {
         coordinator
             .observe_packet(&packet(TrackKind::Video, 2, 4, false))
             .expect("non-RAP video packet is observed");
-        assert_eq!(port.observe().snapshot.state.seekable_range(), None);
+        assert_eq!(
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
+            None
+        );
 
         coordinator
             .observe_packet(&packet(TrackKind::Video, 2, 4, true))
             .expect("video RAP starts evidence");
         assert_eq!(
-            port.observe().snapshot.state.seekable_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
             Some(media_core::TimelineRange {
                 start: MediaTime::from_duration(Duration::from_secs(2)),
                 end: MediaTime::from_duration(Duration::from_secs(6)),
@@ -289,9 +307,22 @@ mod tests {
                 },
             })
             .expect("sliding availability is accepted");
-        assert_eq!(port.observe().snapshot.state.seekable_range(), None);
         assert_eq!(
-            port.observe().snapshot.state.availability_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
+            None
+        );
+        assert_eq!(
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .availability_range(),
             Some(media_core::TimelineRange {
                 start: MediaTime::from_duration(Duration::from_secs(3)),
                 end: MediaTime::from_duration(Duration::from_secs(10)),
@@ -305,7 +336,12 @@ mod tests {
             .observe_packet(&packet(TrackKind::Audio, 8, 1, false))
             .expect("audio evidence reaches the new RAP range");
         assert_eq!(
-            port.observe().snapshot.state.seekable_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
             Some(media_core::TimelineRange {
                 start: MediaTime::from_duration(Duration::from_secs(8)),
                 end: MediaTime::from_duration(Duration::from_secs(9)),
@@ -342,7 +378,15 @@ mod tests {
         coordinator
             .observe_packet(&first_video_rap)
             .expect("durationless RAP point is accepted");
-        assert_eq!(port.observe().snapshot.state.seekable_range(), None);
+        assert_eq!(
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
+            None
+        );
 
         let mut next_video_packet = packet(TrackKind::Video, 2, 1, false);
         next_video_packet.duration = None;
@@ -350,7 +394,12 @@ mod tests {
             .observe_packet(&next_video_packet)
             .expect("next observed timestamp closes the RAP evidence interval");
         assert_eq!(
-            port.observe().snapshot.state.seekable_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
             Some(media_core::TimelineRange {
                 start: MediaTime::ZERO,
                 end: MediaTime::from_duration(Duration::from_secs(2)),

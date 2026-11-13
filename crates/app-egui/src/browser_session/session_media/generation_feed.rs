@@ -226,7 +226,7 @@ impl PendingFeed {
                         }
                     },
                 };
-                let is_live = stream.live_timeline.is_some();
+                let is_live = stream.opened_as_live();
                 let start = if is_positionable(&stream.demuxer, is_live) {
                     match placement.decide(monitor, now, page) {
                         PlacementVerdict::HandOver(start) => start,
@@ -447,21 +447,21 @@ pub(super) fn in_issue_order(
 }
 
 /// Готовый поток сегментов → медиа для плеера: на стартовой позиции поколения и с
-/// живой шкалой, если это эфир.
+/// табло шкалы источника (эфир или запись, 16d1), если оно у потока есть.
 fn prepared_segments(
     opened: OpenedPushedStream,
     start: GenerationStart,
     monitor: &PushedStreamMonitor,
 ) -> Result<PreparedMedia, SegmentsPrepareError> {
+    let is_live = opened.opened_as_live();
     let OpenedPushedStream {
         mut demuxer,
-        live_timeline,
+        timeline,
     } = opened;
-    let initial_position =
-        position_segments_demuxer(start, monitor, &mut demuxer, live_timeline.is_some());
+    let initial_position = position_segments_demuxer(start, monitor, &mut demuxer, is_live);
     let prepared = PreparedMedia::from_external_label(BROWSER_STREAM_LABEL, Box::new(demuxer))
         .with_prepared_initial_position(initial_position)?;
-    match live_timeline {
+    match timeline {
         Some(timeline) => Ok(prepared.with_dynamic_timeline(timeline)?),
         None => Ok(prepared),
     }

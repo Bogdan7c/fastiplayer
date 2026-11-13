@@ -114,7 +114,12 @@ fn live_open_joins_three_target_durations_before_the_edge() {
     let (mut demuxer, timeline_port, _) = opened.into_parts();
 
     // 1. Плеер получает позицию входа на 3 target duration раньше края.
-    let state = timeline_port.observe().snapshot.state;
+    let state = timeline_port
+        .observe()
+        .snapshot
+        .state
+        .as_live()
+        .expect("live view");
     assert_eq!(state.live_edge().as_duration(), Duration::from_secs(6));
     assert_eq!(state.join_position().as_duration(), Duration::from_secs(3));
 

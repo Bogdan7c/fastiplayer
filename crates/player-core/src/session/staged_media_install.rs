@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use audio_core::AudioDecoderConfig;
 use codec_core::VideoDecodeRequirement;
-use media_core::{DynamicMediaTimelineSnapshot, TimelineMode, TrackId};
+use media_core::{DynamicMediaTimelineState, TimelineMode, TrackId};
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendConfigurationError, DetachedVideoBackendPortError,
@@ -134,10 +134,7 @@ fn ensure_matching_timeline_mode(
     old_mode: TimelineMode,
     prepared: &PreparedStagedMedia,
 ) -> Result<(), MediaInstallFailure> {
-    let candidate_mode = match prepared.prepared_media.timeline_mode() {
-        crate::PreparedMediaTimelineMode::Static { .. } => TimelineMode::Static,
-        crate::PreparedMediaTimelineMode::Live { .. } => TimelineMode::Live,
-    };
+    let candidate_mode = prepared.prepared_media.initial_timeline_mode();
     if old_mode != candidate_mode {
         return Err(position::position_failure(
             "same-lineage candidate changed timeline mode",
@@ -146,14 +143,11 @@ fn ensure_matching_timeline_mode(
     Ok(())
 }
 
-fn live_edge_commit(
-    position: Duration,
-    snapshot: DynamicMediaTimelineSnapshot,
-) -> StagedPositionCommit {
+fn live_edge_commit(position: Duration, live: DynamicMediaTimelineState) -> StagedPositionCommit {
     StagedPositionCommit::AdjustedToLiveEdge {
         requested_position: position,
         // Позиция входа в эфир (hold-back), а не край: с неё источник начал отдавать данные.
-        live_edge: snapshot.state.join_position().as_duration(),
+        live_edge: live.join_position().as_duration(),
     }
 }
 

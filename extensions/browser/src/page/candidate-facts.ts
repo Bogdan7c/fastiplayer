@@ -1,6 +1,7 @@
 // Чистые функции для фактов кандидата видео (09c): длительность и имя хоста файла.
 // Без DOM и без глобалов страницы — проверяются тестами напрямую.
 
+import { isEndlessDurationSeconds } from "../shared/endless-duration.ts";
 import { MAX_HOST_NAME_LENGTH } from "../shared/page-message-validation.ts";
 
 /** Печатный ASCII без пробела — то же правило, что у договора (`isHostName`). */
@@ -8,10 +9,12 @@ const PRINTABLE_HOST_PATTERN = /^[\x21-\x7e]+$/;
 
 /**
  * Длительность элемента для договора: конечное неотрицательное число секунд, иначе `null`.
- * `NaN` — метаданных ещё нет, `Infinity` — эфир без конца; фону обе ничего не говорят о фильме.
+ * `NaN` — метаданных ещё нет, `Infinity` и длиннее года — эфир без конца (решение 319); фону они
+ * ничего не говорят о фильме.
  */
 export function finiteDurationSeconds(seconds: unknown): number | null {
-  return typeof seconds === "number" && Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+  if (typeof seconds !== "number" || isEndlessDurationSeconds(seconds)) return null;
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
 /** Размер кадра для договора: целое неотрицательное число, всё прочее (NaN, минус) — 0 «неизвестно». */

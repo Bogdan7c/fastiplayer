@@ -84,7 +84,7 @@ fn live_media(
     let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
         port_generation: generation(generation_value),
         source_epoch: DynamicMediaTimelineEpoch::new(1),
-        state,
+        state: state.into(),
     });
     let demuxer = FakeDemuxer::new(Vec::new(), None, Arc::new(Mutex::new(Vec::new())));
     let prepared_media = PreparedMedia::from_external_label("fake-live", Box::new(demuxer))
@@ -154,7 +154,7 @@ fn play_seeks_to_fresh_live_edge_when_paused_position_expired() {
     let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
         port_generation: generation(9),
         source_epoch: DynamicMediaTimelineEpoch::new(1),
-        state: dvr_state(20, 60),
+        state: dvr_state(20, 60).into(),
     });
     let seek_log = Arc::new(Mutex::new(Vec::new()));
     let demuxer = FakeDemuxer::new(
@@ -423,7 +423,7 @@ fn static_window_and_live_mode_are_typed_mutually_exclusive() {
     let (port, _publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
         port_generation: generation(3),
         source_epoch: DynamicMediaTimelineEpoch::new(1),
-        state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(5)),
+        state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(5)).into(),
     });
     let demuxer = FakeDemuxer::new(Vec::new(), None, Arc::new(Mutex::new(Vec::new())));
     let live = PreparedMedia::from_external_label("fake-live", Box::new(demuxer))

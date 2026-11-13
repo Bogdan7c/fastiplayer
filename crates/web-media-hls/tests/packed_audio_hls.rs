@@ -475,7 +475,12 @@ fn packed_aac_live_sliding_window_advances_and_keeps_delivering_audio() {
     let mut last_pts = Duration::ZERO;
     let slid_range = loop {
         let observed = timeline_port.observe();
-        if let Some(range) = observed.snapshot.state.seekable_range()
+        if let Some(range) = observed
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .seekable_range()
             && manifest_requests.load(Ordering::SeqCst) >= 2
             && range.start.as_duration() >= Duration::from_secs(2)
         {
@@ -484,7 +489,12 @@ fn packed_aac_live_sliding_window_advances_and_keeps_delivering_audio() {
         assert!(
             Instant::now() < deadline,
             "DVR packed live band not advanced: {:?}",
-            observed.snapshot.state.seekable_range()
+            observed
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range()
         );
         if let DemuxReadEvent::Packet(packet) = demuxer.next_event().expect("live read") {
             assert_eq!(packet.kind, TrackKind::Audio);

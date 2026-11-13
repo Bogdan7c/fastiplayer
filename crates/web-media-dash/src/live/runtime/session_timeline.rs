@@ -221,7 +221,7 @@ mod tests {
         coordinator
             .observe_packet(&translated)
             .expect("translated packet must publish session-local evidence");
-        let public_timeline = port.observe().snapshot.state;
+        let public_timeline = port.observe().snapshot.state.as_live().expect("live view");
         assert_eq!(
             public_timeline.live_edge(),
             MediaTime::from_duration(Duration::from_secs(60))

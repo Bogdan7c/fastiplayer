@@ -1203,14 +1203,14 @@ fn install_live_timeline_on_scrub_harness(
         media_core::dynamic_media_timeline(media_core::DynamicMediaTimelineInitial {
             port_generation,
             source_epoch: media_core::DynamicMediaTimelineEpoch::new(1),
-            state,
+            state: state.into(),
         });
 
     harness.session.set_snapshot_duration(None);
     harness.session.snapshot.media_instance_id = Some(media_instance_id);
     harness.session.install_timeline_mode(
         media_instance_id,
-        crate::PreparedMediaTimelineMode::Live { port },
+        crate::PreparedMediaTimelineMode::Dynamic { port },
     );
 }
 

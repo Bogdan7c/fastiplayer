@@ -55,6 +55,7 @@ mod automatic_web_media_quality;
 mod dropped_subtitles;
 mod external_open;
 mod frame_context;
+mod timeline_wake_identity;
 pub use frame_context::AppFrameContext;
 mod fullscreen_chrome_routing;
 mod language_label_disambiguation;
@@ -772,19 +773,15 @@ impl AppState {
         player_snapshot
     }
 
-    /// Drain-ит worker snapshot только если wake действительно принёс новую live revision.
+    /// Drain-ит worker snapshot только если wake действительно изменил шкалу: режим, длину,
+    /// окно эфира или диапазон перемотки (`timeline_wake_identity`, мост 16d1).
     pub(crate) fn refresh_player_snapshot_if_timeline_changed(
         &mut self,
     ) -> Option<Arc<PlayerSnapshot>> {
-        let previous_identity = (
-            self.last_player_snapshot.media_instance_id,
-            self.last_player_snapshot.timeline.live_revision,
-        );
+        let previous_identity =
+            timeline_wake_identity::timeline_identity(&self.last_player_snapshot);
         let player_snapshot = self.refresh_player_snapshot();
-        let current_identity = (
-            player_snapshot.media_instance_id,
-            player_snapshot.timeline.live_revision,
-        );
+        let current_identity = timeline_wake_identity::timeline_identity(&player_snapshot);
         (current_identity != previous_identity).then_some(player_snapshot)
     }
 

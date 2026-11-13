@@ -204,7 +204,7 @@ impl PlayerSession {
         self.clear_queued_video_frames();
         self.pipeline.apply_demux_track_list_update(tracks.clone());
         self.pipeline.mark_audio_buffer_clear_ack(generation);
-        self.set_snapshot_duration(duration);
+        self.apply_demuxer_reported_duration(duration);
         if let Some(timeline_before_update) = active_timeline_before_update {
             self.restore_active_timeline_after_track_list_reset(timeline_before_update);
         }

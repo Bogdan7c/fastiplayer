@@ -72,13 +72,13 @@ fn install_live_window(
     let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
         port_generation: DynamicMediaTimelinePortGeneration::new(non_zero_generation),
         source_epoch: DynamicMediaTimelineEpoch::new(1),
-        state,
+        state: state.into(),
     });
     harness.session.set_snapshot_duration(None);
     harness.session.snapshot.media_instance_id = Some(media_instance_id);
     harness.session.install_timeline_mode(
         media_instance_id,
-        crate::PreparedMediaTimelineMode::Live { port },
+        crate::PreparedMediaTimelineMode::Dynamic { port },
     );
     publisher
 }

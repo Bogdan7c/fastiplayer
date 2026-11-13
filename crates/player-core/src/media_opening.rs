@@ -173,8 +173,11 @@ pub enum PreparedMediaTimelineMode {
         /// Absolute source window для CUE/fragment playback.
         playback_window: Option<MediaPlaybackWindow>,
     },
-    /// Dynamic live media; duration всегда неизвестна.
-    Live {
+    /// Media с «табло шкалы» источника (S31L, 16d1): эфир, запись или «пока неизвестно».
+    ///
+    /// Вид табло источник меняет на ходу: длина записи растёт, эфир становится записью.
+    /// Длину media при открытии тоже сообщает табло, а не demuxer (один владелец шкалы).
+    Dynamic {
         /// Read-only source-owned timeline port.
         port: DynamicMediaTimelinePort,
     },
@@ -195,8 +198,6 @@ pub enum PreparedMediaTimelineModeError {
     PlaybackWindowConflictsWithLiveTimeline,
     /// Live timeline нельзя добавить к уже bounded static candidate.
     LiveTimelineConflictsWithPlaybackWindow,
-    /// Live media не публикует конечную duration.
-    LiveTimelineRequiresUnknownDuration,
 }
 
 impl fmt::Display for PreparedMediaTimelineModeError {
@@ -207,9 +208,6 @@ impl fmt::Display for PreparedMediaTimelineModeError {
             }
             Self::LiveTimelineConflictsWithPlaybackWindow => {
                 "dynamic live timeline conflicts with static playback window"
-            }
-            Self::LiveTimelineRequiresUnknownDuration => {
-                "dynamic live timeline requires duration=None"
             }
         })
     }
@@ -357,7 +355,7 @@ impl PreparedMedia {
     pub const fn playback_window(&self) -> Option<MediaPlaybackWindow> {
         match &self.timeline_mode {
             PreparedMediaTimelineMode::Static { playback_window } => *playback_window,
-            PreparedMediaTimelineMode::Live { .. } => None,
+            PreparedMediaTimelineMode::Dynamic { .. } => None,
         }
     }
 
@@ -366,7 +364,10 @@ impl PreparedMedia {
         mut self,
         playback_window: MediaPlaybackWindow,
     ) -> Result<Self, PreparedMediaTimelineModeError> {
-        if matches!(self.timeline_mode, PreparedMediaTimelineMode::Live { .. }) {
+        if matches!(
+            self.timeline_mode,
+            PreparedMediaTimelineMode::Dynamic { .. }
+        ) {
             return Err(PreparedMediaTimelineModeError::PlaybackWindowConflictsWithLiveTimeline);
         }
         self.timeline_mode = PreparedMediaTimelineMode::Static {
@@ -375,19 +376,37 @@ impl PreparedMedia {
         Ok(self)
     }
 
-    /// Устанавливает dynamic live timeline до staged Ready barrier.
+    /// Устанавливает табло шкалы источника до staged Ready barrier.
+    ///
+    /// Длину media отныне сообщает табло: у записи — её край, у эфира и «пока неизвестно» —
+    /// нет длины. То, что demuxer ответил при открытии, заменяется: у шкалы один владелец,
+    /// иначе две копии длины разошлись бы при первом же обновлении табло (16d1).
     pub fn with_dynamic_timeline(
         mut self,
         port: DynamicMediaTimelinePort,
     ) -> Result<Self, PreparedMediaTimelineModeError> {
-        if self.duration.is_some() {
-            return Err(PreparedMediaTimelineModeError::LiveTimelineRequiresUnknownDuration);
-        }
         if self.playback_window().is_some() {
             return Err(PreparedMediaTimelineModeError::LiveTimelineConflictsWithPlaybackWindow);
         }
-        self.timeline_mode = PreparedMediaTimelineMode::Live { port };
+        self.duration = port
+            .observe()
+            .snapshot
+            .state
+            .as_recording()
+            .map(|recording| recording.duration().as_duration());
+        self.timeline_mode = PreparedMediaTimelineMode::Dynamic { port };
         Ok(self)
+    }
+
+    /// Режим шкалы, с которым media установится: по виду табло, если оно есть.
+    #[must_use]
+    pub fn initial_timeline_mode(&self) -> media_core::TimelineMode {
+        let is_live = self.staged_live_timeline_state().is_some();
+        if is_live {
+            media_core::TimelineMode::Live
+        } else {
+            media_core::TimelineMode::Static
+        }
     }
 
     /// Прикрепляет exact worker-receipted demux seek port до player install barrier-а.
@@ -512,13 +531,16 @@ impl PreparedMedia {
         self.prefetch_state = None;
     }
 
-    /// Читает latest neutral live snapshot, не устанавливая port в active session.
-    pub(crate) fn staged_live_timeline_snapshot(
+    /// Последнее состояние эфира табло, не устанавливая port в active session.
+    ///
+    /// `None` — у кандидата нет табло или табло показывает не эфир (запись, «неизвестно»):
+    /// решения о входе в эфир и live same-item restore к нему не относятся.
+    pub(crate) fn staged_live_timeline_state(
         &self,
-    ) -> Option<media_core::DynamicMediaTimelineSnapshot> {
+    ) -> Option<media_core::DynamicMediaTimelineState> {
         match &self.timeline_mode {
             PreparedMediaTimelineMode::Static { .. } => None,
-            PreparedMediaTimelineMode::Live { port } => Some(port.observe().snapshot),
+            PreparedMediaTimelineMode::Dynamic { port } => port.observe().snapshot.state.as_live(),
         }
     }
 

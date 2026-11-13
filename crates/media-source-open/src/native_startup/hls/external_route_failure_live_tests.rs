@@ -161,6 +161,8 @@ fn availability_start(prepared: &PreparedNativeHlsMedia) -> Option<MediaTime> {
         .observe()
         .snapshot
         .state
+        .as_live()
+        .expect("live view")
         .availability_range()
         .map(|range| range.start)
 }

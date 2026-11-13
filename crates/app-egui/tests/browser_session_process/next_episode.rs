@@ -105,7 +105,7 @@ fn page_title_changed(title: &str) -> Message {
 }
 
 /// Длительность, которую окно публикует в MPRIS (`mpris:length`, мкс); `None` — ещё нет.
-fn mpris_length_us(bus: &PrivateBusWithBrowserSession) -> Option<u64> {
+pub(super) fn mpris_length_us(bus: &PrivateBusWithBrowserSession) -> Option<u64> {
     let metadata = mpris_metadata(bus);
     let needle = "\"mpris:length\" x ";
     let start = metadata.find(needle)? + needle.len();

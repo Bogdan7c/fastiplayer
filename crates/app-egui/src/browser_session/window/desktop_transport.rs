@@ -46,6 +46,12 @@ const WINDOW_REQUEST_CAPACITY: usize = 4;
 /// сам; 4 Гц достаточно для полосы прогресса и не нагружает шину.
 const POSITION_PUBLISH_PERIOD: Duration = Duration::from_millis(250);
 
+/// Насколько позиция может уйти вперёд сверх прошедшего времени, чтобы считаться плавным
+/// ходом. Больше — прыжок (приземление перемотки), он публикуется сразу, без [`POSITION_PUBLISH_PERIOD`]:
+/// иначе полная публикация за миг до приземления (например, смена длины записи, 16d1)
+/// оставила бы виджету старую позицию на четверть секунды.
+const POSITION_JUMP_SLACK: Duration = Duration::from_millis(250);
+
 /// Окно браузерного режима глазами MPRIS: что оно умеет показать и исполнить.
 pub(crate) trait DesktopWindowPort {
     /// Что сейчас видит зритель (свежий снимок плеера окна).
@@ -224,10 +230,15 @@ impl WindowDesktopTransport {
             self.publish_full(committed, now);
             return;
         }
-        let position_due = self
+        let since_last_publish = self
             .last_position_publish
-            .is_none_or(|at| now.saturating_duration_since(at) >= POSITION_PUBLISH_PERIOD);
-        if position_due && next.position != self.last_view.position {
+            .map(|at| now.saturating_duration_since(at));
+        let position_due =
+            since_last_publish.is_none_or(|elapsed| elapsed >= POSITION_PUBLISH_PERIOD);
+        let position_jumped = since_last_publish.is_some_and(|elapsed| {
+            position_jumped(self.last_view.position, next.position, elapsed)
+        });
+        if (position_due || position_jumped) && next.position != self.last_view.position {
             self.last_view.position = next.position;
             self.last_position_publish = Some(now);
             if let Some(integration) = &self.integration
@@ -257,6 +268,19 @@ impl WindowDesktopTransport {
             debug!(?outcome, "The browser window MPRIS stopped");
         }
     }
+}
+
+/// Позиция ушла не плавным ходом: назад или вперёд дальше, чем прошло времени (с запасом).
+fn position_jumped(
+    published: media_core::MediaTime,
+    next: media_core::MediaTime,
+    elapsed: Duration,
+) -> bool {
+    let furthest_smooth = published
+        .as_duration()
+        .saturating_add(elapsed)
+        .saturating_add(POSITION_JUMP_SLACK);
+    next < published || next.as_duration() > furthest_smooth
 }
 
 #[cfg(test)]
@@ -315,9 +339,13 @@ mod tests {
     }
 
     fn observation(state: PlaybackState, position_secs: u64) -> TransportObservation {
+        observation_at_ms(state, position_secs * 1_000)
+    }
+
+    fn observation_at_ms(state: PlaybackState, position_ms: u64) -> TransportObservation {
         TransportObservation {
             playback_state: state,
-            position: MediaTime::from_secs(position_secs),
+            position: MediaTime::from_duration(Duration::from_millis(position_ms)),
             duration: None,
             seekable: false,
             volume: 1.0,
@@ -460,9 +488,9 @@ mod tests {
         let first_revision = transport.revision;
         assert_eq!(first_revision, 1);
 
-        // Только позиция: ревизия не растёт, позиция лежит в виде, но не чаще 4 Гц.
+        // Только плавный ход позиции: ревизия не растёт, позиция в виде — не чаще 4 Гц.
         transport.publish(
-            &observation(PlaybackState::Playing, 2),
+            &observation_at_ms(PlaybackState::Playing, 1_010),
             start + Duration::from_millis(10),
         );
         assert_eq!(transport.revision, first_revision);
@@ -480,5 +508,41 @@ mod tests {
             start + Duration::from_millis(500),
         );
         assert_eq!(transport.revision, first_revision + 1);
+    }
+
+    #[test]
+    fn a_seek_landing_is_published_at_once_after_a_full_publication() {
+        let (mut transport, _mailbox, _emitter) = transport_without_bus();
+        transport.note_page(page(), PageArrival::NewVideo);
+        let start = Instant::now();
+        // Полная публикация, пока перемотка ещё в пути: позиция старая.
+        transport.publish(&observation(PlaybackState::Playing, 0), start);
+
+        // Через 20 мс перемотка приземлилась на 3,5 с — это прыжок, а не ход.
+        transport.publish(
+            &observation_at_ms(PlaybackState::Playing, 3_500),
+            start + Duration::from_millis(20),
+        );
+
+        assert_eq!(
+            transport.last_view.position,
+            MediaTime::from_duration(Duration::from_millis(3_500))
+        );
+    }
+
+    #[test]
+    fn a_jump_is_backwards_or_further_than_the_time_that_passed() {
+        let at = |ms| MediaTime::from_duration(Duration::from_millis(ms));
+        assert!(position_jumped(
+            at(5_000),
+            at(4_000),
+            Duration::from_millis(10)
+        ));
+        assert!(position_jumped(at(0), at(3_500), Duration::from_millis(20)));
+        assert!(!position_jumped(
+            at(1_000),
+            at(1_200),
+            Duration::from_millis(100)
+        ));
     }
 }

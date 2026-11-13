@@ -120,7 +120,7 @@ impl PlayerSession {
         // Дальше — только мутации; все проверки выше их не делали.
         self.pipeline
             .replace_track_list_keeping_decoders(tracks.to_vec());
-        self.set_snapshot_duration(duration);
+        self.apply_demuxer_reported_duration(duration);
         if let Some(video_track) = video {
             self.admit_video_description(video_track);
         }

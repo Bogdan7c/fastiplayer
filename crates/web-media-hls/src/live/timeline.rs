@@ -58,7 +58,8 @@ impl HlsLiveTimelineCoordinator {
             state: with_join(
                 DynamicMediaTimelineState::without_dvr(live_edge),
                 join_position,
-            ),
+            )
+            .into(),
         });
         let audio_evidence = audio
             .as_ref()

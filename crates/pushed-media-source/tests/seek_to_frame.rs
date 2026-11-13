@@ -458,19 +458,27 @@ fn live_stream_publishes_its_shelf_as_a_dynamic_timeline_and_seeks_inside_it() {
     page.push(0..5);
     let opened = open_stream(&mut opener);
     let port = opened
-        .live_timeline
+        .timeline
         .expect("live streams get a dynamic timeline");
     assert_eq!(media_core::Demuxer::duration(&opened.demuxer), None);
     let player_ms =
         |milliseconds| media_core::MediaTime::from_duration(Duration::from_millis(milliseconds));
-    let state = port.observe().snapshot.state;
+    let state = port.observe().snapshot.state.as_live().expect("live view");
     assert_eq!(state.live_edge(), player_ms(2_000));
     assert_eq!(state.join_position(), player_ms(0));
     let range = state.seekable_range().expect("dvr range");
     assert_eq!((range.start, range.end), (player_ms(0), player_ms(2_000)));
     // Новые сегменты двигают край эфира.
     page.push(5..7);
-    assert_eq!(port.observe().snapshot.state.live_edge(), player_ms(2_800));
+    assert_eq!(
+        port.observe()
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .live_edge(),
+        player_ms(2_800)
+    );
 
     let prepared = prepared(opened.demuxer)
         .with_dynamic_timeline(port)
@@ -507,7 +515,7 @@ fn live_page_seek_outside_the_shelf_is_followed_to_frames() {
     let (mut page, mut opener) = Page::new(PushedDuration::Live);
     page.push(5..7);
     let opened = open_stream(&mut opener);
-    let port = opened.live_timeline.expect("live timeline");
+    let port = opened.timeline.expect("live timeline");
     let prepared = prepared(opened.demuxer)
         .with_dynamic_timeline(port)
         .expect("live timeline accepted");
@@ -547,12 +555,14 @@ fn live_window_holds_only_page_seeks_the_player_will_follow() {
     page.writer.note_page_seek(Duration::ZERO);
     page.push(5..7);
     let opened = open_stream(&mut opener);
-    let port = opened.live_timeline.expect("live timeline");
+    let port = opened.timeline.expect("live timeline");
     let window_ms = || {
         let range = port
             .observe()
             .snapshot
             .state
+            .as_live()
+            .expect("live view")
             .seekable_range()
             .expect("dvr range");
         (

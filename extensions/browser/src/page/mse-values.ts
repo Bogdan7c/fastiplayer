@@ -4,6 +4,7 @@
 // округляем до ближайшей микросекунды. Значения вне диапазона протокола обрезаются до границы, а
 // нечисла — не пересказываются (вызывающий решает, что делать с `null`).
 
+import { isEndlessDurationSeconds } from "../shared/endless-duration.ts";
 import { MAX_JSON_SAFE_INTEGER, MAX_MIME_TYPE_BYTES } from "../protocol/limits.ts";
 import type { MediaDuration, MediaTimeMicros, MediaTimeOffsetMicros } from "../protocol/time.ts";
 import type { RemovalEnd } from "../protocol/session/page.ts";
@@ -31,10 +32,13 @@ export function offsetMicros(seconds: unknown): MediaTimeOffsetMicros | null {
   return roundToMicros(seconds);
 }
 
-/** `MediaSource.duration`: NaN — неизвестна, +∞ — живой поток, иначе конечная. */
+/**
+ * `MediaSource.duration`: NaN — неизвестна, +∞ или длиннее года — живой поток (решение 319,
+ * `shared/endless-duration.ts`), иначе конечная.
+ */
 export function durationOf(seconds: number): MediaDuration {
   if (Number.isNaN(seconds)) return { kind: "unknown" };
-  if (seconds === Number.POSITIVE_INFINITY) return { kind: "live" };
+  if (isEndlessDurationSeconds(seconds)) return { kind: "live" };
   return { kind: "finite", duration_us: positionMicros(seconds) ?? 0 };
 }
 

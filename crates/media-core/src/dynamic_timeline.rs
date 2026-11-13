@@ -12,6 +12,10 @@ use thiserror::Error;
 
 use crate::{MediaTime, TimelineRange};
 
+mod view;
+
+pub use view::{DynamicMediaTimelineView, DynamicMediaTimelineViewKind, RecordingTimelineState};
+
 /// Идентичность одного port-а, назначенная source owner-ом.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DynamicMediaTimelinePortGeneration(NonZeroU64);
@@ -239,8 +243,8 @@ pub struct DynamicMediaTimelineInitial {
     pub port_generation: DynamicMediaTimelinePortGeneration,
     /// Initial source epoch.
     pub source_epoch: DynamicMediaTimelineEpoch,
-    /// Initial live/DVR состояние.
-    pub state: DynamicMediaTimelineState,
+    /// Initial вид табло: эфир, запись или «пока неизвестно» (16d1).
+    pub state: DynamicMediaTimelineView,
 }
 
 /// Immutable latest snapshot.
@@ -252,8 +256,8 @@ pub struct DynamicMediaTimelineSnapshot {
     pub source_epoch: DynamicMediaTimelineEpoch,
     /// Monotonic consumer revision.
     pub revision: DynamicMediaTimelineRevision,
-    /// Live edge и optional DVR window.
-    pub state: DynamicMediaTimelineState,
+    /// Вид табло: эфир (live edge и optional DVR window), запись или «пока неизвестно».
+    pub state: DynamicMediaTimelineView,
 }
 
 /// Результат первой фазы observe.
@@ -310,6 +314,12 @@ pub enum DynamicMediaTimelineValidationError {
         /// Диапазон, которому edge противоречит.
         seekable_range: TimelineRange,
     },
+    /// Запись должна иметь положительную длину доступного диапазона (16d1).
+    #[error("dynamic recording range must be non-empty: {available_range:?}")]
+    EmptyRecordingRange {
+        /// Некорректный диапазон записи.
+        available_range: TimelineRange,
+    },
     /// Packet-proven seekability не может выходить за server availability.
     #[error(
         "dynamic seekable range {seekable_range:?} is outside availability {availability_range:?}"
@@ -356,6 +366,14 @@ pub enum DynamicMediaTimelinePublishError {
     /// Consumer уже уничтожил port; producer не должен spin-ить.
     #[error("dynamic timeline consumer disconnected")]
     ConsumerDisconnected,
+    /// Источник пытался сменить вид табло запрещённым переходом (16d1, модуль `view`).
+    #[error("forbidden dynamic timeline view transition: {from:?} -> {to:?}")]
+    ForbiddenViewTransition {
+        /// Вид, который уже опубликован.
+        from: DynamicMediaTimelineViewKind,
+        /// Отклонённый вид.
+        to: DynamicMediaTimelineViewKind,
+    },
 }
 
 #[derive(Debug)]
@@ -417,11 +435,23 @@ pub struct DynamicMediaTimelinePublisher {
 }
 
 impl DynamicMediaTimelinePublisher {
-    /// Атомарно заменяет latest snapshot и поднимает coalesced activity edge.
+    /// Публикует состояние эфира: прежний вход источников live (HLS, DASH, MSE-эфир).
     pub fn publish(
         &self,
         source_epoch: DynamicMediaTimelineEpoch,
         state: DynamicMediaTimelineState,
+    ) -> Result<DynamicMediaTimelinePublishOutcome, DynamicMediaTimelinePublishError> {
+        self.publish_view(source_epoch, state.into())
+    }
+
+    /// Атомарно заменяет latest snapshot и поднимает coalesced activity edge.
+    ///
+    /// Смена вида табло проверяется до записи: запрещённый переход (`ForbiddenViewTransition`)
+    /// не меняет ни snapshot, ни revision и не будит consumer.
+    pub fn publish_view(
+        &self,
+        source_epoch: DynamicMediaTimelineEpoch,
+        state: DynamicMediaTimelineView,
     ) -> Result<DynamicMediaTimelinePublishOutcome, DynamicMediaTimelinePublishError> {
         let revision = {
             let mut latest = self
@@ -433,6 +463,12 @@ impl DynamicMediaTimelinePublisher {
                 return Err(DynamicMediaTimelinePublishError::StaleSourceEpoch {
                     current: latest.source_epoch,
                     attempted: source_epoch,
+                });
+            }
+            if let Err(forbidden) = view::check_view_transition(latest.state, state) {
+                return Err(DynamicMediaTimelinePublishError::ForbiddenViewTransition {
+                    from: forbidden.from,
+                    to: forbidden.to,
                 });
             }
             if source_epoch == latest.source_epoch && state == latest.state {
@@ -513,7 +549,7 @@ mod tests {
         dynamic_media_timeline(DynamicMediaTimelineInitial {
             port_generation: generation(1),
             source_epoch: DynamicMediaTimelineEpoch::new(4),
-            state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(50)),
+            state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(50)).into(),
         })
     }
 
@@ -552,7 +588,12 @@ mod tests {
             .publish(DynamicMediaTimelineEpoch::new(4), state)
             .expect("same epoch publication");
         assert_eq!(
-            port.observe().snapshot.state.join_position(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .join_position(),
             MediaTime::from_secs(54)
         );
     }
@@ -560,8 +601,24 @@ mod tests {
     #[test]
     fn no_dvr_and_non_zero_dvr_states_are_explicit() {
         let (port, publisher) = no_dvr_pair();
-        assert_eq!(port.observe().snapshot.state.availability_range(), None);
-        assert_eq!(port.observe().snapshot.state.seekable_range(), None);
+        assert_eq!(
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .availability_range(),
+            None
+        );
+        assert_eq!(
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
+            None
+        );
 
         let dvr_range = TimelineRange::new(MediaTime::from_secs(20), MediaTime::from_secs(60))
             .expect("ordered DVR range");
@@ -574,11 +631,21 @@ mod tests {
             .expect("publication");
 
         assert_eq!(
-            port.observe().snapshot.state.seekable_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range(),
             Some(dvr_range)
         );
         assert_eq!(
-            port.observe().snapshot.state.availability_range(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .availability_range(),
             Some(dvr_range)
         );
     }
@@ -642,7 +709,10 @@ mod tests {
         let rechecked = port
             .recheck_after_arm(observed.revision())
             .expect("new revision must be visible before wait");
-        assert_eq!(rechecked.state.live_edge(), MediaTime::from_secs(51));
+        assert_eq!(
+            rechecked.state.as_live().expect("live view").live_edge(),
+            MediaTime::from_secs(51)
+        );
         activity_rx
             .try_recv()
             .expect("wake edge remains observable");
@@ -664,7 +734,12 @@ mod tests {
         activity_rx.try_recv().expect("one coalesced activity edge");
         assert_eq!(activity_rx.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(
-            port.observe().snapshot.state.live_edge(),
+            port.observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .live_edge(),
             MediaTime::from_secs(80)
         );
     }
@@ -696,7 +771,7 @@ mod tests {
         let (new_port, _new_publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
             port_generation: generation(2),
             source_epoch: DynamicMediaTimelineEpoch::new(1),
-            state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(500)),
+            state: DynamicMediaTimelineState::without_dvr(MediaTime::from_secs(500)).into(),
         });
 
         old_publisher
@@ -707,11 +782,23 @@ mod tests {
             .expect("old pair remains internally valid");
 
         assert_eq!(
-            old_port.observe().snapshot.state.live_edge(),
+            old_port
+                .observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .live_edge(),
             MediaTime::from_secs(99)
         );
         assert_eq!(
-            new_port.observe().snapshot.state.live_edge(),
+            new_port
+                .observe()
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .live_edge(),
             MediaTime::from_secs(500)
         );
     }

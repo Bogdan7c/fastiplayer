@@ -55,7 +55,8 @@ fn live_media_with_dvr_window(generation: u64) -> PreparedMedia {
                 media_core::MediaTime::from_secs(60),
                 window,
             )
-            .expect("DVR state"),
+            .expect("DVR state")
+            .into(),
         });
     // Publisher живёт столько же, сколько тест: окно не отключается посреди проверки.
     std::mem::forget(publisher);

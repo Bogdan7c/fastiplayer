@@ -115,8 +115,12 @@ struct BufferState {
     first_fed_start: Option<MediaTime>,
     /// Разговор со страницей о перемотке.
     page_seek: PageSeekBook,
-    /// Шкала живого эфира (только у потока, открытого как эфир).
+    /// Табло шкалы потока (эфир, запись или «пока неизвестно», 16d1); `None` — не открыто.
     live_timeline: Option<LiveTimelineFeed>,
+    /// Самый дальний конец принятого сегмента с временем: нижняя граница края записи. По
+    /// спеке MSE длительность сама растёт при дозаписи за конец и не уменьшается от `remove`,
+    /// поэтому хватает максимума, а обновление стоит O(1) на сегмент (16d1).
+    furthest_timed_end: Option<MediaTime>,
     /// После перемотки: позиции старого места ещё могут прийти от приложения.
     stale_position_gate: Option<StalePositionGate>,
     /// Счёт выселений предохранителем памяти.
@@ -135,6 +139,7 @@ impl BufferState {
             first_fed_start: None,
             page_seek,
             live_timeline: None,
+            furthest_timed_end: None,
             stale_position_gate: None,
             memory_guard: MemoryGuardTally::default(),
             awaited_delivery_bytes: 0,
@@ -349,6 +354,12 @@ impl StreamBuffer {
         );
         drop(replaced);
         let media = self.charge_locked(&mut state, segment.media)?;
+        let segment_end = segment.timing.span().end();
+        state.furthest_timed_end = Some(
+            state
+                .furthest_timed_end
+                .map_or(segment_end, |furthest| furthest.max(segment_end)),
+        );
         state.lane_mut(lane)?.shelf.insert(
             ShelfEntry::waiting(
                 segment.timing,

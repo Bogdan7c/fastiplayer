@@ -37,7 +37,8 @@ pub use dynamic_timeline::{
     DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, DynamicMediaTimelinePublishError,
     DynamicMediaTimelinePublishOutcome, DynamicMediaTimelinePublisher,
     DynamicMediaTimelineRevision, DynamicMediaTimelineSnapshot, DynamicMediaTimelineState,
-    DynamicMediaTimelineValidationError, dynamic_media_timeline,
+    DynamicMediaTimelineValidationError, DynamicMediaTimelineView, DynamicMediaTimelineViewKind,
+    RecordingTimelineState, dynamic_media_timeline,
 };
 pub use metadata::{
     DiscNumber, MediaContainerMetadata, MediaMetadata, MediaTagMetadata, TrackNumber,

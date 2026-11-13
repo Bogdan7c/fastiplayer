@@ -231,7 +231,7 @@ fn live_timeline_is_installed_before_barrier_and_service_duration_stays_unknown(
                 NonZeroU64::new(1).expect("non-zero test generation"),
             ),
             source_epoch: DynamicMediaTimelineEpoch::new(0),
-            state: DynamicMediaTimelineState::without_dvr(Duration::from_secs(30).into()),
+            state: DynamicMediaTimelineState::without_dvr(Duration::from_secs(30).into()).into(),
         });
     assert_eq!(
         service_duration_for_timeline(Some(&timeline_port), Some(Duration::from_secs(3_600))),
@@ -249,7 +249,7 @@ fn live_timeline_is_installed_before_barrier_and_service_duration_stays_unknown(
     assert_eq!(prepared.duration(), None);
     assert!(matches!(
         prepared.timeline_mode(),
-        PreparedMediaTimelineMode::Live { .. }
+        PreparedMediaTimelineMode::Dynamic { .. }
     ));
 }
 
@@ -300,7 +300,7 @@ fn live_timeline_and_static_window_conflict_fails_before_strong_install_barrier(
                 NonZeroU64::new(2).expect("non-zero test generation"),
             ),
             source_epoch: DynamicMediaTimelineEpoch::new(0),
-            state: DynamicMediaTimelineState::without_dvr(Duration::from_secs(30).into()),
+            state: DynamicMediaTimelineState::without_dvr(Duration::from_secs(30).into()).into(),
         });
     // Static window моделирует VOD-only HDS semantics.
     let playback_window = player_core::MediaPlaybackWindow::new(

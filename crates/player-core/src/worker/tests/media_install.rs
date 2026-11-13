@@ -70,7 +70,8 @@ fn paused_idle_worker_wakes_on_sliding_live_window_and_publishes_latest_snapshot
                 media_core::MediaTime::from_secs(60),
                 initial_range,
             )
-            .expect("initial DVR state"),
+            .expect("initial DVR state")
+            .into(),
         });
     let demuxer = WorkerFakeDemuxer {
         tracks: Vec::new(),

@@ -30,7 +30,7 @@
 //! перемотаться ([`PushedStreamMonitor::take_page_seek_request`]) и ждёт её байтов
 //! с цели; перемотку, начатую самой страницей, приложение отмечает
 //! ([`PushedStreamWriter::note_page_seek`]). Живой эфир получает динамическую шкалу
-//! по полке ([`OpenedPushedStream::live_timeline`]).
+//! по полке ([`OpenedPushedStream::timeline`]).
 //!
 //! Пределы (пакет G 03b): «полон» приходит и по байтам (доля жёсткого потолка),
 //! честная страница до потолка не доходит; предел ждущих эпизодов не убивает
@@ -81,6 +81,7 @@ mod stream_state;
 #[cfg(test)]
 mod test_fixtures;
 mod time;
+mod timeline_view;
 mod track_identity;
 
 pub use buffer_window::{BufferIntake, BufferStatus, BufferWindow};

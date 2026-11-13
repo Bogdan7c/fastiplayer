@@ -325,7 +325,12 @@ fn audio_only_live_ts_sliding_window_publishes_audio_anchored_dvr_and_advances()
     let deadline = Instant::now() + TEST_TIMEOUT;
     let slid_range = loop {
         let observed = timeline_port.observe();
-        if let Some(range) = observed.snapshot.state.seekable_range()
+        if let Some(range) = observed
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .seekable_range()
             && manifest_requests.load(Ordering::SeqCst) >= 2
             && range.start.as_duration() >= Duration::from_secs(2)
         {
@@ -334,7 +339,12 @@ fn audio_only_live_ts_sliding_window_publishes_audio_anchored_dvr_and_advances()
         assert!(
             Instant::now() < deadline,
             "DVR-band audio-only live has not advanced: {:?}",
-            observed.snapshot.state.seekable_range()
+            observed
+                .snapshot
+                .state
+                .as_live()
+                .expect("live view")
+                .seekable_range()
         );
         let _ = demuxer.next_event().expect("audio-only live readable");
         std::thread::sleep(Duration::from_millis(2));

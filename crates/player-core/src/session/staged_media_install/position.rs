@@ -181,17 +181,9 @@ impl PlayerSession {
         let prepared = ready_prepared_media_mut(staged)?;
         ensure_matching_timeline_mode(old_timeline.mode, prepared)?;
 
-        if matches!(
-            prepared.prepared_media.timeline_mode(),
-            crate::PreparedMediaTimelineMode::Live { .. }
-        ) {
-            let live_snapshot = prepared
-                .prepared_media
-                .staged_live_timeline_snapshot()
-                .ok_or_else(|| position_failure("staged live timeline is unavailable"))?;
+        if let Some(live_snapshot) = prepared.prepared_media.staged_live_timeline_state() {
             let requested = MediaTime::from_duration(initial_old_position);
             if !live_snapshot
-                .state
                 .seekable_range()
                 .is_some_and(|range| range.contains(requested))
             {
@@ -460,11 +452,10 @@ impl PlayerSession {
             StagedPositionCommit::AdjustedToLiveEdge { .. } => {
                 let snapshot = prepared
                     .prepared_media
-                    .staged_live_timeline_snapshot()
+                    .staged_live_timeline_state()
                     .ok_or_else(|| position_failure("staged live timeline disappeared"))?;
                 let requested = MediaTime::from_duration(fresh_position);
                 if snapshot
-                    .state
                     .seekable_range()
                     .is_some_and(|range| range.contains(requested))
                 {
@@ -741,15 +732,12 @@ fn validate_target_and_result(
     let target_position = prepared
         .prepared_media
         .absolute_position_for_relative(MediaTime::from_duration(fresh_position));
-    if matches!(
-        prepared.prepared_media.timeline_mode(),
-        crate::PreparedMediaTimelineMode::Live { .. }
-    ) {
+    if prepared.prepared_media.initial_timeline_mode() == media_core::TimelineMode::Live {
         let snapshot = prepared
             .prepared_media
-            .staged_live_timeline_snapshot()
+            .staged_live_timeline_state()
             .ok_or_else(|| position_failure("staged live timeline disappeared"))?;
-        let Some(range) = snapshot.state.seekable_range() else {
+        let Some(range) = snapshot.seekable_range() else {
             // Seek уже выполнен на старом DVR snapshot. Подмена результата на новый live edge
             // рассинхронизировала бы опубликованную позицию и фактический cursor demuxer-а.
             return Err(position_failure(

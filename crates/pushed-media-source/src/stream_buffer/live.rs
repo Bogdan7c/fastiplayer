@@ -1,38 +1,61 @@
-//! Шкала живого эфира поверх полок буфера (правила — в `crate::live_timeline`).
+//! Табло шкалы поверх полок буфера (правила — в `crate::live_timeline` и `crate::timeline_view`).
 
-use media_core::DynamicMediaTimelinePort;
+use media_core::{DynamicMediaTimelinePort, DynamicMediaTimelinePublishError};
 
 use super::{BufferState, StreamBuffer};
+use crate::PushedDuration;
 use crate::framing::MediaTime;
 use crate::framing::MediaTimeSpan;
 use crate::live_timeline::{LiveShelfView, LiveTimelineFeed};
 
 impl StreamBuffer {
-    /// Открывает шкалу эфира: порт — плееру; дальше буфер публикует в неё при
-    /// каждом изменении полки. Повторное открытие заменяет публикатор (старый
-    /// порт замирает на последнем состоянии).
-    pub(crate) fn open_live_timeline(&self) -> DynamicMediaTimelinePort {
+    /// Открывает табло шкалы: порт — плееру; дальше буфер публикует в него при
+    /// каждом изменении полки и длительности. `declared` — длительность, названная
+    /// страницей к открытию. Повторное открытие заменяет публикатор (старый порт
+    /// замирает на последнем состоянии).
+    pub(crate) fn open_live_timeline(&self, declared: PushedDuration) -> DynamicMediaTimelinePort {
         let mut state = self.lock();
-        let (feed, port) = LiveTimelineFeed::open(self.live_view(&state));
+        let (feed, port) =
+            LiveTimelineFeed::open(self.live_view(&state), declared, state.furthest_timed_end);
         state.live_timeline = Some(feed);
         port
     }
 
-    /// Публикует состояние эфира, если поток открыт как эфир.
-    pub(super) fn publish_live_timeline(&self, state: &mut BufferState) {
-        // Поток не эфир (шкалу никто не открыл) — публиковать некуда и считать вид
-        // незачем: он обходит полки, а зовётся на каждый принятый сегмент.
-        if state.live_timeline.is_none() {
-            return;
+    /// Страница назвала новую длительность (`duration`): табло публикуется сразу.
+    pub(crate) fn note_declared_duration(&self, declared: PushedDuration) {
+        let mut state = self.lock();
+        if let Some(feed) = state.live_timeline.as_mut() {
+            feed.note_declared_duration(declared);
         }
-        let view = self.live_view(state);
+        self.publish_live_timeline(&mut state);
+    }
+
+    /// Публикует состояние табло, если у потока оно открыто.
+    pub(super) fn publish_live_timeline(&self, state: &mut BufferState) {
+        // Вид полки обходит полки, а публикация зовётся на каждый принятый сегмент: его
+        // считает только эфир. Записи хватает дальнего конца (O(1)) — на тысячах мелких
+        // фрагментов обход полки на каждом сегменте задушил бы приём (16d1).
+        let follows_the_shelf = match state.live_timeline.as_ref() {
+            None => return,
+            Some(feed) => feed.follows_the_shelf(),
+        };
+        let shelf = follows_the_shelf.then(|| self.live_view(state));
+        let downloaded_end = state.furthest_timed_end;
         let Some(feed) = state.live_timeline.as_mut() else {
             return;
         };
-        if let Err(error) = feed.publish(view) {
-            // Плеер уничтожил порт (поток закрыт) — публиковать больше некуда.
-            tracing::debug!(%error, "Pushed live timeline stopped publishing");
-            state.live_timeline = None;
+        match feed.publish(shelf, downloaded_end) {
+            Ok(()) => {}
+            Err(DynamicMediaTimelinePublishError::ConsumerDisconnected) => {
+                // Плеер уничтожил порт (поток закрыт) — публиковать больше некуда.
+                tracing::debug!("Pushed timeline stopped publishing: the player dropped the port");
+                state.live_timeline = None;
+            }
+            Err(error) => {
+                // Остальные отказы — дефект источника (эпоха, переполнение ревизий, запрещённый
+                // вид мимо `next_view`): публикатор остаётся, плеер видит прежнее табло.
+                tracing::warn!(%error, "Pushed timeline publication refused");
+            }
         }
     }
 

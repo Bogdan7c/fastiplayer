@@ -274,9 +274,10 @@ impl PushedStreamWriter {
         })
     }
 
-    /// Новая длительность потока (`duration`).
+    /// Новая длительность потока (`duration`): табло шкалы публикует её сразу (16d1).
     pub fn set_duration(&self, duration: PushedDuration) {
         self.state.set_duration(duration);
+        self.buffer.note_declared_duration(duration);
     }
 
     /// Конец потока (`endOfStream`): демуксеры дочитывают поданное, плеер получит
@@ -434,11 +435,21 @@ pub enum OpenProgress {
 pub struct OpenedPushedStream {
     /// Демуксер для плеера.
     pub demuxer: PushedStreamDemuxer,
-    /// Порт живой шкалы — только если на момент открытия длительность была
-    /// [`PushedDuration::Live`] (тогда `demuxer.duration()` — `None`).
+    /// Порт табло шкалы (16d1): эфир, запись или «пока неизвестно», вид меняется на ходу.
     /// Приложение отдаёт его плееру: `PreparedMedia::with_dynamic_timeline(port)`.
-    /// Эфир или ролик — решается один раз при открытии.
-    pub live_timeline: Option<DynamicMediaTimelinePort>,
+    /// `None` — у потока есть полосы без меток времени: он неперематываем, и шкалу ведёт
+    /// demuxer, как у обычного ролика (у эфира табло есть всегда).
+    pub timeline: Option<DynamicMediaTimelinePort>,
+}
+
+impl OpenedPushedStream {
+    /// Поток открылся эфиром: вход в эфир и клик зрителя ведёт табло, а не позиция ролика.
+    #[must_use]
+    pub fn opened_as_live(&self) -> bool {
+        self.timeline
+            .as_ref()
+            .is_some_and(|port| port.observe().snapshot.state.as_live().is_some())
+    }
 }
 
 /// Сторона открытия.
@@ -495,15 +506,18 @@ impl PushedStreamOpener {
             .assemble(media_lanes)
             .map_err(|error| self.state.record_failure(error))?;
         self.opened = true;
-        let live_timeline = (self.state.duration() == PushedDuration::Live)
-            .then(|| self.buffer.open_live_timeline());
+        let declared = self.state.duration();
+        // Табло — у эфира всегда (как до 16d1), у остальных — если поток перематываем по
+        // полке: у полосы без меток времени перемотки нет, и шкалу ведёт demuxer.
+        let timeline = (declared == PushedDuration::Live || self.buffer.all_lanes_timed())
+            .then(|| self.buffer.open_live_timeline(declared));
         Ok(OpenProgress::Ready(OpenedPushedStream {
             demuxer: PushedStreamDemuxer {
                 inner: demuxer,
                 state: Arc::clone(&self.state),
                 buffer: Arc::clone(&self.buffer),
             },
-            live_timeline,
+            timeline,
         }))
     }
 

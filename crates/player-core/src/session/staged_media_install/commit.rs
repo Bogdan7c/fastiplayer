@@ -30,7 +30,7 @@ impl PlayerSession {
         let playback_window = prepared_media.playback_window();
         let installs_dynamic_timeline = matches!(
             prepared_media.timeline_mode(),
-            crate::PreparedMediaTimelineMode::Live { .. }
+            crate::PreparedMediaTimelineMode::Dynamic { .. }
         );
         let source_duration = prepared_media.duration();
         let public_duration = playback_window.map_or(source_duration, |window| {

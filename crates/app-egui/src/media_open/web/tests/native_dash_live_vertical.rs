@@ -155,7 +155,13 @@ fn wait_for_shifted_window(
         let PreparedNativeDashLifecycle::Live { timeline_port } = &prepared.lifecycle else {
             panic!("Supported dynamic MPD must create a live timeline port");
         };
-        if let Some(range) = timeline_port.observe().snapshot.state.availability_range()
+        if let Some(range) = timeline_port
+            .observe()
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .availability_range()
             && range.start > initial_start
             && server.request_count("/manifest.mpd") >= 61
         {
@@ -183,7 +189,14 @@ fn assert_retained_dvr_seek(prepared: &mut PreparedNativeDashMedia) {
         let PreparedNativeDashLifecycle::Live { timeline_port } = &prepared.lifecycle else {
             panic!("retained DVR seek requires live timeline");
         };
-        if let Some(range) = timeline_port.observe().snapshot.state.seekable_range() {
+        if let Some(range) = timeline_port
+            .observe()
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .seekable_range()
+        {
             break range.start.as_duration();
         }
         match prepared.demuxer.next_event() {
@@ -290,6 +303,8 @@ fn n14b_lifecycle_dash_live_dvr_expiry_recovery_reopen_has_no_false_eof() {
             .observe()
             .snapshot
             .state
+            .as_live()
+            .expect("live view")
             .availability_range()
             .expect("The initial dynamic MPD should publish availability."),
         PreparedNativeDashLifecycle::Vod { .. } => {

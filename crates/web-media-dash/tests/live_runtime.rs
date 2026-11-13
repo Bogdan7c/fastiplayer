@@ -460,6 +460,8 @@ fn prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown() {
         .observe()
         .snapshot
         .state
+        .as_live()
+        .expect("live view")
         .availability_range()
         .expect("refreshed manifest publishes availability")
         .end;
@@ -768,7 +770,15 @@ fn wait_for_live_edge_at_least(
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {
         let observed = timeline_port.observe();
-        if observed.snapshot.state.live_edge().as_duration() >= minimum_live_edge {
+        if observed
+            .snapshot
+            .state
+            .as_live()
+            .expect("live view")
+            .live_edge()
+            .as_duration()
+            >= minimum_live_edge
+        {
             return;
         }
         assert!(

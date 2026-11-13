@@ -635,6 +635,8 @@ fn sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired() {
         .observe()
         .snapshot
         .state
+        .as_live()
+        .expect("live view")
         .seekable_range()
         .is_none_or(|range| range.start.as_duration() == Duration::ZERO)
         && Instant::now() < deadline
@@ -668,6 +670,8 @@ fn sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired() {
         observed
             .snapshot
             .state
+            .as_live()
+            .expect("live view")
             .seekable_range()
             .is_none_or(|range| range.start.as_duration() > Duration::ZERO)
     );

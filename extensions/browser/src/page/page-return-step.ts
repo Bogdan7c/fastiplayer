@@ -12,6 +12,7 @@
 // Перемотка не повторяется бесконечно: сайт может сам сбросить позицию (свой «продолжить с места»). После
 // `MAX_RETURN_SEEKS` попыток тень встаёт там, где страница, — плеер увидит это в `page_seek` и встанет так же.
 
+import { isEndlessDurationSeconds } from "../shared/endless-duration.ts";
 import { PAGE_RETURN_DURATION_TOLERANCE_S, type PageReturnTarget } from "../shared/handoff-contract.ts";
 
 /** `HTMLMediaElement.HAVE_METADATA`: длительность и размер кадра известны. */
@@ -26,7 +27,7 @@ export const MAX_RETURN_SEEKS = 2;
 /** Что сторож знает об элементе в момент решения. */
 export interface ReturnVideoFacts {
   readonly readyState: number;
-  /** `duration` элемента: `NaN` — неизвестна, `Infinity` — эфир. */
+  /** `duration` элемента: `NaN` — неизвестна, `Infinity` и длиннее года — эфир. */
   readonly durationS: number;
   readonly currentTimeS: number;
   /** Настоящий элемент сейчас перематывается. */
@@ -48,7 +49,11 @@ export type PageReturnStep =
 
 export function pageReturnStep(facts: ReturnVideoFacts, target: PageReturnTarget): PageReturnStep {
   if (facts.readyState < HAVE_METADATA) return { kind: "wait" };
-  if (target.kind === "live") return Number.isFinite(facts.durationS) ? { kind: "not_this_video" } : { kind: "hold" };
+  // Эфир — `Infinity` или длиннее года (решение 319); NaN — метаданных нет, ждём.
+  if (target.kind === "live") {
+    const recorded = Number.isFinite(facts.durationS) && !isEndlessDurationSeconds(facts.durationS);
+    return recorded ? { kind: "not_this_video" } : { kind: "hold" };
+  }
   if (!Number.isFinite(facts.durationS) || Math.abs(facts.durationS - target.duration_s) > PAGE_RETURN_DURATION_TOLERANCE_S) {
     return { kind: "not_this_video" };
   }

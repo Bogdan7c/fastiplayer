@@ -128,7 +128,7 @@ fn fake_live_media_with_seek_result(
     let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
         port_generation: generation(generation_value),
         source_epoch: DynamicMediaTimelineEpoch::new(1),
-        state: initial_state,
+        state: initial_state.into(),
     });
     let mut inner = FakeDemuxer::new(Vec::new(), None, Arc::new(Mutex::new(Vec::new())));
     if let Some(seek_result) = seek_result {

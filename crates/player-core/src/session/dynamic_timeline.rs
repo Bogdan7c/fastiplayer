@@ -3,9 +3,9 @@
 use crossbeam_channel::Receiver;
 use frame_server_core::CancelScrubReason;
 use media_core::{
-    DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, DynamicMediaTimelineRevision,
-    DynamicMediaTimelineSnapshot, MediaTime, TimelineMode, TimelineNotSeekableReason,
-    TimelineRange,
+    DynamicMediaTimelineEpoch, DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration,
+    DynamicMediaTimelineRevision, DynamicMediaTimelineSnapshot, DynamicMediaTimelineState,
+    DynamicMediaTimelineView, MediaTime, TimelineMode, TimelineNotSeekableReason, TimelineRange,
 };
 
 use crate::seek_state::SeekTargetRetention;
@@ -14,6 +14,7 @@ use crate::{MediaInstanceId, PreparedMediaTimelineMode};
 use super::PlayerSession;
 
 pub(super) mod expired_seek_recovery;
+mod recording_view;
 
 use expired_seek_recovery::ExpiredLiveSeekContinuation;
 
@@ -70,15 +71,17 @@ impl PlayerSession {
                 self.playback_window = playback_window;
                 self.snapshot.timeline.mode = TimelineMode::Static;
             }
-            PreparedMediaTimelineMode::Live { port } => {
-                debug_assert!(self.source_duration.is_none());
+            PreparedMediaTimelineMode::Dynamic { port } => {
                 self.playback_window = None;
                 let initial = port.observe().snapshot;
+                // Длину commit уже поставил из `PreparedMedia`, но табло могло обновиться после
+                // подготовки (источник публикует из своего потока): главный — свежий снимок
+                // ниже, `apply_dynamic_timeline_snapshot` перепишет длину по нему.
                 self.dynamic_timeline.binding = Some(DynamicTimelineBinding {
                     media_instance_id,
                     port,
                     observed_revision: initial.revision,
-                    availability_range: initial.state.availability_range(),
+                    availability_range: recording_view::view_availability_range(initial.state),
                     activity_disconnected: false,
                 });
                 self.apply_dynamic_timeline_snapshot(initial, true);
@@ -86,7 +89,36 @@ impl PlayerSession {
         }
     }
 
-    /// Сообщает lifecycle-коду, что installed media владеет изменяемой live timeline.
+    /// Длина, которую demuxer сообщил посреди воспроизведения (обновление списка дорожек).
+    ///
+    /// У записи с табло длину ведёт только табло: смена качества у YouTube приходит постоянно,
+    /// и прежняя запись длины пересоздала бы шкалу — длина, объявленная страницей, пропала бы.
+    /// Без табло длина ставится, как раньше.
+    ///
+    /// **Эфир — пока по-старому (известный дефект, найден в 16d1).** У эфира та же запись
+    /// затирает шкалу эфира в «запись без длины». На этом держится перезапуск эфира страницей
+    /// (Twitch, решение 194): при честной шкале эфира звук новой шкалы, начавшийся позже потолка
+    /// тишины, в эфире не ждёт своего времени (`audio_gap/scheduled_audio_start.rs` — только
+    /// `Static`); в окне, по одному прогону с пробной правкой звука, перевыбор декодера ещё и
+    /// перематывал на уехавшую позицию. Чинить вместе: честная шкала эфира при смене дорожек и
+    /// правило старта звука в эфире (общий бэклог).
+    pub(super) fn apply_demuxer_reported_duration(
+        &mut self,
+        duration: Option<std::time::Duration>,
+    ) {
+        let timeline_owns_duration = self.has_dynamic_timeline_binding()
+            && self.snapshot.timeline.mode != TimelineMode::Live;
+        if timeline_owns_duration {
+            tracing::debug!(
+                reported_duration_ms = duration.map(|value| value.as_millis()),
+                "Demuxer duration ignored: the source timeline owns the duration"
+            );
+            return;
+        }
+        self.set_snapshot_duration(duration);
+    }
+
+    /// Сообщает lifecycle-коду, что installed media владеет табло шкалы (эфир или запись).
     pub(super) const fn has_dynamic_timeline_binding(&self) -> bool {
         self.dynamic_timeline.binding.is_some()
     }
@@ -138,7 +170,7 @@ impl PlayerSession {
         if latest.port_generation != binding.port.port_generation() {
             return None;
         }
-        latest.state.seekable_range()
+        latest.state.as_live()?.seekable_range()
     }
 
     /// Возвращает safe live edge, если pause-position уже выпала из DVR window.
@@ -230,17 +262,40 @@ impl PlayerSession {
         {
             return;
         }
-        let availability_range = dynamic_snapshot.state.availability_range();
         binding.observed_revision = dynamic_snapshot.revision;
-        binding.availability_range = availability_range;
-        let live_edge = dynamic_snapshot.state.live_edge();
-        let seekable_range = dynamic_snapshot.state.seekable_range();
+        binding.availability_range =
+            recording_view::view_availability_range(dynamic_snapshot.state);
+        match dynamic_snapshot.state {
+            DynamicMediaTimelineView::Live(live) => self.apply_live_view(
+                dynamic_snapshot.source_epoch,
+                dynamic_snapshot.revision,
+                live,
+                initial_install,
+            ),
+            DynamicMediaTimelineView::Recording(recording) => {
+                self.apply_recording_view(recording);
+            }
+            DynamicMediaTimelineView::Undetermined => self.apply_undetermined_view(),
+        }
+    }
+
+    /// Табло показывает эфир: прежняя проекция S31L (край, окно DVR, вход в эфир).
+    fn apply_live_view(
+        &mut self,
+        source_epoch: DynamicMediaTimelineEpoch,
+        revision: DynamicMediaTimelineRevision,
+        live: DynamicMediaTimelineState,
+        initial_install: bool,
+    ) {
+        let availability_range = live.availability_range();
+        let live_edge = live.live_edge();
+        let seekable_range = live.seekable_range();
         self.snapshot.timeline.mode = TimelineMode::Live;
         self.snapshot.timeline.duration = None;
         self.snapshot.duration = None;
         self.snapshot.timeline.live_edge = Some(live_edge);
-        self.snapshot.timeline.live_epoch = Some(dynamic_snapshot.source_epoch);
-        self.snapshot.timeline.live_revision = Some(dynamic_snapshot.revision);
+        self.snapshot.timeline.live_epoch = Some(source_epoch);
+        self.snapshot.timeline.live_revision = Some(revision);
         self.snapshot.timeline.seekable_range = seekable_range;
         self.snapshot.timeline.seekable = seekable_range.is_some();
         self.snapshot.timeline.not_seekable_reason = seekable_range
@@ -250,7 +305,7 @@ impl PlayerSession {
         if initial_install {
             // Вход в эфир идёт с позиции источника (hold-back), а не с самого края: demux
             // отдаёт данные с неё, и часы на edge отрезали бы весь запас (см. F3).
-            let join_position = dynamic_snapshot.state.join_position();
+            let join_position = live.join_position();
             self.current_source_position = join_position.as_duration();
             self.snapshot.set_timeline_position(join_position);
             self.pipeline
@@ -277,10 +332,24 @@ impl PlayerSession {
 
         let fresh_snapshot = binding.port.observe().snapshot;
         self.apply_dynamic_timeline_snapshot(fresh_snapshot, false);
+        let fresh_snapshot = match fresh_snapshot.state {
+            DynamicMediaTimelineView::Live(live) => live,
+            // Эфир успел стать записью: прежняя позиция — обычная перемотка внутри записи,
+            // её проверит обычный seek lifecycle по уже применённой шкале записи.
+            DynamicMediaTimelineView::Recording(recording) => {
+                return Ok(
+                    LiveSameItemPositionRestoreDecision::RestoreRetainedPosition(
+                        recording_view::clamp_into_recording(recording, previous_absolute_position),
+                    ),
+                );
+            }
+            DynamicMediaTimelineView::Undetermined => {
+                return Err(crate::InstalledMediaStateRestoreOutcome::StaleInstance);
+            }
+        };
 
         let requested_media_time = MediaTime::from_duration(previous_absolute_position);
         if fresh_snapshot
-            .state
             .seekable_range()
             .is_some_and(|range| range.contains(requested_media_time))
         {
@@ -291,7 +360,7 @@ impl PlayerSession {
             );
         }
 
-        let reason = match fresh_snapshot.state.seekable_range() {
+        let reason = match fresh_snapshot.seekable_range() {
             Some(available_range) => {
                 crate::InstalledLiveEdgeAdjustmentReason::PreviousPositionOutsideDvr {
                     available_range,
@@ -301,10 +370,10 @@ impl PlayerSession {
         };
         // Новая generation стартовала с hold-back позиции своего источника (F3): часы
         // ставим туда же, где demux начал отдавать данные, а не на самый край.
-        let live_edge = fresh_snapshot.state.join_position().as_duration();
+        let live_edge = fresh_snapshot.join_position().as_duration();
         self.current_source_position = live_edge;
         self.snapshot
-            .set_timeline_position(fresh_snapshot.state.join_position());
+            .set_timeline_position(fresh_snapshot.join_position());
         self.pipeline.set_media_clock_base(live_edge);
 
         Ok(LiveSameItemPositionRestoreDecision::AdjustedToLiveEdge {

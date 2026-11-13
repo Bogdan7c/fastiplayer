@@ -131,7 +131,7 @@ impl Page {
 
 fn prepared_live(opener: &mut PushedStreamOpener) -> PreparedMedia {
     let opened = open_stream(opener);
-    let port = opened.live_timeline.expect("live timeline");
+    let port = opened.timeline.expect("live timeline");
     PreparedMedia::from_external_label("live restart test", Box::new(opened.demuxer))
         .with_dynamic_timeline(port)
         .expect("live timeline accepted")
