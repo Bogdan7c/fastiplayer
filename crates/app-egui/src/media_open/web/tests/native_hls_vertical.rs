@@ -370,7 +370,7 @@ pub(super) fn assert_decoder_render_audio_for_codec(
     wgpu_harness: &mut OffscreenWgpuHarness,
     video_codec: DecodeVideoCodec,
 ) {
-    assert_decoder_render_audio_samples(demuxer, wgpu_harness, video_codec, 1);
+    assert_decoder_render_audio_samples(demuxer, wgpu_harness, video_codec, 1, Duration::ZERO);
 }
 
 /// Live vertical требует как минимум два successive frame/audio результата одним decoder lifecycle.
@@ -378,7 +378,29 @@ pub(super) fn assert_decoder_render_audio_movement(
     demuxer: &mut dyn Demuxer,
     wgpu_harness: &mut OffscreenWgpuHarness,
 ) {
-    assert_decoder_render_audio_samples(demuxer, wgpu_harness, DecodeVideoCodec::H264, 2);
+    assert_decoder_render_audio_samples(
+        demuxer,
+        wgpu_harness,
+        DecodeVideoCodec::H264,
+        2,
+        Duration::ZERO,
+    );
+}
+
+/// То же движение, но засчитываются только кадры и PCM не раньше `counted_from` по шкале:
+/// доказывает, что поток дошёл до рендера именно после этой точки (16d3, склейка эфира).
+pub(super) fn assert_decoder_render_audio_movement_after(
+    demuxer: &mut dyn Demuxer,
+    wgpu_harness: &mut OffscreenWgpuHarness,
+    counted_from: Duration,
+) {
+    assert_decoder_render_audio_samples(
+        demuxer,
+        wgpu_harness,
+        DecodeVideoCodec::H264,
+        2,
+        counted_from,
+    );
 }
 
 /// Один decoder lifecycle сохраняет SPS/PPS и доказывает движение, не переоткрываясь mid-stream.
@@ -387,6 +409,7 @@ fn assert_decoder_render_audio_samples(
     wgpu_harness: &mut OffscreenWgpuHarness,
     video_codec: DecodeVideoCodec,
     minimum_samples: usize,
+    counted_from: Duration,
 ) {
     let video_track = demuxer
         .tracks()
@@ -421,8 +444,10 @@ fn assert_decoder_render_audio_samples(
             .expect("Read more about the local HLS demux event")
         {
             DemuxReadEvent::Packet(packet) if packet.track_id == video_track.id => {
+                // Ранние пакеты декодируются (держат состояние декодера), но не засчитываются.
+                let counted = packet.pts >= counted_from;
                 for decoded_frame in decode_packet(video_decoder.as_ref(), packet) {
-                    if decoded_video_frames.len() < minimum_samples {
+                    if counted && decoded_video_frames.len() < minimum_samples {
                         decoded_video_frames.push(decoded_frame);
                     } else {
                         video_decoder.release_frame(decoded_frame.resource_handle);
@@ -430,6 +455,7 @@ fn assert_decoder_render_audio_samples(
                 }
             }
             DemuxReadEvent::Packet(packet) if packet.track_id == audio_track.id => {
+                let counted = packet.pts >= counted_from;
                 let encoded_packet = EncodedAudioPacket::new(
                     packet.track_id.get(),
                     audio_packet_timing(&packet),
@@ -438,7 +464,7 @@ fn assert_decoder_render_audio_samples(
                 let decoded_samples = audio_decoder
                     .decode(&encoded_packet)
                     .expect("Production AAC decoder must decode native HLS packet");
-                if !decoded_samples.is_empty() {
+                if counted && !decoded_samples.is_empty() {
                     assert_pcm_advances_clock(
                         &decoded_samples,
                         audio_decoder.sample_rate(),

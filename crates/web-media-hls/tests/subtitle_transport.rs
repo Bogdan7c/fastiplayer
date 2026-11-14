@@ -690,6 +690,7 @@ fn live_open_exposes_working_subtitle_transport_without_requesting_it() {
             NonZeroU64::new(1).expect("non-zero test port generation"),
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        network_reconnect: source_core::HttpReconnectPolicy::disabled(),
     };
     let opened = prepare_hls_live(request).expect("prepare live with subtitles");
     let transport = opened.subtitle_transport();

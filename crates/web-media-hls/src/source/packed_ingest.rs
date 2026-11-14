@@ -107,6 +107,7 @@ impl HlsEpochSegmentSource {
         body.next_chunk().map_err(|error: AdaptiveTransportError| {
             self.resource_attempt_observer
                 .observe_transport_error(&error);
+            self.observe_transient_network_failure(&error);
             HlsSegmentSourceError::from(error)
         })
     }

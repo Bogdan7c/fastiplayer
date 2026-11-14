@@ -364,6 +364,9 @@ fn prepare_native_hls_runtime(
                 timeline_port_generation:
                     crate::web_media_open::next_dynamic_timeline_port_generation()?,
                 initial_source_epoch: media_core::DynamicMediaTimelineEpoch::new(0),
+                network_reconnect: crate::web_media_adaptive_config::live_network_reconnect_policy(
+                    request.network_config,
+                ),
             };
             let prepared = match request.selection {
                 NativeHlsRuntimeSelection::ProviderDefault => {

@@ -636,6 +636,7 @@ fn live_catalog_reopen_semantically_tracks_rotated_child_after_endpoint_replacem
             NonZeroU64::new(1).expect("timeline port generation"),
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        network_reconnect: source_core::HttpReconnectPolicy::disabled(),
     };
     let opened = prepare_hls_catalog_live_receipted(
         live,

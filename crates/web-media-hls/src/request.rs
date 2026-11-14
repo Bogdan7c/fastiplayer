@@ -397,6 +397,12 @@ pub struct HlsLiveOpenRequest {
     pub endpoint_refresh: Arc<dyn HlsEndpointRefreshPort>,
     pub timeline_port_generation: DynamicMediaTimelinePortGeneration,
     pub initial_source_epoch: DynamicMediaTimelineEpoch,
+    /// Сколько ждать возвращения сети посреди эфира (`network.reconnect_wait_ms`, 16d3).
+    ///
+    /// Пока бюджет не исчерпан, временный сетевой сбой плейлиста или сегмента
+    /// повторяется с паузами 0,5 → 8 с, а плеер видит буферизацию. `disabled()` —
+    /// прежнее поведение: первый же сбой после внутренних повторов транспорта роковой.
+    pub network_reconnect: source_core::HttpReconnectPolicy,
 }
 
 impl fmt::Debug for HlsVodOpenRequest {

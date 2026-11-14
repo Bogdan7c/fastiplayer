@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use media_core::{
@@ -9,12 +10,14 @@ use media_core::{
 use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
 
+use super::open::SelectedLiveResources;
 use super::timeline_publication::{
     HlsStreamEnd, HlsTimelinePublication, PublishedHlsView, timeline_publication,
 };
 use super::{
-    HlsLiveComponentSnapshot, HlsLiveRandomAccessSource, HlsLiveSegmentIdentity,
-    HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence, hold_back,
+    HlsLiveComponentSnapshot, HlsLiveRandomAccessSource, HlsLiveRefreshError,
+    HlsLiveSegmentIdentity, HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence, hold_back,
+    rejoin,
 };
 
 /// Общий owner main/audio snapshots, evidence и neutral timeline publication.
@@ -36,6 +39,13 @@ struct HlsLiveTimelineCoordinatorState {
     join_position: std::time::Duration,
     /// Какой вид табло уже опубликован: после записи эфир не возвращается (16d1).
     published_view: PublishedHlsView,
+    /// Докуда демуксеры дочитали, даже если те сегменты уже ушли из окна (решение 333).
+    ///
+    /// Доказательства пакетов живут только для сегментов текущего окна. Долгая пауза или
+    /// склейка подряд оставили бы склейку без опоры, и она поставила бы окно далеко позади
+    /// плеера. Поэтому перед каждой подменой снимков прочитанное «сворачивается» сюда, а
+    /// склейка ставит сюда свою точку продолжения. Значение только растёт.
+    read_until: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -80,6 +90,7 @@ impl HlsLiveTimelineCoordinator {
                 publisher,
                 join_position,
                 published_view: PublishedHlsView::Live,
+                read_until: join_position,
             }),
         });
         (coordinator, port)
@@ -119,31 +130,56 @@ impl HlsLiveTimelineCoordinator {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("HLS live timeline coordinator mutex poisoned"))?;
-        if source_epoch < state.source_epoch {
-            return Err(anyhow::anyhow!("stale HLS live source epoch"));
-        }
-        if let Some(replacement_transport) = replacement_transport.as_ref()
-            && replacement_transport.generation.value() <= state.transport.generation.value()
-        {
-            return Err(anyhow::anyhow!("stale HLS live transport generation"));
-        }
-        state.main_evidence.retain_snapshot(&main);
-        match (&mut state.audio_evidence, &audio) {
-            (Some(evidence), Some(snapshot)) => evidence.retain_snapshot(snapshot),
-            (None, Some(_)) => {
-                state.audio_evidence = Some(HlsLiveTimelineEvidence::new(
-                    HlsLiveRandomAccessSource::EveryAudioPacket,
-                ));
-            }
-            (_, None) => state.audio_evidence = None,
-        }
-        state.main = main;
-        state.audio = audio;
-        state.source_epoch = source_epoch;
-        if let Some(replacement_transport) = replacement_transport {
-            state.transport = replacement_transport;
-        }
-        publish_latest(&mut state)
+        check_replacement_fence(&state, source_epoch, replacement_transport.as_ref())?;
+        commit_snapshots(&mut state, main, audio, source_epoch, replacement_transport)
+    }
+
+    /// Склейка эфира, потерявшего нить окна (решение 333, модуль `rejoin`).
+    ///
+    /// Всё делается под одной блокировкой: «докуда дочитано» берётся из того же состояния,
+    /// которое тут же подменяется. Отметки демуксера о пакетах идут через этот же мьютекс,
+    /// поэтому между замером и подменой прочитанное не сдвинется.
+    ///
+    /// Если ни один компонент ещё ничего не прочитал, продолжаем с позиции входа, с которой
+    /// стартовали часы плеера.
+    pub(super) fn rejoin_live_edge(
+        &self,
+        resources: &SelectedLiveResources,
+        source_epoch: DynamicMediaTimelineEpoch,
+        replacement_transport: Option<HlsLiveTransportSnapshot>,
+    ) -> Result<HlsLiveRejoinOutcome, HlsLiveRejoinError> {
+        let mut state = self.state.lock().map_err(|_| {
+            HlsLiveRejoinError::Coordinator(anyhow::anyhow!(
+                "HLS live timeline coordinator mutex poisoned"
+            ))
+        })?;
+        check_replacement_fence(&state, source_epoch, replacement_transport.as_ref())
+            .map_err(HlsLiveRejoinError::Coordinator)?;
+        // Дальний из компонентов и из уже ушедших сегментов: тогда ни у одного компонента
+        // метки времени не пойдут назад. Отставший компонент сам найдёт сегмент не раньше
+        // своего прочитанного (`rejoin::first_segment_after`).
+        let resume_at = read_until_now(&state);
+        let previous_live_edge = shared_live_edge(&state.main, state.audio.as_ref());
+        let rejoined =
+            rejoin::rejoined_snapshots(resources, resume_at).map_err(HlsLiveRejoinError::Rejoin)?;
+        let live_edge = shared_live_edge(&rejoined.main, rejoined.audio.as_ref());
+        commit_snapshots(
+            &mut state,
+            rejoined.main,
+            rejoined.audio,
+            source_epoch,
+            replacement_transport,
+        )
+        .map_err(HlsLiveRejoinError::Coordinator)?;
+        // Из нового окна ещё ничего не прочитано, но продолжение — отсюда: вторая склейка
+        // подряд не должна откатить окно назад.
+        state.read_until = state.read_until.max(resume_at);
+        Ok(HlsLiveRejoinOutcome {
+            resume_at,
+            join_position: rejoined.join_position,
+            previous_live_edge: previous_live_edge.as_duration(),
+            live_edge: live_edge.as_duration(),
+        })
     }
 
     /// Принимает packet только вместе с exact source segment identity.
@@ -332,4 +368,87 @@ fn intersect_ranges(left: TimelineRange, right: TimelineRange) -> Option<Timelin
         end: left.end.min(right.end),
     };
     (range.start < range.end).then_some(range)
+}
+
+/// Что сделала склейка: для журнала и тестов, без адресов и содержимого плейлиста.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HlsLiveRejoinOutcome {
+    /// Докуда было дочитано: сюда поставлена точка входа нового окна.
+    pub resume_at: Duration,
+    /// Начало сегмента входа нового окна на шкале плеера.
+    pub join_position: Duration,
+    /// Край эфира до склейки.
+    pub previous_live_edge: Duration,
+    /// Край эфира после склейки.
+    pub live_edge: Duration,
+}
+
+/// Почему склейка не состоялась: разные причины — разные роковые ошибки эфира.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HlsLiveRejoinError {
+    /// Новый плейлист нельзя поставить на шкалу (переполнение, несовпадение плана).
+    #[error("HLS live rejoin could not place the new window: {0}")]
+    Rejoin(#[source] HlsLiveRefreshError),
+    /// Состояние координатора недоступно или обновление устарело.
+    #[error("HLS live rejoin was rejected by the timeline coordinator: {0}")]
+    Coordinator(#[source] anyhow::Error),
+}
+
+/// Докуда дочитано на сейчас: прочитанное в текущем окне или запомненное раньше.
+fn read_until_now(state: &HlsLiveTimelineCoordinatorState) -> Duration {
+    let main_frontier = state.main_evidence.read_frontier(&state.main);
+    let audio_frontier = state
+        .audio
+        .as_ref()
+        .zip(state.audio_evidence.as_ref())
+        .and_then(|(snapshot, evidence)| evidence.read_frontier(snapshot));
+    main_frontier
+        .max(audio_frontier)
+        .map_or(state.read_until, |frontier| frontier.max(state.read_until))
+}
+
+/// Отвергает обновление, пришедшее из устаревшей эпохи или устаревшего транспорта.
+fn check_replacement_fence(
+    state: &HlsLiveTimelineCoordinatorState,
+    source_epoch: DynamicMediaTimelineEpoch,
+    replacement_transport: Option<&HlsLiveTransportSnapshot>,
+) -> Result<()> {
+    if source_epoch < state.source_epoch {
+        return Err(anyhow::anyhow!("stale HLS live source epoch"));
+    }
+    if let Some(replacement_transport) = replacement_transport
+        && replacement_transport.generation.value() <= state.transport.generation.value()
+    {
+        return Err(anyhow::anyhow!("stale HLS live transport generation"));
+    }
+    Ok(())
+}
+
+/// Подменяет снимки, чистит доказательства ушедших сегментов и публикует табло.
+fn commit_snapshots(
+    state: &mut HlsLiveTimelineCoordinatorState,
+    main: HlsLiveComponentSnapshot,
+    audio: Option<HlsLiveComponentSnapshot>,
+    source_epoch: DynamicMediaTimelineEpoch,
+    replacement_transport: Option<HlsLiveTransportSnapshot>,
+) -> Result<()> {
+    // Прочитанное запоминается до того, как доказательства ушедших сегментов удалятся.
+    state.read_until = read_until_now(state);
+    state.main_evidence.retain_snapshot(&main);
+    match (&mut state.audio_evidence, &audio) {
+        (Some(evidence), Some(snapshot)) => evidence.retain_snapshot(snapshot),
+        (None, Some(_)) => {
+            state.audio_evidence = Some(HlsLiveTimelineEvidence::new(
+                HlsLiveRandomAccessSource::EveryAudioPacket,
+            ));
+        }
+        (_, None) => state.audio_evidence = None,
+    }
+    state.main = main;
+    state.audio = audio;
+    state.source_epoch = source_epoch;
+    if let Some(replacement_transport) = replacement_transport {
+        state.transport = replacement_transport;
+    }
+    publish_latest(state)
 }

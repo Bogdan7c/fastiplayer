@@ -98,6 +98,7 @@ impl HlsEpochSegmentSource {
         let mut body = opened.inspect_err(|error| {
             if let HlsSegmentSourceError::Transport(error) = error {
                 self.observe_refreshable_expiry(error, refreshable_kind);
+                self.observe_transient_network_failure(error);
             }
         })?;
         let mut resource_bytes = Vec::new();
@@ -107,6 +108,7 @@ impl HlsEpochSegmentSource {
                 self.resource_attempt_observer
                     .observe_transport_error(error);
                 self.observe_refreshable_expiry(error, refreshable_kind);
+                self.observe_transient_network_failure(error);
             }
             match next_chunk? {
                 Some(chunk) => resource_bytes.extend_from_slice(&chunk),
@@ -170,6 +172,7 @@ impl HlsEpochSegmentSource {
                     error,
                     HlsRefreshableResourceKind::MediaOrInitialization,
                 );
+                self.observe_transient_network_failure(error);
             }
         })
     }
@@ -289,6 +292,7 @@ impl OrderedResourceStreamSource for HlsEpochSegmentSource {
                         if let Err(error) = &next_chunk {
                             self.resource_attempt_observer
                                 .observe_transport_error(error);
+                            self.observe_transient_network_failure(error);
                         }
                         match next_chunk.map_err(map_resource_stream_error)? {
                             Some(chunk) if !chunk.is_empty() => remainder = chunk,

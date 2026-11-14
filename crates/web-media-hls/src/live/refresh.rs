@@ -1,15 +1,23 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use hls_playlist_core::HlsPlaylist;
 use media_core::DynamicMediaTimelineEpoch;
 
+use super::network_outage::{
+    HlsLiveNetworkOutage, HlsLiveOutageDecision, transient_manifest_failure,
+};
 use super::open::{
     HlsLiveOpenError, SelectedLiveResources, fetch_manifest, load_selected_live, parse_playlist,
     validate_live_media,
 };
-use super::{HlsLiveTimelineCoordinator, HlsLiveTransportSnapshot};
+use super::rejoin::{
+    HlsLiveManifestFreshness, HlsLiveRefreshContinuation, manifest_freshness,
+    plan_refresh_continuation,
+};
+use super::reload_schedule::{HlsLiveDueRenditions, HlsLiveReloadSchedules};
+use super::{HlsLiveRejoinError, HlsLiveTimelineCoordinator, HlsLiveTransportSnapshot};
 use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenSelection};
 use crate::open::HlsVodOpenError;
 use crate::plan::build_segment_scoped_component_plan;
@@ -172,6 +180,8 @@ fn run_refresh_loop(
         set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
         return;
     };
+    // Серия сетевых сбоев плейлиста: пока бюджет не исчерпан, ждём сеть (решение 334).
+    let mut manifest_outage = HlsLiveNetworkOutage::new(request.network_reconnect);
     loop {
         let Some(deadline) = schedules.next_deadline() else {
             return;
@@ -208,7 +218,10 @@ fn run_refresh_loop(
                     continue;
                 }
                 let attempt = match refresh_selected_media(&request.common, &current, due) {
-                    Ok(attempt) => attempt,
+                    Ok(attempt) => {
+                        manifest_outage.record_recovery();
+                        attempt
+                    }
                     Err(error)
                         if matches!(
                             &error,
@@ -222,6 +235,13 @@ fn run_refresh_loop(
                     }
                     Err(error) => {
                         let Some(reason) = endpoint_refresh_reason(&error) else {
+                            if let Some(retry_after) = transient_manifest_failure(&error)
+                                && let HlsLiveOutageDecision::RetryAt(retry_at) =
+                                    manifest_outage.record_failure(Instant::now(), retry_after)
+                            {
+                                schedules.postpone_due_until(poll_started, retry_at);
+                                continue;
+                            }
                             set_fatal(fatal, HlsLiveRuntimeFailure::ManifestRefresh);
                             return;
                         };
@@ -245,22 +265,22 @@ fn run_refresh_loop(
                         continue;
                     }
                 };
-                let Some((main_snapshot, audio_snapshot)) =
-                    refreshed_snapshots(&coordinator, &attempt.next, fatal)
-                else {
-                    return;
-                };
-                if coordinator
-                    .replace_snapshots(
-                        main_snapshot,
-                        audio_snapshot,
-                        request.initial_source_epoch,
-                        None,
-                    )
-                    .is_err()
-                {
-                    set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
-                    return;
+                match commit_refreshed_resources(
+                    &coordinator,
+                    &attempt.next,
+                    attempt.freshness(),
+                    request.initial_source_epoch,
+                    None,
+                    fatal,
+                ) {
+                    HlsLiveRefreshCommit::Committed => {}
+                    HlsLiveRefreshCommit::Failed => return,
+                    HlsLiveRefreshCommit::NeedsFreshManifests => {
+                        // Устаревший плейлист соседа нельзя брать для склейки: сразу
+                        // качаем все заново, следующая попытка будет полностью свежей.
+                        schedules.make_every_rendition_due(poll_started);
+                        continue;
+                    }
                 }
                 if !schedules.record_reload(poll_started, &attempt) {
                     set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
@@ -272,120 +292,19 @@ fn run_refresh_loop(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HlsLiveDueRenditions {
-    main: bool,
-    audio: bool,
+/// Одна попытка обновления: что скачано и изменилось ли.
+pub(super) struct HlsLiveRefreshAttempt {
+    pub(super) next: SelectedLiveResources,
+    pub(super) due: HlsLiveDueRenditions,
+    pub(super) main_changed: bool,
+    pub(super) audio_changed: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct HlsLiveRenditionReloadSchedule {
-    deadline: Option<Instant>,
-}
-
-impl HlsLiveRenditionReloadSchedule {
-    fn initial(now: Instant, target_duration: Duration, ended: bool) -> Option<Self> {
-        Self::after_reload(now, target_duration, true, ended)
+impl HlsLiveRefreshAttempt {
+    /// Все ли выбранные плейлисты свежие в этой попытке (см. `rejoin::manifest_freshness`).
+    fn freshness(&self) -> HlsLiveManifestFreshness {
+        manifest_freshness(&self.next, self.due)
     }
-
-    fn after_reload(
-        request_started: Instant,
-        target_duration: Duration,
-        changed: bool,
-        ended: bool,
-    ) -> Option<Self> {
-        let deadline = if ended {
-            None
-        } else {
-            let delay = if changed {
-                target_duration
-            } else {
-                target_duration / 2
-            };
-            Some(request_started.checked_add(delay)?)
-        };
-        Some(Self { deadline })
-    }
-
-    fn is_due(self, now: Instant) -> bool {
-        self.deadline.is_some_and(|deadline| deadline <= now)
-    }
-}
-
-struct HlsLiveReloadSchedules {
-    main: HlsLiveRenditionReloadSchedule,
-    audio: Option<HlsLiveRenditionReloadSchedule>,
-}
-
-impl HlsLiveReloadSchedules {
-    fn initial(now: Instant, resources: &SelectedLiveResources) -> Option<Self> {
-        Some(Self {
-            main: HlsLiveRenditionReloadSchedule::initial(
-                now,
-                Duration::from_secs(resources.main_media.target_duration_seconds),
-                resources.main_media.end_list,
-            )?,
-            audio: match resources.audio_media.as_ref() {
-                Some(media) => Some(HlsLiveRenditionReloadSchedule::initial(
-                    now,
-                    Duration::from_secs(media.target_duration_seconds),
-                    media.end_list,
-                )?),
-                None => None,
-            },
-        })
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        self.main
-            .deadline
-            .into_iter()
-            .chain(self.audio.and_then(|schedule| schedule.deadline))
-            .min()
-    }
-
-    fn due(&self, now: Instant) -> HlsLiveDueRenditions {
-        HlsLiveDueRenditions {
-            main: self.main.is_due(now),
-            audio: self.audio.is_some_and(|schedule| schedule.is_due(now)),
-        }
-    }
-
-    fn record_reload(&mut self, request_started: Instant, attempt: &HlsLiveRefreshAttempt) -> bool {
-        if attempt.due.main {
-            let Some(main) = HlsLiveRenditionReloadSchedule::after_reload(
-                request_started,
-                Duration::from_secs(attempt.next.main_media.target_duration_seconds),
-                attempt.main_changed,
-                attempt.next.main_media.end_list,
-            ) else {
-                return false;
-            };
-            self.main = main;
-        }
-        if attempt.due.audio {
-            let Some(audio_media) = attempt.next.audio_media.as_ref() else {
-                return false;
-            };
-            let Some(audio) = HlsLiveRenditionReloadSchedule::after_reload(
-                request_started,
-                Duration::from_secs(audio_media.target_duration_seconds),
-                attempt.audio_changed,
-                audio_media.end_list,
-            ) else {
-                return false;
-            };
-            self.audio = Some(audio);
-        }
-        true
-    }
-}
-
-struct HlsLiveRefreshAttempt {
-    next: SelectedLiveResources,
-    due: HlsLiveDueRenditions,
-    main_changed: bool,
-    audio_changed: bool,
 }
 
 fn replace_expired_endpoint(
@@ -432,25 +351,29 @@ fn replace_expired_endpoint(
             return None;
         }
     };
-    let (main_snapshot, audio_snapshot) = refreshed_snapshots(coordinator, &next, fatal)?;
     let Some(next_epoch_value) = request.initial_source_epoch.get().checked_add(1) else {
         set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
         return None;
     };
     let next_epoch = DynamicMediaTimelineEpoch::new(next_epoch_value);
-    if coordinator
-        .replace_snapshots(
-            main_snapshot,
-            audio_snapshot,
-            next_epoch,
-            Some(HlsLiveTransportSnapshot {
-                http: replacement_common.http.clone(),
-                generation: replacement_common.generation,
-            }),
-        )
-        .is_err()
-    {
-        set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
+    // Замена ссылки скачала все плейлисты заново, поэтому они свежие.
+    let commit = commit_refreshed_resources(
+        coordinator,
+        &next,
+        HlsLiveManifestFreshness::AllFetched,
+        next_epoch,
+        Some(HlsLiveTransportSnapshot {
+            http: replacement_common.http.clone(),
+            generation: replacement_common.generation,
+        }),
+        fatal,
+    );
+    if commit != HlsLiveRefreshCommit::Committed {
+        // `NeedsFreshManifests` при всех свежих плейлистах не возникает; если всё же
+        // возник — это нарушение собственного инварианта, а не сбой сети.
+        if commit == HlsLiveRefreshCommit::NeedsFreshManifests {
+            set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
+        }
         return None;
     }
     request.common = replacement_common;
@@ -458,45 +381,80 @@ fn replace_expired_endpoint(
     Some(next)
 }
 
-/// Строит обе rendition snapshots до единственного atomic coordinator commit-а.
-fn refreshed_snapshots(
+/// Итог применения одной попытки обновления к координатору.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HlsLiveRefreshCommit {
+    /// Новое окно на шкале: обычное скольжение или склейка.
+    Committed,
+    /// Нить потеряна, а часть плейлистов в попытке устарела: перекачать все и решить снова.
+    NeedsFreshManifests,
+    /// Роковая ошибка уже записана в `fatal`.
+    Failed,
+}
+
+/// Применяет скачанные плейлисты: продолжает окно, выравнивает по соседу или склеивает.
+///
+/// Склеивается только потеря нити (`RefreshGap`, решение 333); остальные ошибки
+/// преемственности остаются роковыми, как раньше.
+fn commit_refreshed_resources(
     coordinator: &HlsLiveTimelineCoordinator,
     next: &SelectedLiveResources,
+    freshness: HlsLiveManifestFreshness,
+    source_epoch: DynamicMediaTimelineEpoch,
+    replacement_transport: Option<HlsLiveTransportSnapshot>,
     fatal: &Mutex<Option<HlsLiveRuntimeFailure>>,
-) -> Option<(
-    super::HlsLiveComponentSnapshot,
-    Option<super::HlsLiveComponentSnapshot>,
-)> {
-    let main_snapshot = match coordinator.main_snapshot().and_then(|snapshot| {
-        snapshot
-            .refreshed(&next.main_media, next.main_plan.clone())
-            .map_err(anyhow::Error::new)
-    }) {
-        Ok(snapshot) => snapshot,
-        Err(_) => {
-            set_fatal(fatal, HlsLiveRuntimeFailure::Continuity);
-            return None;
-        }
+) -> HlsLiveRefreshCommit {
+    let (Ok(previous_main), Ok(previous_audio)) =
+        (coordinator.main_snapshot(), coordinator.audio_snapshot())
+    else {
+        set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
+        return HlsLiveRefreshCommit::Failed;
     };
-    let audio_snapshot = match (
-        coordinator.audio_snapshot(),
-        next.audio_media.as_ref(),
-        next.audio_plan.clone(),
-    ) {
-        (Ok(Some(snapshot)), Some(media), Some(plan)) => match snapshot.refreshed(media, plan) {
-            Ok(snapshot) => Some(snapshot),
+    let continuation =
+        match plan_refresh_continuation(&previous_main, previous_audio.as_ref(), next, freshness) {
+            Ok(continuation) => continuation,
             Err(_) => {
                 set_fatal(fatal, HlsLiveRuntimeFailure::Continuity);
-                return None;
+                return HlsLiveRefreshCommit::Failed;
             }
-        },
-        (Ok(None), None, None) => None,
-        _ => {
-            set_fatal(fatal, HlsLiveRuntimeFailure::Continuity);
-            return None;
+        };
+    match continuation {
+        HlsLiveRefreshContinuation::NeedsFreshManifests => {
+            HlsLiveRefreshCommit::NeedsFreshManifests
         }
-    };
-    Some((main_snapshot, audio_snapshot))
+        HlsLiveRefreshContinuation::Continued { main, audio } => {
+            if coordinator
+                .replace_snapshots(main, audio, source_epoch, replacement_transport)
+                .is_err()
+            {
+                set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
+                return HlsLiveRefreshCommit::Failed;
+            }
+            HlsLiveRefreshCommit::Committed
+        }
+        HlsLiveRefreshContinuation::LostThread => {
+            match coordinator.rejoin_live_edge(next, source_epoch, replacement_transport) {
+                Ok(outcome) => {
+                    log::info!(
+                        "HLS live lost its place in the playlist window and rejoined near the live edge: resume_at={:?} join={:?} edge {:?} -> {:?}",
+                        outcome.resume_at,
+                        outcome.join_position,
+                        outcome.previous_live_edge,
+                        outcome.live_edge,
+                    );
+                    HlsLiveRefreshCommit::Committed
+                }
+                Err(HlsLiveRejoinError::Rejoin(_)) => {
+                    set_fatal(fatal, HlsLiveRuntimeFailure::Continuity);
+                    HlsLiveRefreshCommit::Failed
+                }
+                Err(HlsLiveRejoinError::Coordinator(_)) => {
+                    set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
+                    HlsLiveRefreshCommit::Failed
+                }
+            }
+        }
+    }
 }
 
 fn refresh_selected_media(
@@ -609,6 +567,7 @@ fn set_fatal(fatal: &Mutex<Option<HlsLiveRuntimeFailure>>, failure: HlsLiveRunti
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use web_media_transport_api::SourceGeneration;
 
@@ -641,40 +600,6 @@ mod tests {
 
         release_tx.send(()).expect("release blocked operation");
         worker.join().expect("test worker exits cleanly");
-    }
-
-    #[test]
-    fn independent_rendition_cadence_uses_changed_and_unchanged_delays() {
-        let now = Instant::now();
-        let main =
-            HlsLiveRenditionReloadSchedule::after_reload(now, Duration::from_secs(8), false, false)
-                .expect("valid main schedule");
-        let audio =
-            HlsLiveRenditionReloadSchedule::after_reload(now, Duration::from_secs(10), true, false)
-                .expect("valid audio schedule");
-        let schedules = HlsLiveReloadSchedules {
-            main,
-            audio: Some(audio),
-        };
-
-        assert_eq!(
-            schedules.next_deadline(),
-            Some(now + Duration::from_secs(4))
-        );
-        assert_eq!(
-            schedules.due(now + Duration::from_secs(4)),
-            HlsLiveDueRenditions {
-                main: true,
-                audio: false,
-            }
-        );
-        assert_eq!(
-            schedules.due(now + Duration::from_secs(10)),
-            HlsLiveDueRenditions {
-                main: true,
-                audio: true,
-            }
-        );
     }
 
     #[test]

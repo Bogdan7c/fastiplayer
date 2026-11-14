@@ -340,6 +340,7 @@ fn live_publishes_the_origin_used_for_each_segment() {
             NonZeroU64::new(1).expect("non-zero test port generation"),
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        network_reconnect: source_core::HttpReconnectPolicy::disabled(),
     };
     let opened = prepare_hls_live(request).expect("prepare live TS");
     let origins: HlsTimestampOrigins = opened.timestamp_origins();

@@ -70,7 +70,7 @@ pub use http_policy::{
     HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpPathScopeError, HttpRequestScope,
     HttpRequestTarget, HttpRequestTargetError, HttpScheme, HttpScopeSecurity, ValidatedHttpHeaders,
 };
-pub use http_reconnect::HttpReconnectPolicy;
+pub use http_reconnect::{HttpReconnectDecision, HttpReconnectPolicy, HttpReconnectSchedule};
 pub use http_retry_after::HttpRetryAfter;
 pub use http_session::{
     HttpRangeRedirectBodyForwarding, HttpRangeRedirectHandler, HttpRangeRedirectHopCount,

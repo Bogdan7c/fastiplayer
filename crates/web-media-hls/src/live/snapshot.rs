@@ -303,6 +303,20 @@ impl HlsLiveTimelineEvidence {
         self.by_segment.remove(&identity);
     }
 
+    /// Докуда демуксер этого компонента дочитал: конец самого позднего сегмента окна,
+    /// из которого уже пришёл хотя бы один пакет.
+    ///
+    /// Берётся конец сегмента, а не последнего пакета: начатый сегмент демуксер дочитает
+    /// до конца и только потом попросит следующий. `None` — из окна ещё ничего не читали.
+    pub fn read_frontier(&self, snapshot: &HlsLiveComponentSnapshot) -> Option<Duration> {
+        snapshot
+            .segments
+            .iter()
+            .filter(|segment| self.by_segment.contains_key(&segment.identity))
+            .map(|segment| segment.timeline_end)
+            .max()
+    }
+
     /// Возвращает только непрерывный proven range; manifest coverage является cap-ом.
     pub fn proven_range(&self, snapshot: &HlsLiveComponentSnapshot) -> Option<TimelineRange> {
         let mut active_start: Option<Duration> = None;
@@ -389,6 +403,9 @@ pub(crate) enum HlsLiveRefreshError {
     ManifestDurationMismatch,
     #[error("HLS duration violated parser invariant")]
     InvalidDuration,
+    /// Отдельный звук появился или пропал между обновлениями: пара rendition-ов сменилась.
+    #[error("HLS live refresh changed the main/alternate-audio pairing")]
+    ComponentPairingChanged,
 }
 
 fn hls_duration(segment: &MediaSegment) -> Result<Duration, HlsLiveRefreshError> {

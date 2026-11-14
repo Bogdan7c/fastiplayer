@@ -63,8 +63,10 @@ impl HttpReconnectPolicy {
 }
 
 /// Решение после очередной временной ошибки.
+///
+/// Открыто наружу в 16d3: тем же расписанием ждёт сеть HLS-эфир (плейлист и сегменты).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HttpReconnectDecision {
+pub enum HttpReconnectDecision {
     /// Подождать указанное время и повторить запрос.
     RetryAfter(Duration),
     /// Бюджет исчерпан: вернуть ошибку вызывающему коду.
@@ -76,7 +78,7 @@ pub(crate) enum HttpReconnectDecision {
 /// Чистая логика без часов и сна: момент «сейчас» передаёт вызывающий код, поэтому
 /// расписание проверяется тестами на фальшивом времени.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HttpReconnectSchedule {
+pub struct HttpReconnectSchedule {
     /// Политика владельца config.
     policy: HttpReconnectPolicy,
     /// Момент первого сбоя текущей серии; бюджет считается от него.
@@ -87,7 +89,8 @@ pub(crate) struct HttpReconnectSchedule {
 
 impl HttpReconnectSchedule {
     /// Начинает пустую серию: сбоев ещё не было.
-    pub(crate) const fn new(policy: HttpReconnectPolicy) -> Self {
+    #[must_use]
+    pub const fn new(policy: HttpReconnectPolicy) -> Self {
         Self {
             policy,
             first_failure_at: None,
@@ -96,7 +99,8 @@ impl HttpReconnectSchedule {
     }
 
     /// Номер следующей попытки (для логов): 1 — первый повтор после сбоя.
-    pub(crate) const fn failed_attempts(&self) -> u32 {
+    #[must_use]
+    pub const fn failed_attempts(&self) -> u32 {
         self.failed_attempts
     }
 
@@ -105,7 +109,7 @@ impl HttpReconnectSchedule {
     /// Пауза = max(экспоненциальная пауза, `Retry-After` с потолком), но не дольше
     /// остатка бюджета: ждать за пределами бюджета бессмысленно, следующая попытка
     /// всё равно была бы последней.
-    pub(crate) fn record_failure(
+    pub fn record_failure(
         &mut self,
         now: Instant,
         retry_after: HttpRetryAfter,

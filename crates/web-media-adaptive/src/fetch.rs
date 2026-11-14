@@ -725,7 +725,11 @@ impl fmt::Debug for AdaptiveFetchedResource {
 
 impl AdaptiveTransportError {
     /// Отделяет transient network failure от permanent policy/shape failure.
-    pub(crate) fn is_retryable(&self) -> bool {
+    ///
+    /// Открыто наружу в 16d3: HLS-эфир по этому признаку ждёт возвращения сети
+    /// (`network.reconnect_wait_ms`), а не падает на первом обрыве.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
         match self {
             Self::Source(SourceError::HttpTimeout { .. })
             | Self::Source(SourceError::HttpRequest { .. })
@@ -749,7 +753,8 @@ impl AdaptiveTransportError {
     }
 
     /// Возвращает только проверенный server delay без raw response header-а.
-    pub(crate) fn http_retry_after(&self) -> HttpRetryAfter {
+    #[must_use]
+    pub fn http_retry_after(&self) -> HttpRetryAfter {
         match self {
             Self::Source(SourceError::HttpStatus { retry_after, .. }) => *retry_after,
             _ => HttpRetryAfter::Unavailable,

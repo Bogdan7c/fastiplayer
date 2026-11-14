@@ -205,7 +205,7 @@ fn looped_live() -> LoopedLive {
 }
 
 /// Live-корень, окно которого идёт по часам стены с момента `on_air_since`.
-fn live_playlist_now(on_air_since: Instant) -> Vec<u8> {
+pub(super) fn live_playlist_now(on_air_since: Instant) -> Vec<u8> {
     let aired =
         INITIAL_SEGMENTS + (on_air_since.elapsed().as_secs_f64() / SEGMENT_SECONDS) as usize;
     let aired = aired.min(PREBUILT_SEGMENTS);
@@ -225,7 +225,7 @@ fn live_playlist_now(on_air_since: Instant) -> Vec<u8> {
 }
 
 /// Страница с эфиром по часам (отсчёт эфира — с этого момента).
-fn live_page() -> HlsPage {
+pub(super) fn live_page() -> HlsPage {
     let live = looped_live();
     let on_air_since = Instant::now();
     let mut resources = vec![
@@ -245,13 +245,13 @@ fn live_page() -> HlsPage {
 }
 
 /// Сообщение плеера и когда страница его прочитала.
-struct Heard {
-    message: PlayerSessionMessage,
-    at: Instant,
+pub(super) struct Heard {
+    pub(super) message: PlayerSessionMessage,
+    pub(super) at: Instant,
 }
 
 /// Отвечает на запросы `duration` и возвращает всё прочитанное с моментами.
-fn serve_for(
+pub(super) fn serve_for(
     page: &mut HlsPage,
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     what: &str,
@@ -325,7 +325,7 @@ fn windows(heard: &[Heard]) -> Vec<HeardWindow> {
 }
 
 /// Позиции тиков «играю».
-fn playing(heard: &[Heard]) -> Vec<u64> {
+pub(super) fn playing(heard: &[Heard]) -> Vec<u64> {
     heard
         .iter()
         .filter_map(|heard| match heard.message {
@@ -339,7 +339,7 @@ fn playing(heard: &[Heard]) -> Vec<u64> {
         .collect()
 }
 
-fn no_rejections(heard: &[Heard]) {
+pub(super) fn no_rejections(heard: &[Heard]) {
     assert!(
         !heard
             .iter()

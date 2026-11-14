@@ -464,6 +464,7 @@ fn packed_aac_live_sliding_window_advances_and_keeps_delivering_audio() {
             NonZeroU64::new(1).expect("non-zero port generation"),
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        network_reconnect: source_core::HttpReconnectPolicy::disabled(),
     })
     .expect("packed AAC live should open");
     let (mut demuxer, timeline_port, _) = opened.into_parts();

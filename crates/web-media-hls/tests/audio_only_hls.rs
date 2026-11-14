@@ -313,6 +313,7 @@ fn audio_only_live_ts_sliding_window_publishes_audio_anchored_dvr_and_advances()
             NonZeroU64::new(1).expect("non-zero port generation"),
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        network_reconnect: source_core::HttpReconnectPolicy::disabled(),
     })
     .expect("audio-only live should open");
     let (mut demuxer, timeline_port, _) = opened.into_parts();

@@ -79,6 +79,7 @@ fn live_request(target: HttpRequestTarget) -> HlsLiveOpenRequest {
             NonZeroU64::new(1).expect("non-zero test port generation"),
         ),
         initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        network_reconnect: source_core::HttpReconnectPolicy::disabled(),
     }
 }
 

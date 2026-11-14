@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use fastiplayer_config::NetworkConfig;
+use source_core::HttpReconnectPolicy;
 use web_media_adaptive::AdaptiveTransportLimits;
 use web_media_transport_api::SourceGeneration;
 
@@ -42,4 +43,14 @@ pub fn adaptive_transport_limits(network: &NetworkConfig) -> Result<AdaptiveTran
         maximum_resource_bytes,
         const { NonZeroUsize::new(8_192).expect("adaptive descriptor budget") },
     ))
+}
+
+/// Бюджет ожидания сети посреди adaptive-эфира: тот же `network.reconnect_wait_ms`,
+/// что у обычного HTTP-файла и ленты субтитров (решение 334, 16d3).
+///
+/// Ноль — осознанное «не ждать»: первый сетевой сбой после внутренних повторов
+/// транспорта сразу роковой, как до 16d3.
+#[must_use]
+pub fn live_network_reconnect_policy(network: &NetworkConfig) -> HttpReconnectPolicy {
+    HttpReconnectPolicy::with_budget(Duration::from_millis(network.reconnect_wait_ms))
 }

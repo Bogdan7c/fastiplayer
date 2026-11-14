@@ -205,6 +205,9 @@ pub fn prepare_hls_candidate(
             endpoint_refresh,
             timeline_port_generation,
             initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+            network_reconnect: crate::web_media_adaptive_config::live_network_reconnect_policy(
+                network_config,
+            ),
         };
         let (opened, component_variants) = match component_selection_intent {
             crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (

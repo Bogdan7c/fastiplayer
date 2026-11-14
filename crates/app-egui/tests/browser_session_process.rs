@@ -956,3 +956,12 @@ mod live_recording_seeks;
 // 1.11 уходит окно записи `recording_window` (протокол 1.11, решения 325–327).
 #[path = "browser_session_process/hls_live_endlist.rs"]
 mod hls_live_endlist;
+
+// Сессия 16d3: HLS-эфир потерял нить окна (сон машины) — встаёт на живой край и
+// играет дальше, кадры после разрыва доходят до рендера (решение 333).
+#[path = "browser_session_process/hls_live_rejoin.rs"]
+mod hls_live_rejoin;
+
+// Сессия 16d3: HLS-эфир под мостом ждёт сеть посреди просмотра, а не падает (решение 334).
+#[path = "browser_session_process/hls_live_network_outage.rs"]
+mod hls_live_network_outage;

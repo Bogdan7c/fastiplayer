@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use demux_api::DemuxRegistry;
@@ -10,18 +9,23 @@ use media_core::{
     Demuxer, MediaMetadata, MediaTime, Packet, PacketDecodeStartInitialization, PacketKeyframe,
     TrackId, TrackInfo, TrackKind,
 };
+use source_core::HttpReconnectPolicy;
 use web_media_transport_api::SourceGeneration;
 
-use super::hold_back;
-use super::refresh::{HlsLiveEndpointExpirySignal, HlsLiveRefreshControl};
+use super::network_outage::{
+    HlsLiveSegmentNetworkRetry, HlsLiveSegmentRetryState, NO_PACKETS_DELIVERED,
+};
+use super::refresh::HlsLiveRefreshControl;
+use super::segment_observer::HlsLiveSegmentExpiryObserver;
 use super::{
     HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveSegmentIdentity,
     HlsLiveTimelineCoordinator, HlsLiveVideoDecodeStartEvidence,
 };
+use super::{hold_back, rejoin};
 use crate::epoch_demux::open_epoch_with_key_cache_and_observer;
-use crate::source::{HlsRefreshableResourceKind, HlsResourceExpiryObserver, SharedHlsKeyCache};
+use crate::source::{HlsResourceExpiryObserver, SharedHlsKeyCache};
 use crate::timestamp_origins::HlsTimestampOriginsWriter;
-use crate::{HlsEndpointRefreshReason, HlsRequiredContainer, HlsVodOpenPolicy};
+use crate::{HlsRequiredContainer, HlsVodOpenPolicy};
 
 const MAXIMUM_SEGMENT_TRANSITIONS_PER_READ: usize = 4;
 
@@ -34,6 +38,8 @@ pub(crate) struct HlsLiveComponentFactory {
     registry: Arc<DemuxRegistry>,
     coordinator: Arc<HlsLiveTimelineCoordinator>,
     refresh_control: Arc<HlsLiveRefreshControl>,
+    /// Сколько ждать сеть, если сегмент не скачался (решение 334).
+    network_reconnect: HttpReconnectPolicy,
     /// Публикация origin-ов сегментов для субтитров (только main-компонент; иначе no-op).
     timestamp_origins: HlsTimestampOriginsWriter,
 }
@@ -47,6 +53,7 @@ impl HlsLiveComponentFactory {
         registry: Arc<DemuxRegistry>,
         coordinator: Arc<HlsLiveTimelineCoordinator>,
         refresh_control: Arc<HlsLiveRefreshControl>,
+        network_reconnect: HttpReconnectPolicy,
     ) -> Self {
         Self {
             kind,
@@ -55,6 +62,7 @@ impl HlsLiveComponentFactory {
             registry,
             coordinator,
             refresh_control,
+            network_reconnect,
             timestamp_origins: HlsTimestampOriginsWriter::disabled(),
         }
     }
@@ -153,45 +161,8 @@ pub(crate) struct HlsLiveComponentDemuxer {
     observed_transport_generation: SourceGeneration,
     current_expiry_observer: Arc<HlsLiveSegmentExpiryObserver>,
     pending_expiry: Option<HlsLivePendingExpiry>,
-}
-
-struct HlsLiveSegmentExpiryObserver {
-    generation: SourceGeneration,
-    control: Arc<HlsLiveRefreshControl>,
-    observed: AtomicBool,
-}
-
-impl HlsLiveSegmentExpiryObserver {
-    fn new(generation: SourceGeneration, control: Arc<HlsLiveRefreshControl>) -> Arc<Self> {
-        Arc::new(Self {
-            generation,
-            control,
-            observed: AtomicBool::new(false),
-        })
-    }
-
-    fn take_observed(&self) -> bool {
-        self.observed.swap(false, Ordering::SeqCst)
-    }
-
-    const fn generation(&self) -> SourceGeneration {
-        self.generation
-    }
-}
-
-impl HlsResourceExpiryObserver for HlsLiveSegmentExpiryObserver {
-    fn observe_refreshable_expiry(
-        &self,
-        reason: HlsEndpointRefreshReason,
-        resource_kind: HlsRefreshableResourceKind,
-    ) {
-        self.observed.store(true, Ordering::SeqCst);
-        self.control.signal_expiry(HlsLiveEndpointExpirySignal {
-            generation: self.generation,
-            reason,
-            resource_kind,
-        });
-    }
+    /// Ожидание сети после сбоя сегмента и учёт уже отданных пакетов (решение 334).
+    network_retry: HlsLiveSegmentNetworkRetry,
 }
 
 #[derive(Clone, Copy)]
@@ -205,6 +176,8 @@ enum HlsLiveSegmentAdvance {
     Opened,
     AtEdge,
     RefreshPending,
+    /// Сегмент не скачался из-за сети: повтор отложен (решение 334).
+    WaitingForNetwork,
 }
 
 impl HlsLiveComponentDemuxer {
@@ -244,6 +217,7 @@ impl HlsLiveComponentDemuxer {
             public_tracks = stabilize_tracks(stable_tracks, &public_tracks)?;
         }
         let track_mapping = track_mapping(current.tracks(), &public_tracks)?;
+        let network_retry = HlsLiveSegmentNetworkRetry::new(factory.network_reconnect);
         let mut demuxer = Self {
             factory,
             current_identity: segment.identity,
@@ -260,6 +234,7 @@ impl HlsLiveComponentDemuxer {
             observed_transport_generation: transport.generation,
             current_expiry_observer: expiry_observer,
             pending_expiry: None,
+            network_retry,
         };
         if let Some(anchor) = seek_anchor {
             demuxer.prime_seek_anchor(anchor)?;
@@ -302,17 +277,28 @@ impl HlsLiveComponentDemuxer {
     }
 
     fn read_current_event(&mut self) -> Result<DemuxReadEvent> {
-        match self.current.next_event()? {
-            DemuxReadEvent::Packet(packet) => self.remap_packet(packet).map(DemuxReadEvent::Packet),
-            DemuxReadEvent::TracksChanged(update) => {
-                self.apply_inner_tracks(&update.tracks)?;
-                Ok(self.tracks_changed_event())
+        loop {
+            match self.current.next_event()? {
+                DemuxReadEvent::Packet(packet) => {
+                    // После повтора сегмента (сеть вернулась) пакеты, которые плеер уже
+                    // получил, приходят снова; пересчитываем их на шкалу (origin сегмента
+                    // тот же) и выбрасываем.
+                    let packet = self.remap_packet(packet)?;
+                    if self.network_retry.is_already_delivered_packet() {
+                        continue;
+                    }
+                    return Ok(DemuxReadEvent::Packet(packet));
+                }
+                DemuxReadEvent::TracksChanged(update) => {
+                    self.apply_inner_tracks(&update.tracks)?;
+                    return Ok(self.tracks_changed_event());
+                }
+                DemuxReadEvent::MediaMetadataChanged(metadata) => {
+                    self.metadata = Some(metadata.clone());
+                    return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
+                }
+                event => return Ok(event),
             }
-            DemuxReadEvent::MediaMetadataChanged(metadata) => {
-                self.metadata = Some(metadata.clone());
-                Ok(DemuxReadEvent::MediaMetadataChanged(metadata))
-            }
-            event => Ok(event),
         }
     }
 
@@ -409,23 +395,23 @@ impl HlsLiveComponentDemuxer {
             .iter()
             .position(|segment| segment.identity == self.current_identity)
             .and_then(|index| snapshot.segments.get(index + 1))
-            .or_else(|| {
-                snapshot
-                    .segments
-                    .iter()
-                    .find(|segment| segment.timeline_end > self.current_segment_end)
-            })
+            .or_else(|| rejoin::first_segment_after(&snapshot, self.current_segment_end))
             .cloned();
         let Some(segment) = next else {
             return Ok(HlsLiveSegmentAdvance::AtEdge);
         };
-        self.open_segment_replacement(segment, transport)
+        self.open_segment_replacement(segment, transport, NO_PACKETS_DELIVERED)
     }
 
+    /// Открывает сегмент на смену текущему.
+    ///
+    /// `packets_already_delivered` — сколько пакетов этого сегмента плеер уже получил
+    /// до сетевого сбоя (`NO_PACKETS_DELIVERED` у нового сегмента): их выбросим при чтении.
     fn open_segment_replacement(
         &mut self,
         segment: super::snapshot::HlsLiveSegmentSnapshot,
         transport: super::timeline::HlsLiveTransportSnapshot,
+        packets_already_delivered: usize,
     ) -> Result<HlsLiveSegmentAdvance> {
         let expiry_observer = HlsLiveSegmentExpiryObserver::new(
             transport.generation,
@@ -455,7 +441,20 @@ impl HlsLiveComponentDemuxer {
                 });
                 return Ok(HlsLiveSegmentAdvance::RefreshPending);
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                // Сеть пропала: ждём её в пределах бюджета, а не роняем эфир.
+                if let Some(retry_after) = expiry_observer.take_network_failure()
+                    && self.network_retry.defer(
+                        segment.identity,
+                        packets_already_delivered,
+                        retry_after,
+                        Instant::now(),
+                    )
+                {
+                    return Ok(HlsLiveSegmentAdvance::WaitingForNetwork);
+                }
+                return Err(error);
+            }
         };
         let changed = self.apply_inner_tracks(replacement.tracks())?;
         self.current = replacement;
@@ -465,6 +464,8 @@ impl HlsLiveComponentDemuxer {
         self.current_timestamp_origin = None;
         self.current_expiry_observer = expiry_observer;
         self.pending_expiry = None;
+        self.network_retry
+            .note_segment_opened(packets_already_delivered);
         if changed {
             self.replay_events.push_back(self.tracks_changed_event());
         }
@@ -523,7 +524,59 @@ impl HlsLiveComponentDemuxer {
             self.pending_expiry = None;
             return Ok(HlsLiveSegmentAdvance::AtEdge);
         };
-        self.open_segment_replacement(segment, transport)
+        self.open_segment_replacement(segment, transport, NO_PACKETS_DELIVERED)
+    }
+
+    /// Текущий сегмент оборвался из-за сети: откладывает его повтор с пропуском
+    /// уже отданных пакетов. `false` — сбой не сетевой или бюджет ожидания исчерпан.
+    fn defer_current_segment_after_network_failure(&mut self) -> bool {
+        let Some(retry_after) = self.current_expiry_observer.take_network_failure() else {
+            return false;
+        };
+        let packets_already_delivered = self.network_retry.packets_read_in_segment();
+        self.network_retry.defer(
+            self.current_identity,
+            packets_already_delivered,
+            retry_after,
+            Instant::now(),
+        )
+    }
+
+    /// Повторяет сегмент, отложенный из-за сети, когда подошёл срок.
+    ///
+    /// `Some` — ещё ждём или снова не вышло: читать сейчас нечего. Если окно за время
+    /// ожидания ушло и сегмента в нём нет, продолжаем со следующего за прочитанным —
+    /// тем же правилом, что после склейки (`rejoin::first_segment_after`).
+    fn resume_after_network_failure(&mut self) -> Result<Option<DemuxReadEvent>> {
+        let waiting = DemuxReadEvent::TemporarilyUnavailable(self.factory.policy.retry_hint);
+        let pending = match self.network_retry.take_due(Instant::now()) {
+            HlsLiveSegmentRetryState::NotPending => return Ok(None),
+            HlsLiveSegmentRetryState::Waiting => return Ok(Some(waiting)),
+            HlsLiveSegmentRetryState::Due(pending) => pending,
+        };
+        let (snapshot, transport) = self.factory.runtime_snapshot()?;
+        let same_segment = snapshot
+            .segments
+            .iter()
+            .find(|segment| segment.identity == pending.identity)
+            .cloned()
+            .map(|segment| (segment, pending.packets_already_delivered));
+        let resumed = same_segment.or_else(|| {
+            rejoin::first_segment_after(&snapshot, self.current_segment_end)
+                .cloned()
+                .map(|segment| (segment, NO_PACKETS_DELIVERED))
+        });
+        let Some((segment, packets_already_delivered)) = resumed else {
+            // Оборванный сегмент читать нельзя: ждём, пока в окне появится продолжение.
+            self.network_retry.keep_waiting_for_segment(pending);
+            return Ok(Some(waiting));
+        };
+        match self.open_segment_replacement(segment, transport, packets_already_delivered)? {
+            HlsLiveSegmentAdvance::Opened => Ok(None),
+            HlsLiveSegmentAdvance::AtEdge
+            | HlsLiveSegmentAdvance::RefreshPending
+            | HlsLiveSegmentAdvance::WaitingForNetwork => Ok(Some(waiting)),
+        }
     }
 
     fn apply_inner_tracks(&mut self, inner_tracks: &[TrackInfo]) -> Result<bool> {
@@ -565,8 +618,11 @@ impl Demuxer for HlsLiveComponentDemuxer {
         if let Some(event) = self.replay_events.pop_front() {
             return Ok(event);
         }
+        if let Some(waiting) = self.resume_after_network_failure()? {
+            return Ok(waiting);
+        }
         match self.recover_pending_expiry()? {
-            HlsLiveSegmentAdvance::RefreshPending => {
+            HlsLiveSegmentAdvance::RefreshPending | HlsLiveSegmentAdvance::WaitingForNetwork => {
                 return Ok(DemuxReadEvent::TemporarilyUnavailable(
                     self.factory.policy.retry_hint,
                 ));
@@ -595,6 +651,11 @@ impl Demuxer for HlsLiveComponentDemuxer {
                         self.factory.policy.retry_hint,
                     ));
                 }
+                Err(_) if self.defer_current_segment_after_network_failure() => {
+                    return Ok(DemuxReadEvent::TemporarilyUnavailable(
+                        self.factory.policy.retry_hint,
+                    ));
+                }
                 Err(error) => return Err(error),
             };
             match event {
@@ -604,7 +665,8 @@ impl Demuxer for HlsLiveComponentDemuxer {
                             return Ok(event);
                         }
                     }
-                    HlsLiveSegmentAdvance::RefreshPending => {
+                    HlsLiveSegmentAdvance::RefreshPending
+                    | HlsLiveSegmentAdvance::WaitingForNetwork => {
                         return Ok(DemuxReadEvent::TemporarilyUnavailable(
                             self.factory.policy.retry_hint,
                         ));
@@ -689,63 +751,5 @@ fn track_mapping(inner: &[TrackInfo], public: &[TrackInfo]) -> Result<Vec<(Track
 }
 
 #[cfg(test)]
-mod tests {
-    use media_core::TrackKind;
-
-    use super::*;
-
-    fn video_track(id: u32, codec_id: &str, duration: Option<Duration>) -> TrackInfo {
-        TrackInfo {
-            id: TrackId::new(id),
-            kind: TrackKind::Video,
-            codec_id: codec_id.to_owned(),
-            codec_private: None,
-            time_base: None,
-            duration,
-            sample_rate: None,
-            channels: None,
-            video: None,
-            labels: media_core::TrackLabels::default(),
-        }
-    }
-
-    #[test]
-    fn tracks_changed_is_driven_by_actual_config_not_segment_local_ids() {
-        let stable = vec![video_track(7, "h264", None)];
-        let same_config = vec![video_track(99, "h264", Some(Duration::from_secs(6)))];
-        let stabilized = stabilize_tracks(&stable, &same_config).expect("same topology");
-        assert_eq!(stabilized, stable);
-
-        let changed_config = vec![video_track(100, "h265", Some(Duration::from_secs(6)))];
-        let stabilized = stabilize_tracks(&stable, &changed_config).expect("same track kind");
-        assert_ne!(stabilized, stable);
-
-        let audio_topology = TrackInfo {
-            kind: TrackKind::Audio,
-            labels: media_core::TrackLabels::default(),
-            ..video_track(1, "aac", None)
-        };
-        assert!(stabilize_tracks(&stable, &[audio_topology]).is_err());
-    }
-
-    #[test]
-    fn key_cache_is_reused_only_inside_one_accepted_snapshot_generation() {
-        let edge = Duration::from_secs(18);
-        let generation = SourceGeneration::new(4);
-        assert!(!key_cache_requires_reset(
-            edge, generation, edge, generation
-        ));
-        assert!(key_cache_requires_reset(
-            edge,
-            generation,
-            Duration::from_secs(24),
-            generation,
-        ));
-        assert!(key_cache_requires_reset(
-            edge,
-            generation,
-            edge,
-            SourceGeneration::new(5),
-        ));
-    }
-}
+#[path = "demux_tests.rs"]
+mod tests;

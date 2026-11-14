@@ -10,6 +10,8 @@ mod native_dash_vertical;
 mod native_hds_vertical;
 #[path = "tests/native_hls_lifecycle_n14b.rs"]
 mod native_hls_lifecycle_n14b;
+#[path = "tests/native_hls_live_rejoin_vertical.rs"]
+mod native_hls_live_rejoin_vertical;
 #[path = "tests/native_hls_live_vertical.rs"]
 mod native_hls_live_vertical;
 #[path = "tests/native_hls_vertical.rs"]

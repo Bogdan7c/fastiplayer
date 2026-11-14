@@ -23,9 +23,8 @@ use web_media_adaptive::{
 
 use super::refresh::{HlsLiveRefreshControl, HlsLiveRefreshOwner, HlsLiveRuntimeFailure};
 use super::{
-    HlsLiveComponentFactory, HlsLiveComponentKind, HlsLiveComponentSnapshot,
-    HlsLiveRandomAccessSource, HlsLiveRefreshError, HlsLiveTimelineCoordinator,
-    TransactionalHlsLiveAvDemuxer,
+    HlsLiveComponentFactory, HlsLiveComponentKind, HlsLiveRandomAccessSource, HlsLiveRefreshError,
+    HlsLiveTimelineCoordinator, TransactionalHlsLiveAvDemuxer, rejoin,
 };
 use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenError, HlsCatalogReopenSelection};
 use crate::open::{
@@ -169,31 +168,9 @@ fn prepare_hls_live_with_catalog(
             selected_url: fetched.selected_url().clone(),
         },
     };
-    let shared_edge = initial.main_plan.duration.max(
-        initial
-            .audio_plan
-            .as_ref()
-            .map_or(Duration::ZERO, |plan| plan.duration),
-    );
-    let main_snapshot = HlsLiveComponentSnapshot::initial(
-        HlsLiveComponentKind::Main,
-        &initial.main_media,
-        initial.main_plan.clone(),
-        shared_edge,
-    )?;
-    let audio_snapshot = initial
-        .audio_media
-        .as_ref()
-        .zip(initial.audio_plan.clone())
-        .map(|(media, plan)| {
-            HlsLiveComponentSnapshot::initial(
-                HlsLiveComponentKind::AlternateAudio,
-                media,
-                plan,
-                shared_edge,
-            )
-        })
-        .transpose()?;
+    // Первое открытие и склейка (решение 333) выравнивают компоненты одним правилом.
+    let (main_snapshot, audio_snapshot) =
+        rejoin::edge_aligned_snapshots(&initial, rejoin::initial_shared_edge(&initial))?;
     // Предварительная политика по intent-у; для top media playlist (форма неизвестна до probe)
     // она уточняется ниже по фактическим дорожкам открытого main demux-а.
     let main_random_access = match initial.main_track_layout {
@@ -219,6 +196,7 @@ fn prepare_hls_live_with_catalog(
         Arc::clone(&request.common.demux_registry),
         Arc::clone(&coordinator),
         Arc::clone(&refresh_control),
+        request.network_reconnect,
     )
     .publishing_timestamp_origins(timestamp_origins_writer);
     let main = main_factory.open().map_err(HlsLiveOpenError::Runtime)?;
@@ -243,6 +221,7 @@ fn prepare_hls_live_with_catalog(
                     Arc::clone(&request.common.demux_registry),
                     Arc::clone(&coordinator),
                     Arc::clone(&refresh_control),
+                    request.network_reconnect,
                 );
                 let audio = audio_factory.open().map_err(HlsLiveOpenError::Runtime)?;
                 Box::new(

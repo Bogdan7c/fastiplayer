@@ -6,8 +6,12 @@
 mod av;
 mod demux;
 mod hold_back;
+mod network_outage;
 mod open;
 mod refresh;
+mod rejoin;
+mod reload_schedule;
+mod segment_observer;
 mod snapshot;
 mod timeline;
 mod timeline_publication;
@@ -23,5 +27,5 @@ pub(crate) use snapshot::{
     HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveRandomAccessSource, HlsLiveRefreshError,
     HlsLiveSegmentIdentity, HlsLiveTimelineEvidence, HlsLiveVideoDecodeStartEvidence,
 };
-pub(crate) use timeline::HlsLiveTimelineCoordinator;
 pub(crate) use timeline::HlsLiveTransportSnapshot;
+pub(crate) use timeline::{HlsLiveRejoinError, HlsLiveTimelineCoordinator};

@@ -8,7 +8,7 @@ use demux_api::{
     OrderedSegmentSource,
 };
 use media_core::DemuxSeekCancellationToken;
-use source_core::{CancellationToken, SourceError};
+use source_core::{CancellationToken, HttpRetryAfter, SourceError};
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
     AdaptiveResourceQueryApplication, AdaptiveTransportError,
@@ -43,6 +43,12 @@ pub(crate) trait HlsResourceExpiryObserver: Send + Sync {
         reason: HlsEndpointRefreshReason,
         resource_kind: HlsRefreshableResourceKind,
     );
+
+    /// Ресурс не скачался из-за временного сбоя сети (обрыв, тайм-аут, 5xx, 408/429).
+    ///
+    /// Наружу ошибка уходит строкой без типа, поэтому живой эфир узнаёт о сетевом сбое
+    /// только здесь (16d3, решение 334). По умолчанию наблюдателю это неинтересно.
+    fn observe_transient_network_failure(&self, _retry_after: HttpRetryAfter) {}
 }
 
 /// Secret-free категория terminal body failure, при которой допустим один fresh restart.
@@ -407,6 +413,16 @@ impl HlsEpochSegmentSource {
                 DemuxInput::ordered_resource_stream(Box::new(self))
             }
             HlsRequiredContainer::FragmentedMp4 => DemuxInput::ordered_segments(Box::new(self)),
+        }
+    }
+
+    /// Сообщает наблюдателю временный сетевой сбой ресурса (живой эфир ждёт сеть).
+    fn observe_transient_network_failure(&self, error: &AdaptiveTransportError) {
+        if !error.is_retryable() {
+            return;
+        }
+        if let Some(observer) = self.expiry_observer.as_ref() {
+            observer.observe_transient_network_failure(error.http_retry_after());
         }
     }
 
