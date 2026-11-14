@@ -23,6 +23,7 @@ mod evidence;
 mod extension_status;
 mod handoff_run;
 mod hls_live;
+mod hls_live_sleep;
 mod live_ends;
 mod live_unload;
 mod outcome;
@@ -187,6 +188,12 @@ pub fn run_hls_live(stand: &Stand, browser: BrowserKind) -> StepResult {
 /// родной HLS (`ENDLIST` в плейлисте); плеер доигрывает запись, страница видит конечную длину и `ended`.
 pub fn run_live_ends(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
     live_ends::run(stand, browser)
+}
+
+/// Родной HLS-эфир под тенью переживает «сон» сервера (16d4): 20 с плейлист отвечает 503, окно уезжает;
+/// плеер ждёт сеть, склеивает новое окно и играет дальше (только Chromium).
+pub fn run_hls_live_sleep(stand: &Stand, browser: BrowserKind) -> StepResult {
+    hls_live_sleep::run(stand, browser)
 }
 
 /// Субтитры страницы (13b2): `<track>`, `fetch`, XHR и `addTextTrack` доходят до плеера, слой

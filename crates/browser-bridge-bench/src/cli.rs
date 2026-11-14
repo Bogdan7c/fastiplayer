@@ -26,6 +26,7 @@ pub enum Command {
     LocalAddress,
     HlsLive,
     LiveEnds,
+    HlsLiveSleep,
     PageSubtitles,
     Quality,
     Series,
@@ -160,6 +161,8 @@ Commands:
                     finite duration + endOfStream) and native HLS (#EXT-X-ENDLIST; Chromium only):
                     the player log says 'Live timeline became a recording', frames keep growing,
                     the page sees a finite duration (HLS: exactly one durationchange) and 'ended'
+  hls-live-sleep    native HLS live whose server answers 503 for 20 s while the window moves on
+                    (16d4; Chromium only): the player waits for the network and rejoins the window
   entries           REAL mouse and keyboard in an invisible kwin: click the extension button on
                     the browser toolbar, Tab / Enter in the popup; entry x page matrix, each
                     row proven by player / host / server logs (needs spectacle and ffmpeg)
@@ -217,7 +220,7 @@ Commands:
                     replaces the session in the same window; no video ends it after ~10 s; another site
                     ends it at once
   all               pages, capture, page-ends, player-commands, extension-status, codecs, attacks,
-                    local-address, hls-live, live-ends, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return, page-reload and auto-handoff (smoke is a subset of capture), one after another; with --page
+                    local-address, hls-live, live-ends, hls-live-sleep, page-subtitles, quality, series, series-memory, episodes, entries, page-return, tab-return, page-reload and auto-handoff (smoke is a subset of capture), one after another; with --page
                     only the page steps run
 
 Options:
@@ -435,6 +438,7 @@ fn parse_command(name: &str) -> Result<Command, UsageError> {
         "local-address" => Ok(Command::LocalAddress),
         "hls-live" => Ok(Command::HlsLive),
         "live-ends" => Ok(Command::LiveEnds),
+        "hls-live-sleep" => Ok(Command::HlsLiveSleep),
         "page-subtitles" => Ok(Command::PageSubtitles),
         "quality" => Ok(Command::Quality),
         "series" => Ok(Command::Series),

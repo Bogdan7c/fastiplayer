@@ -64,6 +64,9 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     // Команда `live-ends`.
     page_unsupported_in("hls-live-ends", &[BrowserKind::Firefox]),
     page("mse-live-ends"),
+    // 16d4: эфир, сервер которого 20 с «спит» (503 на плейлист), а окно уезжает. Только Chromium.
+    // Команда `hls-live-sleep`.
+    page_unsupported_in("hls-live-sleep", &[BrowserKind::Firefox]),
     // 10a2: плейлист публичный, сегменты в нём абсолютные на 127.0.0.1 (сценарий `local-address`).
     page_unsupported_in("hls-local-segments", &[BrowserKind::Firefox]),
     // Нативного HLS в <video> у Firefox на Linux нет.

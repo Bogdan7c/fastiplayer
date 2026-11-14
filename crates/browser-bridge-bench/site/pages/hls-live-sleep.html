@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hls-live-sleep</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}h1{font-size:16px}video{background:#000;max-width:100%}</style>
+</head>
+<body>
+<h1>hls-live-sleep</h1>
+
+<script type="module">
+import { runHlsLiveSleep } from '../lib/hls-live-sleep-page.js';
+
+// Сессия 16d4: нативный HLS-эфир, сервер которого 20 с «спит» (503), а окно уезжает (/cdn/hls-live-sleep/).
+await runHlsLiveSleep('hls-live-sleep');
+</script>
+</body>
+</html>

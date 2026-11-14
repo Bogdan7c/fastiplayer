@@ -99,6 +99,9 @@ fn run(invocation: Invocation) -> ExitCode {
                 }
                 Command::HlsLive => results.push(scenarios::run_hls_live(&stand, browser)),
                 Command::LiveEnds => results.extend(scenarios::run_live_ends(&stand, browser)),
+                Command::HlsLiveSleep => {
+                    results.push(scenarios::run_hls_live_sleep(&stand, browser));
+                }
                 Command::PageSubtitles => {
                     results.extend(scenarios::run_page_subtitles(&stand, browser, &pages));
                 }
@@ -171,6 +174,7 @@ fn plan(command: Command, pages: &PageFilter) -> Vec<Command> {
             Command::LocalAddress,
             Command::HlsLive,
             Command::LiveEnds,
+            Command::HlsLiveSleep,
             Command::PageSubtitles,
             Command::Quality,
             Command::Series,
@@ -211,6 +215,7 @@ mod tests {
                 Command::LocalAddress,
                 Command::HlsLive,
                 Command::LiveEnds,
+                Command::HlsLiveSleep,
                 Command::PageSubtitles,
                 Command::Quality,
                 Command::Series,
@@ -229,6 +234,19 @@ mod tests {
             plan(Command::Smoke, &PageFilter::all()),
             vec![Command::Smoke]
         );
+    }
+
+    /// Команда `hls-live-sleep` (16d4) разбирается, не берёт `--page` и есть в справке (тест здесь,
+    /// а не в `cli.rs`: тот у лимита размера модуля).
+    #[test]
+    fn hls_live_sleep_is_a_command_of_its_own_listed_in_the_help() {
+        let words = |list: &[&str]| cli::parse(list.iter().map(|word| (*word).to_owned()));
+        match words(&["hls-live-sleep"]).expect("parses") {
+            cli::Parsed::Run(invocation) => assert_eq!(invocation.command, Command::HlsLiveSleep),
+            cli::Parsed::Help => panic!("expected a run"),
+        }
+        assert!(words(&["hls-live-sleep", "--page", "hls-live-sleep"]).is_err());
+        assert!(cli::USAGE.contains("  hls-live-sleep "));
     }
 
     #[test]
