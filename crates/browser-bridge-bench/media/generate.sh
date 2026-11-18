@@ -120,6 +120,30 @@ echo "generate.sh: dub-a / dub-b (audio only variants for h264-aac)"
 make_aac_track dub-a audio 330 30
 make_aac_track dub-b audio 660 30
 
+# Ролики ленты коротких видео (сессия 16b2, сценарий `capture --page feed`): три РАЗНЫХ ролика, чтобы
+# стенд видел, какой из них показывает окно плеера. Различаются тремя признаками сразу:
+#  * размером кадра (360p / 288p / 216p): плеер пишет `Browser quality shown label=… height=…`, и по
+#    этой строке журнала видно, ролик какого размера он сейчас показывает;
+#  * длительностью (30 / 42 / 36 с): каждый играет дольше окна наблюдения стенда (две сводки по 10 с);
+#  * выжженной подписью `REEL N` и тоном звука.
+# make_reel: $1 номер, $2 размер WxH, $3 высота кадра (имя дорожки), $4 длительность (с), $5 тон (Гц), $6 шрифт.
+make_reel() {
+  local number="$1" size="$2" height="$3" duration="$4" tone_hz="$5" font="$6"
+  local asset="reel-${number}" dir="$OUT_DIR/reel-${number}/video-${height}"
+  echo "generate.sh: ${asset} (${size}, ${duration} s, burnt-in label)"
+  mkdir -p "$dir"
+  ffmpeg "${GLOBAL_FLAGS[@]}" -f lavfi -i "$(video_filter_graph "$size" "$duration" "$font" "REEL ${number}  ")" \
+    "${BITEXACT_FLAGS[@]}" -an -c:v libx264 -profile:v high -level 3.0 -pix_fmt yuv420p \
+    -preset veryfast -b:v 400k -maxrate 400k -bufsize 400k -threads 1 "${X264_GOP[@]}" \
+    "${DASH_COMMON[@]}" -init_seg_name init.mp4 -media_seg_name 'seg-$Number%05d$.m4s' "$dir/manifest.mpd"
+  rm -f "$dir/manifest.mpd"
+  register_track "$asset" "video-${height}" video mp4 "${size%x*}" "${size#*x}"
+  make_aac_track "$asset" audio "$tone_hz" "$duration"
+}
+make_reel 1 640x360 360 30 440 36
+make_reel 2 512x288 288 42 660 30
+make_reel 3 384x216 216 36 880 24
+
 echo "generate.sh: vp9-opus (WebM, 20 s)"
 make_vp9_opus() {
   local asset=vp9-opus dir
@@ -573,7 +597,8 @@ def validate_hls_asset(asset_id, master_url):
 
 
 durations = {"h264-aac": 30.0, "dub-a": 30.0, "dub-b": 30.0, "vp9-opus": 20.0, "av1-aac": 12.0,
-             "muxed-h264-aac": 20.0, "clearkey-h264": 6.0}
+             "muxed-h264-aac": 20.0, "clearkey-h264": 6.0,
+             "reel-1": 30.0, "reel-2": 42.0, "reel-3": 36.0}
 track_rows = [line.rstrip("\n").split("\t") for line in open(os.path.join(out_dir, ".tracks.tsv"))]
 assets = {}
 for row in track_rows:

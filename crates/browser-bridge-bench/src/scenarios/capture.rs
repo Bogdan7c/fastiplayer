@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 mod ad_hop;
 pub(super) mod decoys;
+mod feed;
 pub(super) mod file_evidence;
 pub(super) mod hls_evidence;
 mod judge;
@@ -203,6 +204,8 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
             .filter(|page| filter.admits(page.page_id))
             .map(|page| ad_hop::run(stand, browser, *page)),
     );
+    // 16b2: окно идёт за лентой коротких видео (настоящее колесо мыши на невидимом экране).
+    results.extend(feed::run_all(stand, browser, filter));
     results
 }
 
@@ -221,6 +224,7 @@ pub(super) fn capture_page_ids() -> Vec<&'static str> {
         .map(|page| page.id)
         .chain(refusals::REFUSAL_PAGES.iter().map(|page| page.id))
         .chain(ad_hop::page_ids())
+        .chain(feed::page_ids())
         .collect()
 }
 

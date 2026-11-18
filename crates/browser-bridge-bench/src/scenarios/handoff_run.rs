@@ -63,17 +63,35 @@ fn page_url_with_report_origin(
     )
 }
 
-/// Каталог сборки настоящего экстеншена для браузера.
-pub(super) fn real_extension_dir(stand: &Stand, browser: BrowserKind) -> PathBuf {
+/// Переменная окружения: каталог сборки экстеншена вместо `extensions/browser/dist` (в нём лежат папки
+/// `chrome` и `firefox`). Нужна, чтобы прогнать тот же сценарий на СТАРОЙ сборке (например, из
+/// отдельной копии репозитория на прежнем коммите) и доказать, что строка отличает новое от старого.
+const EXTENSION_DIST_OVERRIDE_VARIABLE: &str = "FASTIPLAYER_BENCH_EXTENSION_DIST";
+
+/// Чистая часть [`real_extension_dir`]: где лежит сборка экстеншена для браузера. `dist_override` —
+/// значение [`EXTENSION_DIST_OVERRIDE_VARIABLE`]; пустое значение считается незаданным.
+fn extension_dist_dir(
+    repo_root: &std::path::Path,
+    dist_override: Option<std::ffi::OsString>,
+    browser: BrowserKind,
+) -> PathBuf {
     let name = match browser {
         BrowserKind::Chromium => "chrome",
         BrowserKind::Firefox => "firefox",
     };
-    stand
-        .settings
-        .repo_root
-        .join("extensions/browser/dist")
-        .join(name)
+    match dist_override.filter(|value| !value.is_empty()) {
+        Some(root) => PathBuf::from(root).join(name),
+        None => repo_root.join("extensions/browser/dist").join(name),
+    }
+}
+
+/// Каталог сборки настоящего экстеншена для браузера.
+pub(super) fn real_extension_dir(stand: &Stand, browser: BrowserKind) -> PathBuf {
+    extension_dist_dir(
+        &stand.settings.repo_root,
+        std::env::var_os(EXTENSION_DIST_OVERRIDE_VARIABLE),
+        browser,
+    )
 }
 
 /// Какой экстеншен стоит в браузере прогона.
@@ -454,6 +472,24 @@ impl<'a> HandoffRun<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_extension_build_comes_from_the_repo_unless_an_override_names_another_one() {
+        let repo = std::path::Path::new("/repo");
+        assert_eq!(
+            extension_dist_dir(repo, None, BrowserKind::Chromium),
+            PathBuf::from("/repo/extensions/browser/dist/chrome")
+        );
+        assert_eq!(
+            extension_dist_dir(repo, Some("/old/dist".into()), BrowserKind::Firefox),
+            PathBuf::from("/old/dist/firefox")
+        );
+        // Пустое значение переменной — «не задано», а не «собрать из корня».
+        assert_eq!(
+            extension_dist_dir(repo, Some("".into()), BrowserKind::Firefox),
+            PathBuf::from("/repo/extensions/browser/dist/firefox")
+        );
+    }
 
     #[test]
     fn a_public_page_still_reports_to_the_real_stand_origin() {

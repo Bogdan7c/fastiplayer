@@ -14,7 +14,9 @@ use super::ButtonState;
 const APPLICATION_NAME: &str = "fastiplayer-browser-bridge-bench";
 /// Причина запроса (kwin показывает её только когда проверки прав включены).
 const AUTHENTICATE_REASON: &str = "robot input for the browser extension test stand";
-/// Версии интерфейса: `pointer_motion_absolute` с 3, `keyboard_key` с 4.
+/// Номер вертикальной оси колеса в запросе `axis` (как `wl_pointer.axis::vertical_scroll`).
+const AXIS_VERTICAL_SCROLL: u32 = 0;
+/// Версии интерфейса: `pointer_motion_absolute` с 3, `keyboard_key` с 4 (`axis` есть с первой).
 const MIN_INTERFACE_VERSION: u32 = 4;
 const MAX_INTERFACE_VERSION: u32 = 5;
 
@@ -121,6 +123,12 @@ impl FakeInputLink {
     pub(super) fn button(&self, code: u32, state: ButtonState) -> Result<(), InputError> {
         self.fake_input.button(code, state.wire_value());
         self.round_trip("button")
+    }
+
+    /// Вертикальная прокрутка колесом (запрос `axis`): `value` положительное — вниз, отрицательное — вверх.
+    pub(super) fn vertical_scroll(&self, value: f64) -> Result<(), InputError> {
+        self.fake_input.axis(AXIS_VERTICAL_SCROLL, value);
+        self.round_trip("axis")
     }
 
     /// Клавиша клавиатуры.

@@ -162,6 +162,10 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("auto-hover-preview"),
     page("auto-feed"),
     page("auto-preroll"),
+    // 16b2, решения 354–360: окно плеера идёт за лентой коротких видео (сценарий `capture`, судья `feed`):
+    // три формы ленты (`shape=many|moved|pool`) и два случая, где сеанс НЕ переезжает (`feed-hover`).
+    page("feed"),
+    page("feed-hover"),
     page("live-unload"),
     page("live-unload-new-ms"),
     page_unsupported_in("live-unload-worker", &[BrowserKind::Firefox]),

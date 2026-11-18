@@ -21,7 +21,7 @@ use super::page_geometry::{ClientRect, ScreenPlace};
 use super::start_rows::prepare_entry;
 use super::viewer_offer_probe::ViewerOfferState;
 use crate::browsers::BrowserKind;
-use crate::desktop_input::Point;
+use crate::desktop_input::{Point, WheelDirection};
 use crate::environment::BenchEnvironment;
 use crate::site::RunId;
 
@@ -274,6 +274,16 @@ impl<'a> ReturnHand<'a, '_> {
     /// Настоящее движение мыши в точку экрана (без клика): наведение на превью.
     pub(in crate::scenarios) fn move_pointer(&self, point: Point) -> Result<(), ScenarioError> {
         self.ready.robot.move_pointer(point)
+    }
+
+    /// Настоящее колесо мыши в точке экрана (16b2: листание ленты коротких видео).
+    pub(in crate::scenarios) fn scroll_wheel(
+        &self,
+        point: Point,
+        direction: WheelDirection,
+        notches: u32,
+    ) -> Result<(), ScenarioError> {
+        self.ready.robot.scroll_wheel(point, direction, notches)
     }
 
     /// Настоящий левый клик в точку экрана.

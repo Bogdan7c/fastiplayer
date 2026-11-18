@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>feed-hover</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{margin:0;background:#111;color:#ccc;font:14px system-ui,sans-serif;min-height:calc(100vh + 1300px);position:relative}
+video{background:#000;display:block;position:absolute}
+#main{left:16px;top:60px;width:640px;height:360px}
+/* Превью рядом с главным видео (вариант hover) и в блоке «комментарии» далеко внизу (вариант comments). */
+#preview{width:320px;height:180px}
+body.hover #preview{left:700px;top:60px}
+body.comments #preview{left:16px;top:calc(100vh + 560px)}
+#label{position:absolute;left:16px;top:16px}
+</style>
+</head>
+<body>
+<div id="label">feed-hover</div>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor, sleep } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { requireMimeSupport } from '../lib/scenario-kit.js';
+import { installEntryProbe, registerEntryTarget } from '../lib/entry-probe.js';
+import { ReelSource, logWheelEvents, serveRobotCommands, waitUntilPlaying } from '../lib/feed-kit.js';
+
+// Два отрицательных случая ленты (сессия 16b2): сеанс НЕ должен переехать, хотя рядом с нашим роликом
+// заиграл другой. Вариант — параметр адреса `variant=hover|comments`:
+//  * hover: главный ролик на экране и играет, а рядом превью, которое БЕЗ звука запускается, когда мышь над
+//    ним (настоящее наведение). Наш ролик с экрана не уходил и не останавливался;
+//  * comments: «листаем к комментариям»: главный ролик НАСТОЯЩИМ колесом уходит с экрана целиком, но страница
+//    его НЕ останавливает (обычная страница), а ниже, в комментариях, превью заиграло при появлении на экране.
+// Превью — того же рода, что следующий ролик ленты (MSE, без звука), чтобы случаи отличались от
+// положительных строк только тем, что наш ролик не остановлен или не ушёл с экрана.
+/** Сколько ждём, что превью заиграло, мс. */
+const PREVIEW_WAIT_MS = 15000;
+/** Какая доля превью должна быть видна, чтобы оно заиграло (вариант comments). */
+const PREVIEW_VISIBLE_RATIO = 0.5;
+/** Где в обычном режиме страница сама листает к комментариям, px от верха документа. */
+const PLAIN_COMMENTS_SCROLL_Y = 1100;
+
+await runScenario('feed-hover', async (ctx) => {
+  const variant = ctx.params.raw.get('variant') ?? 'hover';
+  if (!['hover', 'comments'].includes(variant)) throw new Error(`bad page query: variant=${variant}`);
+  document.body.classList.add(variant);
+  const catalog = await loadCatalog();
+  requireMimeSupport(catalog, [{ assetId: 'reel-1', trackId: catalog.assets['reel-1'].tracks[0].id }]);
+  requireMimeSupport(catalog, [{ assetId: 'reel-2', trackId: catalog.assets['reel-2'].tracks[0].id }]);
+  const source = new ReelSource(ctx, catalog);
+  const wheel = logWheelEvents(ctx);
+
+  // Главный ролик: играет со звуком, как обычное видео страницы.
+  const main = await source.prepare(1, { muted: false });
+  main.video.id = 'main';
+  document.body.append(main.video);
+  await main.video.play();
+  ctx.check('main-plays', await waitUntilPlaying(main.video), 'the main video plays');
+
+  // Превью: того же рода, что следующий ролик ленты (MSE, без звука), ждёт своего часа.
+  const preview = await source.prepare(2, { muted: true });
+  preview.video.id = 'preview';
+  document.body.append(preview.video);
+  registerEntryTarget('preview', () => preview.video);
+
+  const facts = { previewStarted: false, mainLeftScreen: false, mainPausedWhenLeft: 0 };
+  const startPreview = async (why) => {
+    if (facts.previewStarted) return;
+    facts.previewStarted = true;
+    ctx.log(`preview-start-trigger why=${why}`);
+    await preview.video.play();
+    if (await waitUntilPlaying(preview.video)) ctx.log(`preview-playing muted=${preview.video.muted}`);
+  };
+  if (variant === 'hover') {
+    preview.video.addEventListener('mouseover', () => startPreview('hover').catch((error) => ctx.log(`preview play failed: ${error?.name}`)));
+  } else {
+    // Главный ролик ушёл с экрана целиком: страница ничего с ним не делает, только записывает.
+    new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.intersectionRatio === 0 && !facts.mainLeftScreen) {
+          facts.mainLeftScreen = true;
+          facts.mainPausedWhenLeft = main.video.paused ? 1 : 0;
+          ctx.log(`main-left-screen paused=${main.video.paused}`);
+        }
+      }
+    }).observe(main.video);
+    // Комментарии: превью начинает играть, как только показалось на экране.
+    new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.intersectionRatio >= PREVIEW_VISIBLE_RATIO) {
+          startPreview('in-view').catch((error) => ctx.log(`preview play failed: ${error?.name}`));
+        }
+      }
+    }, { threshold: [PREVIEW_VISIBLE_RATIO] }).observe(preview.video);
+  }
+
+  if (!ctx.params.handoff) {
+    // Обычный режим: наведение и прокрутку делает сама страница.
+    if (variant === 'hover') preview.video.dispatchEvent(new MouseEvent('mouseover'));
+    else window.scrollTo({ top: PLAIN_COMMENTS_SCROLL_Y, behavior: 'instant' });
+    const started = await waitFor(() => !preview.video.paused, PREVIEW_WAIT_MS);
+    ctx.check('preview-plays', started, `paused=${preview.video.paused}`);
+    ctx.check('main-keeps-playing', !main.video.paused, `main paused=${main.video.paused}`);
+    return;
+  }
+  installEntryProbe(ctx);
+  ctx.log('handoff-ready');
+  await serveRobotCommands(ctx, {
+    onFinish: async () => {
+      await sleep(0);
+      ctx.metric('preview_started', facts.previewStarted ? 1 : 0);
+      ctx.metric('preview_playing', preview.video.paused ? 0 : 1);
+      ctx.metric('main_paused', main.video.paused ? 1 : 0);
+      ctx.metric('main_left_screen', facts.mainLeftScreen ? 1 : 0);
+      ctx.metric('wheel_events_trusted', wheel.trusted);
+    },
+  });
+});
+</script>
+</body>
+</html>

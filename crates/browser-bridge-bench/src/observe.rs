@@ -7,6 +7,7 @@ mod page_subtitle_log;
 mod playback_end;
 mod player_log;
 mod quality_log;
+mod stream_generation_log;
 mod summary_digest;
 
 pub use error::ObserveError;
@@ -22,5 +23,9 @@ pub use player_log::{
 };
 pub use quality_log::{
     BROWSER_QUALITY_SHOWN_MARKER, BrowserQualityLine, QualityBitrate, parse_browser_quality_shown,
+};
+pub use stream_generation_log::{
+    STREAM_GENERATION_LOADED_MARKER, STREAM_SURFACE_RECONFIGURED_MARKER,
+    parse_stream_generation_loaded, parse_stream_surface_width,
 };
 pub use summary_digest::SummaryDigest;

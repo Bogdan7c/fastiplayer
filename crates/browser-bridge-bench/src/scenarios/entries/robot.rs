@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use super::super::context::{ScenarioError, Stand};
 use crate::browsers::{BrowserKind, BrowserUnderTest, PopupSnapshot};
 use crate::compositor_windows::CompositorWindows;
-use crate::desktop_input::{DesktopInput, Key, Point};
+use crate::desktop_input::{DesktopInput, Key, Point, WheelDirection};
 use crate::environment::BenchEnvironment;
 use crate::screen_capture::{Frame, IconMatch, ScreenCapture, ScreenError, SearchBand};
 
@@ -70,6 +70,17 @@ impl<'env> Robot<'env> {
     /// Настоящее движение мыши в точку экрана (без клика).
     pub(super) fn move_pointer(&self, point: Point) -> Result<(), ScenarioError> {
         self.input.mouse().move_to(point)?;
+        Ok(())
+    }
+
+    /// Настоящее колесо мыши в точке экрана: `notches` щелчков в `direction` (16b2: лента коротких видео).
+    pub(super) fn scroll_wheel(
+        &self,
+        point: Point,
+        direction: WheelDirection,
+        notches: u32,
+    ) -> Result<(), ScenarioError> {
+        self.input.mouse().scroll_at(point, direction, notches)?;
         Ok(())
     }
 

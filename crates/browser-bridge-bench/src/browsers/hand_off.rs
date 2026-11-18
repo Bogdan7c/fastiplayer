@@ -231,6 +231,11 @@ pub(crate) fn parse_robot_output(
     }
 }
 
+/// Сколько ждём, пока открытая служебная страница получит API экстеншена.
+const SERVICE_PAGE_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Шаг повтора, пока служебная страница не готова.
+const SERVICE_PAGE_READY_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Отдать вкладку командой из УЖЕ открытой служебной страницы, не открывая новой вкладки (16b2).
 ///
 /// Обычный робот ([`super::BrowserUnderTest::hand_off_tab`]) открывает служебную страницу новой
@@ -248,8 +253,18 @@ pub fn hand_off_from_service_page(
         super::BrowserError::protocol("service page", format!("prefix literal: {error}"))
     })?;
     let script = format!("async (api) => ({ROBOT_FUNCTION})(api, {prefix_literal}, {{}})");
-    let raw = browser.run_in_service_page(&script)?;
-    Ok(parse_robot_output(&raw, page_url_prefix)?)
+    // Служебная страница, только что открытая вкладкой, получает API экстеншена не сразу: до этого скрипт
+    // отвечает «не готово». Обычный робот повторяет попытку внутри браузера, здесь — тот же повтор.
+    let deadline = std::time::Instant::now() + SERVICE_PAGE_READY_TIMEOUT;
+    loop {
+        let raw = browser.run_in_service_page(&script)?;
+        match parse_robot_output(&raw, page_url_prefix) {
+            Err(HandOffError::PageNotReady) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(SERVICE_PAGE_READY_POLL);
+            }
+            other => return Ok(other?),
+        }
+    }
 }
 
 /// `started` называет окно плеера одним из двух значений договора экстеншена.

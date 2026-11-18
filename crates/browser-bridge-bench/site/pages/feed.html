@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>feed</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html{scroll-snap-type:y mandatory}
+body{margin:0;background:#111;color:#ccc;font:14px system-ui,sans-serif}
+.reel{height:100vh;scroll-snap-align:start;position:relative;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #333;box-sizing:border-box}
+.reel-caption{position:absolute;top:8px;left:12px}
+.reel-video{height:70vh;max-width:90vw;background:#000}
+</style>
+</head>
+<body>
+<main id="feed"></main>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { waitFor } from '../lib/bench-checks.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { requireMimeSupport } from '../lib/scenario-kit.js';
+import { installEntryProbe } from '../lib/entry-probe.js';
+import { REEL_COUNT, ReelFeed, ReelSource, feedState, logWheelEvents, serveRobotCommands } from '../lib/feed-kit.js';
+import { createShape, SHAPES } from '../lib/feed-shapes.js';
+
+// Лента коротких видео (сессия 16b2): три ролика в рост окна, листаются колесом. Форма ленты — параметр
+// адреса `shape=many|moved|pool` (Instagram / YouTube Shorts / TikTok, подробности в lib/feed-shapes.js).
+//  * Обычный режим (без робота): страница сама листает ленту до конца и проверяет свою форму;
+//  * режим передачи: ролик 1 играет, страница ждёт робота. Робот отдаёт вкладку и листает НАСТОЯЩИМ
+//    колесом мыши; всё, что сайт делает при прокрутке, происходит само. Судит Rust.
+/** Сколько ждём, что следующий ролик заиграл после прокрутки страницей, мс (обычный режим). */
+const NEXT_REEL_WAIT_MS = 12000;
+
+await runScenario('feed', async (ctx) => {
+  const shape = ctx.params.raw.get('shape') ?? 'many';
+  if (!SHAPES.includes(shape)) throw new Error(`bad page query: shape=${shape}`);
+  const catalog = await loadCatalog();
+  for (let number = 1; number <= REEL_COUNT; number += 1) {
+    requireMimeSupport(catalog, [{ assetId: `reel-${number}`, trackId: catalog.assets[`reel-${number}`].tracks[0].id }]);
+  }
+  const source = new ReelSource(ctx, catalog);
+  const feed = new ReelFeed(ctx, { waitUntilOldIsGone: true });
+  feed.mount(document.getElementById('feed'));
+  const behaviour = createShape(shape, ctx, source, feed);
+  feed.waitUntilOldIsGone = behaviour.waitUntilOldIsGone;
+  const wheel = logWheelEvents(ctx);
+
+  ctx.check('reel-1-plays', await behaviour.start(), `shape=${shape}`);
+  feed.watch((from, to) => behaviour.onAdvance(from, to));
+
+  if (!ctx.params.handoff) {
+    for (let number = 2; number <= REEL_COUNT; number += 1) {
+      feed.scrollToReel(number);
+      const started = await waitFor(() => feedState.reelsStarted >= number, NEXT_REEL_WAIT_MS);
+      ctx.check(`reel-${number}-plays-after-scroll`, started, `reelsStarted=${feedState.reelsStarted}`);
+      await behaviour.checkAfter(number);
+    }
+    return;
+  }
+  installEntryProbe(ctx);
+  ctx.log('handoff-ready');
+  await serveRobotCommands(ctx, {
+    onFinish: async () => {
+      ctx.metric('reels_started', feedState.reelsStarted);
+      ctx.metric('wheel_events_total', wheel.total);
+      ctx.metric('wheel_events_trusted', wheel.trusted);
+    },
+  });
+});
+</script>
+</body>
+</html>

@@ -39,6 +39,13 @@ const HOVER_SETTLE: Duration = Duration::from_millis(120);
 /// браузеры считают дребезгом и не всегда доставляют как клик. 50 мс — короче двойного клика,
 /// но дольше кадра.
 const PRESS_HOLD: Duration = Duration::from_millis(50);
+/// Пауза между щелчками колеса: настоящее колесо крутится не быстрее, чем браузер успевает принять
+/// прокрутку; без паузы браузер склеил бы десяток щелчков в один рывок.
+const WHEEL_NOTCH_PAUSE: Duration = Duration::from_millis(40);
+/// Сколько единиц оси `fake_input` в одном щелчке колеса. Подобрано замером на настоящем стенде
+/// (журнал страницы `wheel dy=…`): один щелчок прокручивает страницу примерно как щелчок настоящей
+/// мыши.
+const AXIS_UNITS_PER_NOTCH: f64 = 15.0;
 /// Пауза после действия: даёт интерфейсу браузера дорисоваться перед следующим шагом робота.
 const AFTER_ACTION_SETTLE: Duration = Duration::from_millis(150);
 
@@ -55,6 +62,26 @@ impl Point {
     /// Точка по координатам.
     pub fn new(x: u32, y: u32) -> Self {
         Self { x, y }
+    }
+}
+
+/// Куда крутят колесо.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WheelDirection {
+    /// От себя: страница едет вверх, виден низ (в протоколе `fake_input` значение оси положительное).
+    Down,
+    /// К себе: виден верх страницы (значение оси отрицательное).
+    Up,
+}
+
+impl WheelDirection {
+    /// Значение оси `fake_input` для `notches` щелчков колеса в этом направлении.
+    fn axis_value(self, notches: u32) -> f64 {
+        let magnitude = AXIS_UNITS_PER_NOTCH * f64::from(notches);
+        match self {
+            Self::Down => magnitude,
+            Self::Up => -magnitude,
+        }
     }
 }
 
@@ -168,6 +195,24 @@ impl Mouse<'_> {
         self.press_button_at(point, BTN_RIGHT)
     }
 
+    /// Подводит курсор в точку и крутит колесо: `notches` щелчков в `direction`, каждый — отдельное
+    /// событие оси с паузой, как у настоящей мыши. Прокручивается то окно, что под курсором.
+    pub fn scroll_at(
+        &self,
+        point: Point,
+        direction: WheelDirection,
+        notches: u32,
+    ) -> Result<(), InputError> {
+        self.move_to(point)?;
+        sleep(HOVER_SETTLE);
+        for _ in 0..notches {
+            self.link.vertical_scroll(direction.axis_value(1))?;
+            sleep(WHEEL_NOTCH_PAUSE);
+        }
+        sleep(AFTER_ACTION_SETTLE);
+        Ok(())
+    }
+
     /// Общая последовательность клика любой кнопкой (`button_code` — код evdev).
     fn press_button_at(&self, point: Point, button_code: u32) -> Result<(), InputError> {
         self.move_to(point)?;
@@ -250,6 +295,23 @@ mod tests {
         // BTN_LEFT = 0x110, BTN_RIGHT = 0x111: перепутанные коды открыли бы не то меню.
         assert_eq!(BTN_LEFT, 0x110);
         assert_eq!(BTN_RIGHT, 0x111);
+    }
+
+    #[test]
+    fn wheel_direction_gives_the_axis_value_sign_and_scales_with_notches() {
+        // Вниз — положительное значение оси (как у `wl_pointer.axis`), вверх — отрицательное;
+        // перепутанный знак листал бы ленту в обратную сторону.
+        assert_eq!(WheelDirection::Down.axis_value(1), AXIS_UNITS_PER_NOTCH);
+        assert_eq!(WheelDirection::Up.axis_value(1), -AXIS_UNITS_PER_NOTCH);
+        assert_eq!(
+            WheelDirection::Down.axis_value(4),
+            4.0 * AXIS_UNITS_PER_NOTCH
+        );
+        assert_eq!(
+            WheelDirection::Up.axis_value(0),
+            0.0,
+            "no notches, no scroll"
+        );
     }
 
     #[test]
