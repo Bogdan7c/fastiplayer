@@ -7,6 +7,7 @@ import { NEXT_VIDEO_WAIT_MS } from "../../src/background/handoff/video-relocatio
 import { PROTOCOL_VERSION_1_3, SESSION_CLOSE_CODES, type PageSessionMessage, type ProtocolVersion } from "../../src/protocol/index.ts";
 import { HELD_VIDEO_REPORT_KIND, SHADOW_SILENCE_LIMIT_MS, type HeldVideoReport, type PageCommand, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { NEXT_EPISODE_WAIT_MS } from "../../src/shared/next-episode-wait.ts";
+import { DEFAULT_PAGE_RELOAD_WAIT_MS } from "../../src/shared/page-reload-wait-settings.ts";
 import type { RangeFetch } from "../../src/background/handoff/range-fetcher.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { deliverStream, PLAYING_VIDEO, setup, startHandoff, TAB, type World, type WorldOptions } from "./handoff-world.ts";
@@ -140,13 +141,13 @@ describe("документ ушёл, вкладка на том же сайте 
     const reopen = createFakePageReopenBrowser({ url: SERIES_URL, windowId: BROWSER_WINDOW, incognito: false });
     const modern = await playing({ tabWindowId: BROWSER_WINDOW, pageReopen: reopen.browser });
     await documentGone(modern.world);
-    modern.world.clock.advance(10_000);
+    modern.world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS);
     assert.deepEqual(sent(modern.socket, "page_left"), [{ type: "page_left", reason: "navigated_away" }]);
     assert.equal(modern.socket.closedWithCode, undefined, "сирота держит связь");
 
     const old = await playing({ tabWindowId: BROWSER_WINDOW, pageReopen: reopen.browser, protocol: PROTOCOL_VERSION_1_3 });
     await documentGone(old.world);
-    old.world.clock.advance(10_000);
+    old.world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS);
     assert.deepEqual(sent(old.socket, "tab_gone"), [{ type: "tab_gone", reason: "navigated_away" }]);
   });
 
@@ -175,14 +176,50 @@ describe("документ ушёл, вкладка на том же сайте 
     assert.deepEqual(sent(socket, "tab_gone"), [{ type: "tab_gone", reason: "navigated_away" }]);
   });
 
-  it("сбой чтения настройки — срок по умолчанию (10 с) и отметка для разработчика, не молча", async () => {
+  it("сбой чтения настройки — срок по умолчанию (30 с) и отметка для разработчика, не молча", async () => {
     const { world } = await playing({ pageReloadWait: new Error("storage is gone") });
     assert.ok(world.adMirror.notes.some((note) => note.includes("could not read the page reload wait setting")));
     await documentGone(world);
-    world.clock.advance(9_999);
+    world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS - 1);
     assert.deepEqual(world.ended, []);
     world.clock.advance(1);
     assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);
+  });
+});
+
+describe("умолчание 30 с (16e2, решение 343): сайты с запуском кликом", () => {
+  it("человек нажал play на новой странице на 16-й секунде — видео уходит в то же окно, а не в браузер", async () => {
+    // Находка вехи M3 (uaserials): при 10 с сеанс к этой секунде уже признал страницу ушедшей.
+    const { world } = await playing();
+    await documentGone(world);
+    world.clock.advance(15_000);
+    const armingsAt15s = world.armings.length;
+    world.clock.advance(1_000);
+    assert.deepEqual(world.ended, [], "на 16-й секунде срок по умолчанию ещё идёт");
+    assert.ok(world.armings.length > armingsAt15s, "сторож следующего видео всё ещё взведён: фрейм с плеером, появившийся поздно, его получит");
+    newDocumentShows(world);
+    world.door.nextOutcome = (request) => grantFor(request, "replaced_previous");
+    assert.equal(world.handoffs.heldVideo(TAB, 0, heldReport(RELOADED_FILM)), "adopt_new_session");
+    await flushPromises();
+    assert.equal(world.door.requests.length, 2, "плееру ушёл open_session замены");
+    assert.deepEqual(world.releases, [], "видео не отпущено в браузер");
+  });
+
+  it("скачанное доиграло в окне, пока ждём, — сеанс ждёт до срока, а по сроку уходит, как страница", async () => {
+    // С 30 с окно чаще успевает досмотреть скачанное до срока: конец серии у плеера не сокращает ожидание
+    // и не превращает его в ожидание следующей серии 16a — вид ожидания решён в миг ухода документа.
+    const { world, socket } = await playing();
+    await documentGone(world);
+    world.clock.advance(20_000);
+    clock(socket, 2, "ended");
+    await flushPromises();
+    assert.deepEqual(world.ended, []);
+    assert.deepEqual(sent(socket, "awaiting_next_episode"), [], "ожидание следующей серии не начиналось");
+    world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS - 20_000 - 1);
+    assert.deepEqual(world.ended, [], "срок не сокращён");
+    world.clock.advance(1);
+    assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);
+    assert.deepEqual(sent(socket, "tab_gone"), [{ type: "tab_gone", reason: "navigated_away" }]);
   });
 });
 
@@ -193,7 +230,7 @@ describe("серия уже доиграла, когда документ ушё
     await documentGone(world, SAME_ADDRESS);
     assert.deepEqual(sent(socket, "awaiting_next_episode"), [{ type: "awaiting_next_episode", patience_ms: NEXT_EPISODE_WAIT_MS }]);
     world.clock.advance(NEXT_EPISODE_WAIT_MS - 1);
-    assert.deepEqual(world.ended, [], "10 с настройки здесь не действуют");
+    assert.deepEqual(world.ended, [], "срок настройки (30 с) здесь не действует");
     world.clock.advance(1);
     assert.deepEqual(world.ended, [{ kind: "next_episode_not_started" }]);
     assert.equal(socket.closedWithCode, SESSION_CLOSE_CODES.next_episode_not_started);
@@ -227,8 +264,9 @@ describe("передача сеансу-замене", () => {
     assert.equal(world.handoffs.heldVideo(TAB, 0, heldReport({ ...RELOADED_FILM, element: 8 })), "release", "одна замена за раз");
     await flushPromises();
     assert.deepEqual(world.releases, [{ tabId: TAB, frameId: 0, element: RELOADED_FILM.element }], "обещанное видео отпущено во фрейме");
-    world.clock.advance(5_999);
-    assert.deepEqual(world.ended, [], "остаток срока — 6 с");
+    // Замену открыли на 4-й секунде: остаток срока — всё, что осталось от умолчания.
+    world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS - 4_000 - 1);
+    assert.deepEqual(world.ended, [], "остаток срока не потерян");
     world.clock.advance(1);
     assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);
   });
@@ -236,7 +274,7 @@ describe("передача сеансу-замене", () => {
   it("(g) срок вышел, пока замена открывалась: замену не обрывают, а её отказ кончает сеанс сразу", async () => {
     const { world } = await playing();
     await handoverThatWillBeRefused(world);
-    world.clock.advance(10_000);
+    world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS);
     assert.deepEqual(world.ended, [], "пока замена открывается, срок не срабатывает");
     await flushPromises();
     assert.deepEqual(world.releases.length, 1);
@@ -327,12 +365,14 @@ describe("концы во время ожидания", () => {
     assert.deepEqual(world.ended, [{ kind: "page_took_video_back" }], "срок переезда, а не 30 с ожидания перезагрузки");
   });
 
-  it("(k) пульса тени нет 30 с ожидания — сторож тишины молчит (конец только по сроку)", async () => {
-    const { world } = await playing({ pageReloadWait: { seconds: 30 } });
+  it("(k) пульса тени нет весь срок по умолчанию — сторож тишины молчит (конец только по сроку)", async () => {
+    // 16c: предел тишины (10 с) совпадал со сроком по умолчанию; с 16e2 срок втрое длиннее — сторож обязан молчать.
+    const { world } = await playing();
     await documentGone(world);
-    world.clock.advance(SHADOW_SILENCE_LIMIT_MS * 2);
+    world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS - 1);
+    assert.ok(DEFAULT_PAGE_RELOAD_WAIT_MS > SHADOW_SILENCE_LIMIT_MS * 2, "срок заведомо длиннее предела тишины");
     assert.deepEqual(world.ended, [], "тишина мёртвого документа — не вина страницы");
-    world.clock.advance(30_000 - SHADOW_SILENCE_LIMIT_MS * 2);
+    world.clock.advance(1);
     assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);
   });
 
@@ -362,7 +402,7 @@ describe("концы во время ожидания", () => {
     for (let seq = 2; seq <= 5; seq += 1) clock(socket, seq, "playing");
     await flushPromises();
     assert.deepEqual(world.ended, [], "тот же сайт — ждём, а не кончаем сразу");
-    world.clock.advance(10_000);
+    world.clock.advance(DEFAULT_PAGE_RELOAD_WAIT_MS);
     assert.deepEqual(world.ended, [{ kind: "page_gone", reason: "navigated_away" }]);
     assert.equal(socket.wireSummary().filter((kind) => kind === "tab_gone").length, 1);
   });

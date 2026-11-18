@@ -336,16 +336,24 @@ fn ending_after_the_wait_passes_and_ending_early_fails() {
             evidence,
         )
     };
-    let verdict = judge_end(&end_evidence(10, false));
+    let verdict = judge_end(&end_evidence(30, false));
     assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
     let early = judge_end(&end_evidence(2, false));
     assert_eq!(early.outcome, Outcome::Fail);
     assert!(early.detail.contains("too early"), "{}", early.detail);
+    // Прежнее умолчание 16c (10 с) — тоже «слишком рано»: срок по умолчанию теперь 30 с (16e2, решение 343).
+    let old_default = judge_end(&end_evidence(10, false));
+    assert_eq!(old_default.outcome, Outcome::Fail);
+    assert!(
+        old_default.detail.contains("too early"),
+        "{}",
+        old_default.detail
+    );
 }
 
 #[test]
 fn the_end_must_say_the_source_tab_closed_and_close_the_window() {
-    let mut evidence = end_evidence(10, false);
+    let mut evidence = end_evidence(30, false);
     evidence.end.as_mut().unwrap().notice =
         Ok(notice("page_took_video_back", "page_took_video_back"));
     evidence.end.as_mut().unwrap().window_closed =
@@ -366,7 +374,7 @@ fn the_end_must_say_the_source_tab_closed_and_close_the_window() {
 
 #[test]
 fn an_end_without_replacement_must_not_open_a_second_session() {
-    let mut evidence = end_evidence(10, false);
+    let mut evidence = end_evidence(30, false);
     evidence
         .journal
         .session_opened

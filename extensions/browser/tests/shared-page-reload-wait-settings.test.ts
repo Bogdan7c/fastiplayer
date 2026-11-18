@@ -14,9 +14,9 @@ import {
 import { memoryStore } from "./background/auto-handoff-lists-fake-dom.ts";
 
 describe("настройка ожидания после перезагрузки", () => {
-  it("по умолчанию — 10 с; срок для фона — в миллисекундах", () => {
-    assert.deepEqual(DEFAULT_PAGE_RELOAD_WAIT_SETTINGS, { seconds: 10 });
-    assert.equal(DEFAULT_PAGE_RELOAD_WAIT_MS, 10_000);
+  it("по умолчанию — 30 с (решение 343); срок для фона — в миллисекундах", () => {
+    assert.deepEqual(DEFAULT_PAGE_RELOAD_WAIT_SETTINGS, { seconds: 30 });
+    assert.equal(DEFAULT_PAGE_RELOAD_WAIT_MS, 30_000);
     assert.equal(pageReloadWaitMsOf({ seconds: 0 }), 0);
     assert.equal(pageReloadWaitMsOf({ seconds: 60 }), 60_000);
   });
@@ -35,6 +35,12 @@ describe("настройка ожидания после перезагрузк�
     await writePageReloadWaitSettings(store, { seconds: 25 });
     assert.deepEqual(values.get(PAGE_RELOAD_WAIT_SETTINGS_KEY), { seconds: 25 });
     assert.deepEqual(await readPageReloadWaitSettings(store), { seconds: 25 });
+  });
+
+  it("сохранённое значение не подменяется новым умолчанием: кто записал 10 с, у того 10 с (16e2)", async () => {
+    const { store, values } = memoryStore({ [PAGE_RELOAD_WAIT_SETTINGS_KEY]: { seconds: 10 } });
+    assert.deepEqual(await readPageReloadWaitSettings(store), { seconds: 10 });
+    assert.deepEqual(values.get(PAGE_RELOAD_WAIT_SETTINGS_KEY), { seconds: 10 }, "чтение ничего не переписывает");
   });
 
   it("сбой хранилища не глотается: чтение отклоняется (умолчание выбирает вызывающий)", async () => {

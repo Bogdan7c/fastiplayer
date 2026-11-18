@@ -17,9 +17,9 @@ async function mounted(initial: Record<string, unknown> = {}) {
 }
 
 describe("раздел «Page reload»", () => {
-  it("показывает срок из настройки, без настройки — 10", async () => {
+  it("показывает срок из настройки, без настройки — 30", async () => {
     assert.equal((await mounted({ [PAGE_RELOAD_WAIT_SETTINGS_KEY]: { seconds: 25 } })).container.byId("page-reload-wait-seconds").value, "25");
-    assert.equal((await mounted()).container.byId("page-reload-wait-seconds").value, "10");
+    assert.equal((await mounted()).container.byId("page-reload-wait-seconds").value, "30");
   });
 
   it("годный ввод пишется, негодный — подсказка и ни одной записи", async () => {

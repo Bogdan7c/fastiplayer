@@ -28,8 +28,10 @@ pub(super) const PAGE_LOAD_MARKER: &str = "page-reload: load ";
 /// Вид документа «плеер внутри iframe» (метка `view` у документа рамки).
 const FRAME_INNER_VIEW: &str = "frame-inner";
 
-/// Конец сеанса не раньше, чем за столько после ухода страницы (срок экстеншена по умолчанию — 10 с).
-pub(super) const MIN_WAIT_BEFORE_END: Duration = Duration::from_secs(9);
+/// Конец сеанса не раньше, чем за столько после ухода страницы: срок экстеншена по умолчанию — 30 с (решение 343,
+/// 16e2), секунда — допуск на миг, который робот отмечает раньше ухода документа. Прежнее умолчание (10 с) судья
+/// обязан ловить как «слишком рано».
+pub(super) const MIN_WAIT_BEFORE_END: Duration = Duration::from_secs(29);
 /// Конец «сразу» (другой сайт) не позже: заведомо меньше срока ожидания.
 pub(super) const MAX_IMMEDIATE_END: Duration = Duration::from_secs(6);
 /// Сколько новых кадров рендера после замены доказывают, что поток идёт.
