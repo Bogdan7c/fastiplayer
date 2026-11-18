@@ -16,7 +16,8 @@
 // на месте плеера не считается: баннер не всегда зациклен, поэтому у беззвучного решает ещё и площадь.
 //
 // Если главного нет, исход по оставшимся: видимый или играющий под DRM → `protected`; видимая или
-// играющая неподдержанная форма → `not_supported_yet` с формой (решение 185); иначе `nothing`.
+// играющая неподдержанная форма → `not_supported_yet` с формой (решение 185); затем тихий крупный
+// играющий ролик ленты (решение 357, `isSilentClipInPlayerPlace`); иначе `nothing`.
 // DRM-видео не мешает передать другой `main` на той же странице.
 
 import type { CandidateMedia, DocumentTag, ElementKey, UnsupportedMediaForm, VideoCandidate, VideoRef } from "../../shared/handoff-contract.ts";
@@ -130,7 +131,25 @@ export function chooseMainVideo(frames: readonly FrameCandidates[], rules: Video
     const best = bestOf(handable.filter((entry) => admits(pass, entry.candidate)));
     if (best !== undefined) return { kind: "hand_off", video: chosenVideoOf(best, rules) };
   }
-  return choiceWithoutMain(classified);
+  const withoutMain = choiceWithoutMain(classified);
+  if (withoutMain.kind !== "nothing") return withoutMain;
+  // Решение 357: главного нет и честного отказа нет — человек явно просит передать то, что играет на
+  // экране. Тихий короткий ролик ленты (Instagram без жеста запускает без звука) тогда и есть видео.
+  const silentClip = bestOf(classified.filter((entry) => isSilentClipInPlayerPlace(entry, rules)));
+  return silentClip === undefined ? withoutMain : { kind: "hand_off", video: chosenVideoOf(silentClip, rules) };
+}
+
+/**
+ * Тихий ролик на месте плеера (решение 357): вердикт `junk` только из-за беззвучия (короткий или
+ * зацикленный), но он играет, виден и крупный — не плитка и не баннер. Так выглядит ролик ленты, который
+ * страница запустила без звука. Это не «главное видео» по вердикту: такой ролик берут, только когда другого
+ * видео нет и человек сам попросил передать вкладку, или когда окно идёт за лентой (переезд 16b2).
+ * Режим 2 (автозапуск) этим правилом не пользуется: у него свой фильтр звука (решение 259).
+ */
+export function isSilentClipInPlayerPlace(entry: ClassifiedVideo, rules: VideoFilterRules = VIDEO_FILTER_RULES): boolean {
+  const { candidate } = entry;
+  if (entry.verdict !== "junk" || !candidate.muted || !candidate.playing) return false;
+  return candidate.visible_area_px >= rules.smallAreaPx && HANDOFF_FORMS.includes(candidate.media.kind);
 }
 
 /** Итог выбора по ссылке человека: обычный итог или «такого видео в свежем опросе нет». */

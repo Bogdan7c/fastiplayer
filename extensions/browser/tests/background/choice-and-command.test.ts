@@ -660,3 +660,52 @@ describe("донесение сторожа следующего видео (с�
     assert.deepEqual(heard.replies, []);
   });
 });
+
+describe("выбор видео: тихий ролик ленты по кнопке (решение 357, живая форма Instagram без жеста)", () => {
+  // Как в опросе живого Instagram (16b2): ролик 21 с, без звука, играет на весь столбец ленты; соседние
+  // ролики ленты стоят вне экрана.
+  const SILENT_REEL = { muted: true, duration_s: 21.3, playing: true, visible_area_px: 164_157 } as const;
+  const OFFSCREEN_REEL = { muted: true, duration_s: 42.2, playing: false, visible_area_px: 0 } as const;
+
+  it("главного нет — кнопка передаёт крупный играющий тихий ролик, хотя вердикт у него «мусор»", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, SILENT_REEL), video(2, OFFSCREEN_REEL), video(3, OFFSCREEN_REEL)] }];
+    assert.equal(classifySurvey(frames)[0]?.verdict, "junk", "вердикт не меняется: для режима 2 это по-прежнему мусор");
+    assert.deepEqual(chooseVideo(frames), handOff(0, "doc-top", 1, SILENT_REEL.duration_s));
+    assert.deepEqual(chooseMainVideo(frames), handOff(0, "doc-top", 1, SILENT_REEL.duration_s), "попап показывает то же видео, что передаст кнопка");
+  });
+
+  it("зацикленный тихий ролик на весь экран (Shorts без звука) тоже уходит", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, { ...SILENT_REEL, duration_s: 101, loop: true })] }];
+    assert.deepEqual(chooseVideo(frames), handOff(0, "doc-top", 1, 101));
+  });
+
+  it("настоящее главное видео на странице важнее тихого ролика, даже если оно на паузе", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, SILENT_REEL), video(2, { visible_area_px: 90_000 })] }];
+    assert.deepEqual(chooseVideo(frames), handOff(0, "doc-top", 2));
+  });
+
+  it("мелкая беззвучная плитка не уходит: это не ролик на месте плеера", () => {
+    const tile = video(1, { ...SILENT_REEL, visible_area_px: VIDEO_FILTER_RULES.smallAreaPx - 1 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [tile] }]), { kind: "nothing" });
+  });
+
+  it("тихий ролик на паузе не уходит: страница его не показывает как видео", () => {
+    const paused = video(1, { ...SILENT_REEL, playing: false });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [paused] }]), { kind: "nothing" });
+  });
+
+  it("тихий ролик вне экрана не уходит, даже если играет", () => {
+    const hidden = video(1, { ...SILENT_REEL, visible_area_px: 0 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [hidden] }]), { kind: "nothing" });
+  });
+
+  it("честный отказ (DRM) остаётся первым: тихий ролик его не перекрывает", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, SILENT_REEL), video(2, { drm: true, playing: true, visible_area_px: 300_000 })] }];
+    assert.deepEqual(chooseVideo(frames), { kind: "protected" });
+  });
+
+  it("из двух тихих роликов уходит крупнейший", () => {
+    const frames = [{ frameId: 0, candidates: [video(1, { ...SILENT_REEL, visible_area_px: 40_000 }), video(2, SILENT_REEL)] }];
+    assert.deepEqual(chooseVideo(frames), handOff(0, "doc-top", 2, SILENT_REEL.duration_s));
+  });
+});
