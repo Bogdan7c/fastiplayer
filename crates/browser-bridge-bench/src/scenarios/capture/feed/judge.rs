@@ -10,6 +10,11 @@
 //!    поколений идут подряд `1, 2, 3`: ни лишней, ни пропущенной загрузки;
 //!  * окно показало ролик НУЖНОГО размера кадра (ширина 640 -> 512 -> 384: это три разных ролика);
 //!  * кадры плеера растут после каждого переезда, окно не показывало зрителю сообщение о конце сеанса;
+//!  * окно не ждало данных у начала ролика до истечения срока (строка журнала плеера «у цели данных нет»):
+//!    зритель в это время смотрит на прежний ролик, а новый потом встаёт с середины (находка живой проверки
+//!    Instagram «нет мгновенного воспроизведения после прокрутки»);
+//!  * в строке «страница качает дольше, чем помнит мост» докачка БЫЛА (страница её записала): без неё строка
+//!    прошла бы вхолостую;
 //!  * в отрицательных строках: раздражитель БЫЛ (превью заиграло, главный ролик ушёл с экрана и не остановлен),
 //!    а поколение осталось одно, ролик на месте, кадры растут. Без доказательства раздражителя строка
 //!    прошла бы вхолостую, поэтому его отсутствие — провал.
@@ -71,6 +76,11 @@ pub(super) struct FeedEvidence {
     pub scrolls: Vec<ScrollRecord>,
     /// Отрицательная строка: раздражитель и его последствия.
     pub stay: Option<StayRecord>,
+    /// Докачка страницы сверх памяти моста перед прокруткой: состоялась или причина, почему нет (`None` —
+    /// строка её не просит).
+    pub page_download: Option<Result<(), String>>,
+    /// Строки журнала плеера «новое поколение не дождалось данных у цели» (их быть не должно).
+    pub target_wait_lines: Vec<String>,
     /// Номера поколений из строк `Browser stream generation loaded` по порядку.
     pub generations: Vec<u64>,
     /// Ширины кадра из строк «пул поверхностей перестроен под поток» по порядку (какой ролик показывало окно).
@@ -169,6 +179,17 @@ fn common_failures(evidence: &FeedEvidence, failures: &mut Vec<String>) {
     }
     if let Err(message) = &evidence.first_reel_frames {
         failures.push(format!("reel 1 never reached the player window: {message}"));
+    }
+    if let Some(Err(message)) = &evidence.page_download {
+        failures.push(format!(
+            "the page did not download past the bridge memory, so the row proves nothing: {message}"
+        ));
+    }
+    if !evidence.target_wait_lines.is_empty() {
+        failures.push(format!(
+            "the window waited out the whole deadline for data at the start of a reel instead of playing it at once: {}",
+            evidence.target_wait_lines.join(" | ")
+        ));
     }
     failures.extend(
         unexpected_player_lines(&evidence.forbidden_player_lines)

@@ -12,6 +12,10 @@
 //! Строки таблицы [`FEED_ROWS`]: формы ленты (`many`, `moved`, `pool`, `halfway`) и два случая, где окно
 //! НЕ переезжает. Приговор общий и чистый: [`judge::judge_feed`].
 //!
+//! Строка `feed-halfway-after-long-download` — вторая живая проверка Instagram 18 ноября 2026 («после
+//! прокрутки нет мгновенного воспроизведения»): страница качает больше, чем мост помнит (64 МиБ на документ),
+//! а следующий ролик обязан уйти плееру с начала и без ожидания (`site/lib/feed-history.js`).
+//!
 //! Форма `halfway` — живой Instagram 18 ноября 2026, без входа (находки живой проверки, решение 361): лента листается внутри
 //! блока, страница переключает ролик на полпути прокрутки (прежний ещё на экране), а колесо человек
 //! крутит прямо над роликом, то есть над нашей заглушкой «Playing in Fastiplayer».
@@ -44,6 +48,17 @@ const REEL_STREAM_WIDTHS: &[u64] = &[640, 512, 384];
 const ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_FEED_ROW";
 /// Строка журнала плеера: окно показало зрителю сообщение о конце сеанса.
 const END_NOTICE_MARKER: &str = "Browser session end notice shown";
+/// Строка журнала плеера: новое поколение прождало данных у цели весь срок и встало там, где данные есть.
+const TARGET_WAIT_MARKER: &str = "The new stream generation got no data at its target";
+
+/// Что страница делает после передачи ролика 1, до первой прокрутки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BeforeScrolling {
+    /// Ничего: робот сразу листает.
+    Nothing,
+    /// Страница качает больше, чем помнит мост (параметр адреса `history=past-bridge-memory`).
+    PageDownloadsPastBridgeMemory,
+}
 
 /// Что делает строка с лентой.
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +82,7 @@ struct FeedRow {
     /// Хвост адреса страницы (режим передачи и форма ленты).
     query_suffix: &'static str,
     scenario: FeedScenario,
+    before_scrolling: BeforeScrolling,
 }
 
 /// Строки сценария. Каждая — отдельное прогонное окружение (свой плеер и браузер).
@@ -80,6 +96,7 @@ const FEED_ROWS: &[FeedRow] = &[
             scrolls: 2,
             wheel: WheelPlace::OverReel,
         },
+        before_scrolling: BeforeScrolling::Nothing,
     },
     // YouTube Shorts: один элемент переезжает по секциям, новый MediaSource, паузы нет.
     FeedRow {
@@ -90,6 +107,7 @@ const FEED_ROWS: &[FeedRow] = &[
             scrolls: 1,
             wheel: WheelPlace::OverReel,
         },
+        before_scrolling: BeforeScrolling::Nothing,
     },
     // TikTok: два элемента по очереди, прежний убирается из документа и ставится на паузу.
     FeedRow {
@@ -100,6 +118,7 @@ const FEED_ROWS: &[FeedRow] = &[
             scrolls: 2,
             wheel: WheelPlace::OverReel,
         },
+        before_scrolling: BeforeScrolling::Nothing,
     },
     // Живой Instagram (18 ноября 2026, без входа): страница переключает ролик на полпути (прежний ещё на экране и потом
     // выглядывает полоской). Колесо — мимо ролика: строка проверяет только переезд окна.
@@ -111,6 +130,7 @@ const FEED_ROWS: &[FeedRow] = &[
             scrolls: 2,
             wheel: WheelPlace::BesideReel,
         },
+        before_scrolling: BeforeScrolling::Nothing,
     },
     // То же, но колесо крутят над роликом, то есть над заглушкой: лента в блоке обязана листаться.
     FeedRow {
@@ -121,6 +141,19 @@ const FEED_ROWS: &[FeedRow] = &[
             scrolls: 2,
             wheel: WheelPlace::OverReel,
         },
+        before_scrolling: BeforeScrolling::Nothing,
+    },
+    // Вторая живая проверка Instagram: страница скачала больше, чем помнит мост, а следующий ролик, начало
+    // которого она загрузила заранее, обязан заиграть в окне сразу и с начала.
+    FeedRow {
+        step_id: "feed-halfway-after-long-download",
+        page_id: "feed",
+        query_suffix: "&mode=handoff&shape=halfway&history=past-bridge-memory",
+        scenario: FeedScenario::Scroll {
+            scrolls: 1,
+            wheel: WheelPlace::OverReel,
+        },
+        before_scrolling: BeforeScrolling::PageDownloadsPastBridgeMemory,
     },
     // Превью по наведению рядом с главным видео: наш ролик на экране, переезда нет.
     FeedRow {
@@ -128,6 +161,7 @@ const FEED_ROWS: &[FeedRow] = &[
         page_id: "feed-hover",
         query_suffix: "&mode=handoff&variant=hover",
         scenario: FeedScenario::HoverPreview,
+        before_scrolling: BeforeScrolling::Nothing,
     },
     // «Листаем к комментариям»: ролик ушёл с экрана, но играет; ниже заиграло превью. Переезда нет.
     FeedRow {
@@ -135,6 +169,7 @@ const FEED_ROWS: &[FeedRow] = &[
         page_id: "feed-hover",
         query_suffix: "&mode=handoff&variant=comments",
         scenario: FeedScenario::ScrollToComments,
+        before_scrolling: BeforeScrolling::Nothing,
     },
 ];
 
@@ -198,6 +233,8 @@ struct AfterHandOff {
     first_reel_frames: Result<(), String>,
     scrolls: Vec<ScrollRecord>,
     stay: Option<StayRecord>,
+    /// Докачка страницы сверх памяти моста (`None` — строка её не просит или до неё не дошло).
+    page_download: Option<Result<(), String>>,
 }
 
 fn drive(
@@ -215,12 +252,13 @@ fn drive(
     hand.run().open_service_page()?;
     let hand_off = hand_off_visible(hand.run()).map_err(|error| error.to_string());
     let after = if matches!(hand_off, Ok(HandOffOutcome::Started)) {
-        follow_the_feed(&mut hand, row.scenario)?
+        follow_the_feed(&mut hand, row)?
     } else {
         AfterHandOff {
             first_reel_frames: Err("not awaited: reel 1 was not handed off".to_owned()),
             scrolls: Vec::new(),
             stay: None,
+            page_download: None,
         }
     };
     let page_report = hand.run_ref().finish_page();
@@ -230,6 +268,7 @@ fn drive(
     let player_log = &mut hand.run().player_log;
     let forbidden_player_lines = player_log.snapshot_forbidden(FORBIDDEN_PLAYER_LINES)?;
     let end_notice_lines = player_log.snapshot_forbidden(&[END_NOTICE_MARKER])?;
+    let target_wait_lines = player_log.snapshot_forbidden(&[TARGET_WAIT_MARKER])?;
     let exit = hand.into_run().browser.shutdown()?;
     let host = read_host_evidence(&exit.stderr_log)?;
     Ok(judge_feed(
@@ -241,6 +280,8 @@ fn drive(
             first_reel_frames: after.first_reel_frames,
             scrolls: after.scrolls,
             stay: after.stay,
+            page_download: after.page_download,
+            target_wait_lines,
             generations,
             shown_stream_widths,
             end_notice_lines,
@@ -260,12 +301,13 @@ fn hand_off_visible(run: &mut HandoffRun<'_>) -> Result<HandOffOutcome, BrowserE
 /// После передачи: пропуск посредника, кадры ролика 1 в окне, затем сценарий строки.
 fn follow_the_feed(
     hand: &mut ReturnHand<'_, '_>,
-    scenario: FeedScenario,
+    row: FeedRow,
 ) -> Result<AfterHandOff, ScenarioError> {
     let nothing_after = |reason: String| AfterHandOff {
         first_reel_frames: Err(reason),
         scrolls: Vec::new(),
         stay: None,
+        page_download: None,
     };
     if let Err(message) =
         wait_for_session_granted(&hand.run_ref().stderr_log, SESSION_GRANTED_TIMEOUT)?
@@ -284,14 +326,20 @@ fn follow_the_feed(
             first_reel_frames,
             scrolls: Vec::new(),
             stay: None,
+            page_download: None,
         });
     }
     let mut after = AfterHandOff {
         first_reel_frames,
         scrolls: Vec::new(),
         stay: None,
+        page_download: None,
     };
-    match scenario {
+    if row.before_scrolling == BeforeScrolling::PageDownloadsPastBridgeMemory {
+        // Листаем в любом случае: если докачки не было, приговор назовёт это отдельной причиной.
+        after.page_download = Some(steps::download_past_bridge_memory(hand));
+    }
+    match row.scenario {
         FeedScenario::Scroll { scrolls, wheel } => {
             for target_reel in 2..=(scrolls as u32 + 1) {
                 after
@@ -416,6 +464,51 @@ mod tests {
         assert!(
             feed.contains("html.inner-scroller #feed{height:100vh;overflow-y:auto;scroll-snap-type:y mandatory}"),
             "feed.html lost the inner scroller layout of the halfway shape"
+        );
+    }
+
+    #[test]
+    fn the_long_download_row_downloads_more_than_the_bridge_remembers() {
+        // Параметр адреса и шаг робота ходят парой: страница без хука или робот без команды — строка вхолостую.
+        for row in FEED_ROWS {
+            assert_eq!(
+                row.query_suffix.contains("history=past-bridge-memory"),
+                row.before_scrolling == BeforeScrolling::PageDownloadsPastBridgeMemory,
+                "{}: the page query and the robot step disagree",
+                row.step_id
+            );
+        }
+        let long_download_rows = FEED_ROWS
+            .iter()
+            .filter(|row| row.before_scrolling == BeforeScrolling::PageDownloadsPastBridgeMemory)
+            .count();
+        assert_eq!(long_download_rows, 1);
+        let history = site_file("lib/feed-history.js");
+        let hook = steps::DOWNLOAD_PAST_BRIDGE_MEMORY_COMMAND
+            .strip_prefix("hook:")
+            .expect("a page hook command");
+        assert!(
+            history.contains(&format!("DOWNLOAD_HOOK = '{hook}'")),
+            "feed-history.js lost the hook '{hook}'"
+        );
+        assert!(
+            history.contains(&format!("`{} mib=", steps::EARLIER_REEL_DOWNLOADED_MARK)),
+            "feed-history.js lost the mark the robot waits for"
+        );
+        // Докачка обязана быть больше потолка памяти моста, иначе мосту нечего выкидывать и строка ничего
+        // не проверяет. Потолок подняли — стенд должен качать больше.
+        let budget = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../extensions/browser/src/page/journal/memory-budget.ts"),
+        )
+        .expect("the bridge memory budget source");
+        assert!(
+            budget.contains("DOCUMENT_MEMORY_BUDGET_BYTES = 64 * 1024 * 1024"),
+            "the bridge memory cap changed: resize DOWNLOAD_BYTES in feed-history.js"
+        );
+        assert!(
+            history.contains("const DOWNLOAD_BYTES = 80 * MEBIBYTE"),
+            "feed-history.js must download more than the 64 MiB bridge memory cap"
         );
     }
 

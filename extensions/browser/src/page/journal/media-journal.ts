@@ -7,8 +7,9 @@
 // Устройство:
 //  - записи по порядку: события MSE (`LocalMseEvent`) и виды на байты `appendBuffer`;
 //  - потолок памяти общий на документ (`DocumentMemoryBudget`), он просит журнал выкинуть самую
-//    старую запись. Выкинутое не теряется бесследно, а сворачивается в «снимок»: MIME и
-//    `timestampOffset` каждого SourceBuffer, длительность, последний init-сегмент (виды без копий);
+//    старую запись (какой журнал документа отдаёт первым, решает потолок: memory-budget.ts).
+//    Выкинутое не теряется бесследно, а сворачивается в «снимок»: MIME и `timestampOffset` каждого
+//    SourceBuffer, длительность, последний init-сегмент (виды без копий);
 //  - выкидывать байты можно только по границе сегмента: если выкинутый кусок кончился посреди
 //    сегмента, следующие куски того же SourceBuffer до первой границы тоже бесполезны и
 //    отпускаются, а повтор начнётся с границы (подмассив куска);
@@ -36,14 +37,11 @@ export type ReplayItem =
 
 interface EventEntry {
   readonly kind: "mse";
-  /** Глобальный порядковый номер записи в документе (для «старое — первым» между журналами). */
-  readonly order: number;
   readonly event: LocalMseEvent;
 }
 
 interface BytesEntry {
   readonly kind: "bytes";
-  readonly order: number;
   readonly track: SourceBufferTrack;
   /**
    * Вид на байты страницы и его длины при записи. Смещения журнала считаются ТОЛЬКО по
@@ -75,10 +73,9 @@ export type JournalCompleteness =
 /** Когда стоит уплотнить массив записей (выкинутое начало — больше половины и не меньше этого). */
 const COMPACT_AFTER_EVICTED_ENTRIES = 1024;
 
-/** Окружение журнала: общая память документа и общий счётчик порядка записей. */
+/** Окружение журнала: общая память документа. */
 export interface JournalEnvironment {
   readonly memory: RetainedMemory;
-  readonly nextOrder: () => number;
 }
 
 export class MediaJournal {
@@ -110,7 +107,7 @@ export class MediaJournal {
       this.#foldEvent(event);
       return;
     }
-    this.#entries.push({ kind: "mse", order: this.#environment.nextOrder(), event });
+    this.#entries.push({ kind: "mse", event });
     this.#evictBeyondEntryCeiling();
     if (event.kind === "source_buffer_added" && !this.#tracks.get(event.source_buffer)?.isScannable) {
       this.markIncomplete();
@@ -146,7 +143,6 @@ export class MediaJournal {
     }
     this.#entries.push({
       kind: "bytes",
-      order: this.#environment.nextOrder(),
       track,
       recorded: recordView(view),
       streamStart: scan.streamStart,
@@ -163,10 +159,10 @@ export class MediaJournal {
     if (this.#entries.length - this.#head > MAX_JOURNAL_ENTRIES) this.evictOldest();
   }
 
-  /** Порядковый номер самой старой живой записи (`null` — записей нет). */
-  oldestOrder(): number | null {
+  /** Есть ли у журнала запись, которую можно выкинуть. Init-сегмент выкидывание переживает: его держит дорожка. */
+  hasEntriesToEvict(): boolean {
     this.#skipDeadHead();
-    return this.#entries[this.#head]?.order ?? null;
+    return this.#entries[this.#head] !== undefined;
   }
 
   /** Выкинуть самую старую запись, свернув её в снимок. */

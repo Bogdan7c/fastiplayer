@@ -30,6 +30,7 @@ import { requireMimeSupport } from '../lib/scenario-kit.js';
 import { installEntryProbe } from '../lib/entry-probe.js';
 import { REEL_COUNT, ReelFeed, ReelSource, feedState, logWheelEvents, serveRobotCommands } from '../lib/feed-kit.js';
 import { createShape, layoutOf, LAYOUT_INNER_SCROLLER, SHAPES } from '../lib/feed-shapes.js';
+import { DOWNLOAD_HOOK, EarlierReel, HISTORY_MODES, HISTORY_NONE, HISTORY_PAST_BRIDGE_MEMORY } from '../lib/feed-history.js';
 
 // Лента коротких видео (сессия 16b2): три ролика в рост окна, листаются колесом. Форма ленты — параметр
 // адреса `shape=many|moved|pool|halfway` (Instagram по разведке 16b0 / YouTube Shorts / TikTok / Instagram по
@@ -37,16 +38,22 @@ import { createShape, layoutOf, LAYOUT_INNER_SCROLLER, SHAPES } from '../lib/fee
 //  * Обычный режим (без робота): страница сама листает ленту до конца и проверяет свою форму;
 //  * режим передачи: ролик 1 играет, страница ждёт робота. Робот отдаёт вкладку и листает НАСТОЯЩИМ
 //    колесом мыши; всё, что сайт делает при прокрутке, происходит само. Судит Rust.
+// Параметр `history=past-bridge-memory` (режим передачи): страница, которая качает дольше, чем помнит мост
+// (lib/feed-history.js); докачку запускает робот хуком после передачи, перед прокруткой.
 /** Сколько ждём, что следующий ролик заиграл после прокрутки страницей, мс (обычный режим). */
 const NEXT_REEL_WAIT_MS = 12000;
 
 await runScenario('feed', async (ctx) => {
   const shape = ctx.params.raw.get('shape') ?? 'many';
   if (!SHAPES.includes(shape)) throw new Error(`bad page query: shape=${shape}`);
+  const history = ctx.params.raw.get('history') ?? HISTORY_NONE;
+  if (!HISTORY_MODES.includes(history)) throw new Error(`bad page query: history=${history}`);
   const catalog = await loadCatalog();
   for (let number = 1; number <= REEL_COUNT; number += 1) {
     requireMimeSupport(catalog, [{ assetId: `reel-${number}`, trackId: catalog.assets[`reel-${number}`].tracks[0].id }]);
   }
+  // Раньше роликов ленты: его MediaSource обязан быть самым старым в документе.
+  const earlierReel = history === HISTORY_PAST_BRIDGE_MEMORY ? await EarlierReel.open(ctx, catalog) : null;
   const source = new ReelSource(ctx, catalog);
   const feedBlock = document.getElementById('feed');
   const innerScroller = layoutOf(shape) === LAYOUT_INNER_SCROLLER;
@@ -72,6 +79,7 @@ await runScenario('feed', async (ctx) => {
   installEntryProbe(ctx);
   ctx.log('handoff-ready');
   await serveRobotCommands(ctx, {
+    hooks: earlierReel === null ? {} : { [DOWNLOAD_HOOK]: () => earlierReel.downloadPastBridgeMemory() },
     onFinish: async () => {
       ctx.metric('reels_started', feedState.reelsStarted);
       ctx.metric('wheel_events_total', wheel.total);

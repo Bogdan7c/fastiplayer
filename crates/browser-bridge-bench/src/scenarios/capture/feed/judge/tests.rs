@@ -61,6 +61,8 @@ fn following() -> FeedEvidence {
         first_reel_frames: Ok(()),
         scrolls: vec![good_scroll(), good_scroll()],
         stay: None,
+        page_download: None,
+        target_wait_lines: Vec::new(),
         generations: vec![1, 2, 3],
         // Плеер может написать строку про один ролик дважды: подряд идущие повторы не в счёт.
         shown_stream_widths: vec![640, 640, 512, 512, 384],
@@ -130,6 +132,32 @@ fn a_session_end_notice_is_a_failure() {
     let mut evidence = following();
     evidence.end_notice_lines = vec!["Browser session end notice shown notice=x".into()];
     assert!(failure_of(FOLLOWS, &evidence).contains("session end notice"));
+}
+
+#[test]
+fn a_window_that_waited_out_the_deadline_for_the_start_of_a_reel_is_a_failure() {
+    // Поколения, ширины и кадры в порядке: окно в итоге переехало, но зритель 10 с ждал и ролик встал с середины.
+    let mut evidence = following();
+    evidence.target_wait_lines =
+        vec!["The new stream generation got no data at its target; it starts where data exists waited_ms=10000".into()];
+    let detail = failure_of(FOLLOWS, &evidence);
+    assert!(detail.contains("waited out the whole deadline"), "{detail}");
+    assert!(detail.contains("waited_ms=10000"), "{detail}");
+}
+
+#[test]
+fn a_long_download_row_passes_only_when_the_page_did_download() {
+    let mut evidence = following();
+    evidence.page_download = Some(Ok(()));
+    let verdict = judge_feed(FOLLOWS, &evidence);
+    assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+
+    evidence.page_download = Some(Err("the page never logged 'earlier-reel-downloaded'".into()));
+    let detail = failure_of(FOLLOWS, &evidence);
+    assert!(
+        detail.contains("did not download past the bridge memory"),
+        "{detail}"
+    );
 }
 
 #[test]

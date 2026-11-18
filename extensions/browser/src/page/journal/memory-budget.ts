@@ -1,8 +1,22 @@
 // Потолок памяти «памяти без копий» на один документ (решение 176).
 //
 // Все журналы MediaSource документа делят один потолок: страница с рекламой и сменой качества
-// создаёт несколько MediaSource, и считать надо то, что держит документ целиком. Выкидывается
-// самая старая запись среди всех журналов («старое — первым»).
+// создаёт несколько MediaSource, и считать надо то, что держит документ целиком.
+//
+// Кто отдаёт память первым («старое — первым», 16b2): самый СТАРЫЙ MediaSource документа, а внутри
+// него — самая старая запись. Следующий по возрасту MediaSource трогается, только когда у старшего
+// записей не осталось (init не выкидывается никогда).
+//
+// Почему возраст MediaSource, а не возраст записи среди всех журналов. Лента коротких видео (Instagram,
+// живая проверка 18 ноября 2026) при открытии страницы сразу качает НАЧАЛО трёх следующих роликов, по
+// кругу, и только потом докачивает текущий. Самые старые записи документа — как раз эти начала. Когда
+// документ доходил до потолка, прежнее правило выкидывало их первыми: при прокрутке повтор следующего
+// ролика начинался с 5–15-й секунды, а страница начало второй раз не присылает (оно лежит у неё в
+// SourceBuffer). Окно плеера ждало данных у нуля 10 с и вставало посреди ролика, а ролик, выкинутый
+// целиком, обрывал сеанс. MediaSource же страница заводит в порядке ленты: пройденные ролики — самые
+// старые, предстоящие — самые новые. Возраст MediaSource — момент, когда страница дала ему первый
+// SourceBuffer (тогда появляется его журнал). На странице с одним живым MediaSource (фильм, эфир)
+// правило совпадает с прежним.
 
 import { MediaJournal } from "./media-journal.ts";
 import { RetainedMemory } from "./retained-memory.ts";
@@ -28,8 +42,8 @@ export interface JournalOwnerProbe {
 export class DocumentMemoryBudget {
   readonly memory = new RetainedMemory();
   readonly #capBytes: number;
+  /** Журналы живых MediaSource в порядке их создания (на этот порядок опирается `enforce`). */
   readonly #journals = new Map<MediaJournal, JournalOwnerProbe>();
-  #lastOrder = 0;
 
   constructor(capBytes: number = DOCUMENT_MEMORY_BUDGET_BYTES) {
     this.#capBytes = capBytes;
@@ -41,37 +55,34 @@ export class DocumentMemoryBudget {
    */
   createJournal(key: LocalMediaSourceKey, owner: JournalOwnerProbe): MediaJournal {
     this.#forgetGoneJournals();
-    const journal = new MediaJournal(key, { memory: this.memory, nextOrder: () => this.#nextOrder() });
+    const journal = new MediaJournal(key, { memory: this.memory });
     this.#journals.set(journal, owner);
     return journal;
   }
 
-  /** Привести память под потолок: выкидывать самую старую запись, пока не влезем. */
+  /**
+   * Привести память под потолок: самый старый MediaSource отдаёт свою самую старую запись, пока не
+   * влезем (почему так — в шапке файла).
+   */
   enforce(): void {
     while (this.memory.totalBytes > this.#capBytes) {
-      const oldest = this.#journalWithOldestEntry();
+      const eldest = this.#eldestJournalWithEntries();
       // Записей не осталось: держат только init-сегменты (их не выкидываем — без них нет повтора).
-      if (oldest === null) return;
-      oldest.evictOldest();
+      if (eldest === null) return;
+      eldest.evictOldest();
     }
   }
 
-  #nextOrder(): number {
-    this.#lastOrder += 1;
-    return this.#lastOrder;
-  }
-
-  #journalWithOldestEntry(): MediaJournal | null {
-    let oldest: MediaJournal | null = null;
-    let oldestOrder = Number.POSITIVE_INFINITY;
+  /**
+   * Самый старый MediaSource документа, у которого ещё есть что выкинуть. `Map` перечисляет ключи в
+   * порядке вставки, а журнал вставляется, когда его MediaSource получает первый SourceBuffer: порядок
+   * перечисления и есть возраст MediaSource.
+   */
+  #eldestJournalWithEntries(): MediaJournal | null {
     for (const journal of this.#journals.keys()) {
-      const order = journal.oldestOrder();
-      if (order !== null && order < oldestOrder) {
-        oldestOrder = order;
-        oldest = journal;
-      }
+      if (journal.hasEntriesToEvict()) return journal;
     }
-    return oldest;
+    return null;
   }
 
   #forgetGoneJournals(): void {

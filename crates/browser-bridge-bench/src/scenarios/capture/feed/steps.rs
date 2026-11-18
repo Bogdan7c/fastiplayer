@@ -38,6 +38,12 @@ const FAR_CORNER_SHARE: f64 = 0.95;
 const POLL_STEP: Duration = Duration::from_millis(200);
 /// Метка журнала страницы: настоящее колесо дошло до страницы.
 const TRUSTED_WHEEL_MARK: &str = "wheel trusted=true";
+/// Команда странице: скачать больше, чем помнит мост (хук `download-past-bridge-memory` страницы `feed`).
+pub(super) const DOWNLOAD_PAST_BRIDGE_MEMORY_COMMAND: &str = "hook:download-past-bridge-memory";
+/// Отметка страницы: докачка сверх памяти моста закончена.
+pub(super) const EARLIER_REEL_DOWNLOADED_MARK: &str = "earlier-reel-downloaded";
+/// Сколько ждём докачку: 80 МиБ кусками по мебибайту идут секунды, запас — на медленный браузер стенда.
+const PAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(90);
 /// Метки журнала `feed-hover`: главный ролик ушёл с экрана, не остановленный страницей / остановленный ею.
 const MAIN_LEFT_UNPAUSED_MARK: &str = "main-left-screen paused=false";
 const MAIN_PAUSED_ON_LEAVING_MARK: &str = "main-left-screen paused=true";
@@ -201,6 +207,18 @@ pub(super) fn scroll_to_reel(
         player_loaded_new_generation,
         frame_growth,
     })
+}
+
+/// Страница качает больше, чем помнит мост (строка «долгая загрузка», `site/lib/feed-history.js`): робот
+/// запускает докачку хуком и ждёт отметку страницы. `Err` называет, чего не дождались.
+pub(super) fn download_past_bridge_memory(hand: &mut ReturnHand<'_, '_>) -> Result<(), String> {
+    hand.run().tell_page(DOWNLOAD_PAST_BRIDGE_MEMORY_COMMAND);
+    hand.run_ref()
+        .wait_page_log_line(EARLIER_REEL_DOWNLOADED_MARK, PAGE_DOWNLOAD_TIMEOUT)
+        .map(|_| ())
+        .map_err(|message| {
+            format!("the page never logged '{EARLIER_REEL_DOWNLOADED_MARK}': {message}")
+        })
 }
 
 /// Ждёт в журнале страницы все `needles`; `Err` называет, чего не дождались.
