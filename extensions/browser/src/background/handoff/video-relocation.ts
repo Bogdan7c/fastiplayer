@@ -12,6 +12,12 @@
 //   случаях — прежние `NEXT_VIDEO_WAIT_MS` (15 с). Вид ожидания запоминается в миг его начала: часы
 //   плеера продолжают приходить и между роликами, и их `ended` могло бы смениться до истечения срока.
 //
+// - признаком «лента листается» (16b2, решения 354–356, 359): наш ролик ушёл с экрана, и страница сама его
+//   остановила. Тогда переезд открыт для ролика, который страница запустит следующим, тихий ролик ленты
+//   тоже годится (решение 357), а ожидание идёт без предела — пока человек не закроет окно. Признак держится
+//   до следующего видео; страница запустила наш ролик снова — признак снят (вернулись к нему). Превью по
+//   наведению переезд не открывает: при нём наш ролик на экране или играет;
+//
 // - взводом сторожа на время ожидания после перезагрузки страницы (сессия 16c): документ ушёл, срок ведёт
 //   session-page-reload.ts, а переезд только держит сторож взведённым и свой срок не начинает (два срока
 //   наперегонки кончали бы сеанс по тому, что сработало раньше).
@@ -48,14 +54,32 @@ export const NEXT_VIDEO_ARM_REFRESH_MS = 1_000;
  * - `after_episode_end` — серия (не реклама) доиграла у плеера, страница ставит следующую: срок
  *   `NEXT_EPISODE_WAIT_MS`, по его концу — «The page didn't start the next episode»;
  * - `next_video` — реклама кончилась или видео пропало посреди ролика: срок `NEXT_VIDEO_WAIT_MS`, по его
- *   концу — «страница забрала видео».
+ *   концу — «страница забрала видео»;
+ * - `next_in_feed` — лента листается (16b2): наш ролик ушёл с экрана, страница его остановила. Срока нет
+ *   (решение 356): окно стоит на последнем кадре, пока человек его не закроет или вкладка не уйдёт.
  */
-export type NextVideoWait = "after_episode_end" | "next_video";
+export type NextVideoWait = "after_episode_end" | "next_video" | "next_in_feed";
 
-/** Срок ожидания каждого вида. */
-export function nextVideoWaitLimitMs(wait: NextVideoWait): number {
-  return wait === "after_episode_end" ? NEXT_EPISODE_WAIT_MS : NEXT_VIDEO_WAIT_MS;
+/** Предел ожидания: срок в миллисекундах или «пока человек не закроет окно». */
+export type NextVideoWaitLimit = { readonly kind: "timed"; readonly ms: number } | { readonly kind: "until_viewer_closes" };
+
+/** Предел ожидания каждого вида. */
+export function nextVideoWaitLimit(wait: NextVideoWait): NextVideoWaitLimit {
+  switch (wait) {
+    case "after_episode_end":
+      return { kind: "timed", ms: NEXT_EPISODE_WAIT_MS };
+    case "next_video":
+      return { kind: "timed", ms: NEXT_VIDEO_WAIT_MS };
+    case "next_in_feed":
+      return { kind: "until_viewer_closes" };
+  }
 }
+
+/**
+ * Брать ли тихий ролик ленты (`isSilentClipInPlayerPlace`, решение 357) при переезде. Вне ленты — нет: после
+ * рекламы рядом может играть беззвучный баннер, и сеанс не должен на него уйти (страница `ad-then-banner`).
+ */
+export type SilentClipAdoption = "accepted" | "refused";
 
 /** Тик часов плеера, как его видит переезд: состояние и отношение к текущему видео (16a2). */
 export interface RelocationClockTick {
@@ -98,6 +122,15 @@ export interface VideoRelocation {
   /** На экране реклама (сессия 09d читает только это). */
   adOnScreen(): boolean;
   /**
+   * Тень донесла: наш ролик ушёл с экрана, и страница его остановила (`video_left_screen`, 16b2). Лента
+   * листается: сторож взводится, переезд открыт, ожидание — без предела.
+   */
+  ourVideoLeftScreen(): void;
+  /** Страница снова запустила наш ролик (`page_playback{play}`): к нему вернулись, лента не листается. */
+  ourVideoResumed(): void;
+  /** Годится ли сейчас для переезда тихий ролик ленты. */
+  silentClipAdoption(): SilentClipAdoption;
+  /**
    * Документ страницы ушёл, сеанс ждёт видео нового документа (16c): сторож взведён во всех фреймах до
    * `stop()`, а свой срок ожидания переезд снимает и больше не начинает — срок у ожидания перезагрузки свой.
    */
@@ -133,9 +166,11 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
   let currentWait: NextVideoWait | undefined;
   // Документ ушёл (16c): сторож нужен новому документу, а срок ведёт ожидание перезагрузки.
   let pageReloading = false;
+  // Лента листается (16b2): наш ролик ушёл с экрана, и страница его остановила.
+  let feedScrolledAway = false;
 
   function armsNeeded(): boolean {
-    return role === "ad" || mayBeAd || endedReached || waiting || pageReloading;
+    return role === "ad" || mayBeAd || endedReached || waiting || pageReloading || feedScrolledAway;
   }
 
   /**
@@ -155,8 +190,9 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
     return endedReached && role !== "ad" && !mayBeAd;
   }
 
-  /** Вид ожидания, которое начинается сейчас: конец серии — долгое, остальное — короткое. */
+  /** Вид ожидания, которое начинается сейчас: лента — без предела, конец серии — долгое, остальное — короткое. */
   function waitStartingNow(): NextVideoWait {
+    if (feedScrolledAway) return "next_in_feed";
     return episodeEndReached() ? "after_episode_end" : "next_video";
   }
 
@@ -179,8 +215,11 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       dependencies.onWaitExpired(wait);
       return;
     }
+    const limit = nextVideoWaitLimit(wait);
+    // Лента (решение 356): срока нет — честный конец дадут закрытое окно, закрытая вкладка или уход страницы.
+    if (limit.kind === "until_viewer_closes") return;
     if (!waitTimer.isActive()) {
-      waitTimer.start(nextVideoWaitLimitMs(wait), () => {
+      waitTimer.start(limit.ms, () => {
         waitExpired = true;
         dependencies.onWaitExpired(wait);
       });
@@ -198,6 +237,8 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       currentWait = undefined;
       // Тень встала (например, на вернувшейся странице сироты, 11b2): ожидание перезагрузки позади.
       pageReloading = false;
+      // Новый ролик на экране: прежнее «ушёл с экрана» к нему не относится.
+      feedScrolledAway = false;
       waitTimer.cancel();
       applyState();
     },
@@ -227,9 +268,20 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       return currentWait ?? waitStartingNow();
     },
     episodeEnded: episodeEndReached,
-    adoptionOpen: () => role === "ad" || endedReached || waiting,
-    nextVideoExpectedAfterLoss: () => role === "ad" || mayBeAd || endedReached || waiting,
+    adoptionOpen: () => role === "ad" || endedReached || waiting || feedScrolledAway,
+    nextVideoExpectedAfterLoss: () => role === "ad" || mayBeAd || endedReached || waiting || feedScrolledAway,
     adOnScreen: () => role === "ad",
+    ourVideoLeftScreen() {
+      feedScrolledAway = true;
+      applyState();
+    },
+    ourVideoResumed() {
+      // Между роликами тени нет, и «наш» ролик уже не наш: снимать признак нечем и незачем.
+      if (waiting) return;
+      feedScrolledAway = false;
+      applyState();
+    },
+    silentClipAdoption: () => (feedScrolledAway ? "accepted" : "refused"),
     pageReloadBegan() {
       pageReloading = true;
       applyState();

@@ -1,6 +1,7 @@
 // Шов окружения тени (A1↔A2): всё внешнее подаётся контроллеру снаружи, чтобы тесты шли на фейках.
 // Вынесено из `shadow-session.ts` без изменений смысла — только типы, поведения здесь нет.
 
+import type { VisibleAreaReader } from "../handoff-seam.ts";
 import type { MediaSessionGuard } from "../media-session-guard.ts";
 import type { TimeoutScheduler } from "./file-return.ts";
 import type { ElementOriginals } from "./originals.ts";
@@ -24,6 +25,8 @@ export interface ShadowEnvironment {
    * чтобы отличить новое поколение на том же элементе от blob-адреса обычного файла.
    */
   readonly isMediaSourceObjectUrl: MediaSourceObjectUrlCheck;
+  /** Видимая площадь элемента тем же правилом, что у опроса кандидатов: уход ролика ленты с экрана (16b2). */
+  readonly visibleAreaOf: VisibleAreaReader;
   /** Таймер окна — только страховка возврата файла (`FILE_RETURN_TIMEOUT_MS`). */
   readonly scheduleTimeout: TimeoutScheduler;
 }

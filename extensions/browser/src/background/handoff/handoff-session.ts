@@ -469,7 +469,7 @@ export function startHandoffSession(
     if (phase === "page_away") return adoptReturnedVideo(frameId, report);
     if (phase === "page_reloading") return pageReload.heldVideo(frameId, report);
     if ((phase !== "active" && phase !== "between_videos") || !relocation.adoptionOpen()) return "release";
-    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol));
+    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol), relocation.silentClipAdoption());
     if (decision.kind === "release") return "release";
     moveToVideo(decision.video, decision.fileAddressRule, () => waitForNextVideo());
     return "adopt";
@@ -477,7 +477,8 @@ export function startHandoffSession(
 
   /** Сторож вернувшейся страницы задержал видео (11b2): то же видео — переезд в новую вкладку, иначе отпустить. */
   function adoptReturnedVideo(frameId: number, report: HeldVideoReport): SessionHeldVideoAnswer {
-    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol));
+    // Вернувшаяся страница отдаёт тот же фильм, а не ролик ленты: тихий ролик сюда не годится.
+    const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol), "refused");
     if (decision.kind === "release" || !pageReturn.acceptsReturnedVideo(decision.video.durationS)) return "release";
     moveToVideo(decision.video, decision.fileAddressRule, () => pageReturn.shadowDidNotStand());
     return "adopt";
@@ -547,6 +548,15 @@ export function startHandoffSession(
       case "next_episode_wait_began":
         // Тень ждёт следующую серию (16a). Странице не верим на слово: только если и наши часы видели конец серии.
         if (phase === "active" && relocation.episodeEnded()) episodeChange.nextEpisodeWaitBegan();
+        return;
+      case "video_left_screen":
+        // Лента листается (16b2): переезд решает фон по своим правилам, плееру событие не нужно.
+        if (phase === "active") relocation.ourVideoLeftScreen();
+        return;
+      case "page_playback":
+        // Страница снова запустила наш ролик: к нему вернулись, лента дальше не листается.
+        if (phase === "active" && event.request.kind === "play") relocation.ourVideoResumed();
+        forwardStreamEvent(event);
         return;
       case "file_source":
         startSourceFromPage({ form: "file", url: event.url, referrer: referrerOf(event) });

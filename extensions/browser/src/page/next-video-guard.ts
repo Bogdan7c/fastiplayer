@@ -502,6 +502,7 @@ export class NextVideoGuard {
     };
     const session = environment.startHeldShadow(video, (event) => forward(event), {
       isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
+      visibleAreaOf: (element) => environment.candidates.visibleAreaOf(element),
       source: kind,
       initialPlayback,
     });

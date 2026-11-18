@@ -13,6 +13,7 @@ const SMALL_LIMITS: Readonly<Record<PageEventBudgetKind, number>> = {
   file_source: 1, hls_source: 1,
   shadow_alive: 2,
   next_episode_wait: 1,
+  screen_exit: 1,
   subtitle: 2,
   malformed: 3,
 };

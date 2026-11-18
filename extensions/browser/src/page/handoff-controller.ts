@@ -339,6 +339,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     } else {
       active.session = this.#environment.startShadow(element as HTMLMediaElement, emit, {
         isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
+        visibleAreaOf: (video) => this.#environment.candidates.visibleAreaOf(video),
         source: shadowSource,
       });
     }

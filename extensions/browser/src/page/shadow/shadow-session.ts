@@ -35,6 +35,7 @@ import type { ShadowTimeSource } from "./shadow-time-source.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
 import { returnRealElement, type RealReturnPorts } from "./real-element-return.ts";
 import type { FileStopMoment, ShadowEnvironment } from "./shadow-environment.ts";
+import { ScreenExitWatch } from "./screen-exit-watch.ts";
 import { endCauseOfRelease, SourceTransitionWatch } from "./source-transitions.ts";
 import { deliverViewerMediaKey, type ViewerMediaKeyPorts } from "./viewer-media-key.ts";
 
@@ -76,6 +77,8 @@ export class ShadowController implements ShadowBehavior {
   /** Решает, когда смена источника или судьба элемента на странице — конец тени (source-transitions.ts). */
   readonly #sourceWatch: SourceTransitionWatch;
   readonly #pulse = new ShadowPulse();
+  /** Ролик ушёл с экрана, остановленный страницей: лента листается (16b2, screen-exit-watch.ts). */
+  readonly #screenExit = new ScreenExitWatch();
   readonly #disposeGate: () => void;
   /** Тень файла (`null` — тень MSE): снимок файла, снятый источник и возврат. У эфира HLS — тоже она. */
   readonly #file: FileShadowLifecycle | null;
@@ -225,6 +228,8 @@ export class ShadowController implements ShadowBehavior {
           }
           this.#timeline.onClock(this.#timeSource.pageTickOf(command), nowMs);
           this.#follower.onClockTick(nowMs);
+          // Тик — вторая точка проверки ухода с экрана: страница могла сначала поставить паузу, а потом унести ролик.
+          this.#checkScreenExit();
           // Пульс — последним: если отправка оборвёт передачу, после него тень уже ничего не делает.
           if (this.#pulse.onClockTick(nowMs)) this.#emit({ kind: "shadow_alive" });
           return;
@@ -367,6 +372,25 @@ export class ShadowController implements ShadowBehavior {
   pause(): void {
     this.#attempt("page pause", () => {
       if (this.#timeline.pause(this.#env.now())) this.#emit({ kind: "page_playback", request: { kind: "pause" } });
+    });
+    // Сразу после паузы: Instagram ставит на паузу ролик, который уже за краем окна, и через 0,1–0,4 с запускает
+    // следующий. Фону нужно успеть взвести сторож, тиков часов ждать нельзя.
+    this.#checkScreenExit();
+  }
+
+  /**
+   * Лента листается (16b2, решения 354, 359): ролик ушёл с экрана, и страница его остановила — донести фону
+   * один раз на уход. Площадь читается только на паузе: играющий ролик вне экрана переезд не открывает.
+   * Сбой чтения площади не мешает остальной работе тика: проверка в своём `#attempt`.
+   */
+  #checkScreenExit(): void {
+    this.#attempt("screen exit", () => {
+      if (!this.#timeline.paused) {
+        this.#screenExit.notePlaying();
+        return;
+      }
+      const step = this.#screenExit.notePaused(this.#env.visibleAreaOf(this.#element));
+      if (step === "report_left_screen") this.#emit({ kind: "video_left_screen" });
     });
   }
 

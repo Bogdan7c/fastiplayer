@@ -161,12 +161,12 @@ describe("эфир, задержанный сторожем (09c2)", () => {
   const rule = { pageHost: "site.example", setting: "ask", consentedHost: null } as const;
 
   it("плееру 1.2 эфир переезжает, плееру 1.1 — отпускается странице", () => {
-    assert.equal(judgeHeldVideo(0, report, rule, playerAbilitiesOf(PROTOCOL_VERSION_1_2)).kind, "adopt");
-    assert.equal(judgeHeldVideo(0, report, rule, playerAbilitiesOf(PROTOCOL_VERSION_1_1)).kind, "release");
+    assert.equal(judgeHeldVideo(0, report, rule, playerAbilitiesOf(PROTOCOL_VERSION_1_2), "refused").kind, "adopt");
+    assert.equal(judgeHeldVideo(0, report, rule, playerAbilitiesOf(PROTOCOL_VERSION_1_1), "refused").kind, "release");
   });
 
   it("запись плееру 1.1 переезжает, как в 10a2", () => {
     const vod = { ...report, candidates: [{ ...PLAYING_LIVE, duration_s: 600 }] };
-    assert.equal(judgeHeldVideo(0, vod, rule, playerAbilitiesOf(PROTOCOL_VERSION_1_1)).kind, "adopt");
+    assert.equal(judgeHeldVideo(0, vod, rule, playerAbilitiesOf(PROTOCOL_VERSION_1_1), "refused").kind, "adopt");
   });
 });

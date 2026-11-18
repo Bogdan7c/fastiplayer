@@ -137,6 +137,14 @@ export class VideoCandidates {
     return area > 0 && isHidden(element) ? 0 : area;
   }
 
+  /**
+   * Видимая площадь одного элемента (тень ролика ленты, 16b2) тем же правилом, что у опроса. Вне документа
+   * прямоугольник нулевой, площадь 0. Чтения могут бросить — ловит вызывающий.
+   */
+  visibleAreaOf(element: Element): number {
+    return this.#visibleAreaOf(element, this.#dom.createVisibilityProbe());
+  }
+
   /** Форма источника элемента (чтения могут бросить — ловит вызывающий). */
   sourceOf(element: Element): ElementSource {
     return elementSourceOf(element, {

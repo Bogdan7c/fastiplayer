@@ -344,6 +344,8 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       return hasExactKeys(value, ["kind"]) ? { kind: "shadow_alive" } : undefined;
     case "next_episode_wait_began":
       return hasExactKeys(value, ["kind"]) ? { kind: "next_episode_wait_began" } : undefined;
+    case "video_left_screen":
+      return hasExactKeys(value, ["kind"]) ? { kind: "video_left_screen" } : undefined;
     case "handoff_ended": {
       const cause = value["cause"];
       return hasExactKeys(value, ["kind", "cause"]) && isOneOf(cause, HANDOFF_END_CAUSES) ? { kind: "handoff_ended", cause } : undefined;
@@ -471,6 +473,7 @@ const PAGE_EVENT_BUDGET_KINDS: readonly PageEventBudgetKind[] = [
   "hls_source",
   "shadow_alive",
   "next_episode_wait",
+  "screen_exit",
   "subtitle",
   "malformed",
 ];

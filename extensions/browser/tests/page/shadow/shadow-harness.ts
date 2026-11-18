@@ -70,6 +70,11 @@ export interface ShadowHarness {
   /** Blob-адреса, которые «реестр MAIN-мира» знает как MediaSource (видео из playingVideo — ms-1). */
   readonly mediaSourceUrls: Set<string>;
   readonly timers: FakeTimers;
+  /**
+   * Видимая площадь элемента для тени (16b2); без записи — элемент на экране (`ON_SCREEN_AREA_PX`).
+   * 0 — ушёл с экрана (прокрутили или вынули из документа).
+   */
+  readonly visibleAreas: Map<FakeVideo, number>;
   start(video: FakeVideo): ShadowSession;
   /** Тень файла `<video src>` (сессия 09b). */
   startFile(video: FakeVideo): ShadowSession;
@@ -78,6 +83,9 @@ export interface ShadowHarness {
   /** Тик часов плеера; `relation` по умолчанию — `unknown` (сторона 1.9, прежние правила тени). */
   tick(session: ShadowSession, positionSeconds: number, state: "playing" | "paused" | "waiting" | "ended", ratePermille?: number, relation?: ClockRelation): void;
 }
+
+/** Видимая площадь элемента на экране по умолчанию: 640×360. */
+export const ON_SCREEN_AREA_PX = 640 * 360;
 
 /** Blob-адрес MediaSource, с которым фейковый DOM создаёт видео (fake-media-dom.ts). */
 export const PLAYING_VIDEO_MEDIA_SOURCE_URL = "blob:https://site.example/ms-1";
@@ -103,6 +111,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
   const { guard, calls } = createCountingGuard();
   const mediaSourceUrls = new Set<string>([PLAYING_VIDEO_MEDIA_SOURCE_URL]);
   const timers = createFakeTimers();
+  const visibleAreas = new Map<FakeVideo, number>();
   const startWith = (video: FakeVideo, source: ShadowSourceKind): ShadowSession =>
     startShadow(
       video as unknown as HTMLMediaElement,
@@ -113,6 +122,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
         mediaSession: options.mediaSession ?? guard,
         now: () => clock.nowMs,
         isMediaSourceObjectUrl: (url) => mediaSourceUrls.has(url),
+        visibleAreaOf: (element) => visibleAreas.get(element as unknown as FakeVideo) ?? ON_SCREEN_AREA_PX,
         scheduleTimeout: timers.schedule,
       },
       source,
@@ -125,6 +135,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
     guardCalls: calls,
     mediaSourceUrls,
     timers,
+    visibleAreas,
     start: (video) => startWith(video, "media_source"),
     startFile: (video) => startWith(video, "file"),
     startLive: (video) => startWith(video, "live_hls"),

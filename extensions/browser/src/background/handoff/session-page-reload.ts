@@ -176,7 +176,7 @@ export function createSessionPageReload(ports: SessionPageReloadPorts): SessionP
       // Пока замена открывается, другого видео сеанс не берёт: одна замена за раз.
       if (state.kind !== "waiting") return "release";
       if (!onTheSessionSite(latestTabUrl)) return "release";
-      const decision = judgeHeldVideo(frameId, report, ports.fileAddressRule(), ports.playerAbilities());
+      const decision = judgeHeldVideo(frameId, report, ports.fileAddressRule(), ports.playerAbilities(), "refused");
       if (decision.kind === "release") return "release";
       deadline.cancel();
       state = { kind: "handing_over", wait: state.wait, deadlineAtMs: state.deadlineAtMs };

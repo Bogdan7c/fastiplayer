@@ -682,3 +682,29 @@ test("real shadow (16a3): commands for a source that never comes leave with the 
     assert.equal(await pendingPlay, "AbortError", "the page's waiting play() is rejected, as the browser does");
   });
 });
+
+test("лента (16b2): ролик унесли за край окна и страница его остановила — фону уходит video_left_screen, площадь считает тот же опрос", async () => {
+  const harness = startRealShadowHarness();
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    await isolated.settle();
+    isolated.received.length = 0;
+
+    // Пауза на экране — только пауза.
+    video.pause();
+    await isolated.settle();
+    assert.deepEqual(kinds(isolated.received), ["page_playback"]);
+    // Обещание play() отвергнет следующая пауза (AbortError): плеер ещё не ответил игрой — это не предмет теста.
+    video.play().catch(() => undefined);
+    await isolated.settle();
+    isolated.received.length = 0;
+
+    // Instagram: ролик ушёл за нижний край окна, страница ставит его на паузу.
+    video.rect = { left: 0, top: 5_000, right: 640, bottom: 5_360 };
+    video.pause();
+    await isolated.settle();
+    assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen" }]);
+  });
+});
