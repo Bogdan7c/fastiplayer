@@ -69,7 +69,12 @@ export type TimelineSignal =
   /** Забрать текущие ожидающие обещания `play()` и исполнить/отклонить (как «take pending play promises»). */
   | { readonly kind: "settle_play_promises"; readonly outcome: "resolve" | "reject" }
   /** Плеер показал новый кадр: пора звать `requestVideoFrameCallback`. */
-  | { readonly kind: "frame_presented" };
+  | { readonly kind: "frame_presented" }
+  /**
+   * Ролик с `loop` дошёл до конца (16b2, стандарт HTML): модель уже перематывает страницу на `targetUs`,
+   * плееру нужны та же перемотка и `play` — сам он про `loop` не знает и стоял бы в `ended`.
+   */
+  | { readonly kind: "loop_restart"; readonly targetUs: MediaTimeMicros };
 
 /** Тик часов плеера (команда `clock`). */
 export interface ClockTick {
@@ -108,6 +113,9 @@ export type PageSeekRange =
 /** Где сейчас можно перематываться странице; спрашивается на каждой перемотке (окно эфира едет). */
 export type PageSeekRangeReader = () => PageSeekRange;
 
+/** Есть ли у элемента сейчас атрибут `loop`, как его видит страница (Shorts переключает его на ходу). */
+export type LoopAttributeReader = () => boolean;
+
 const WHOLE_TIMELINE: PageSeekRange = { kind: "whole_timeline" };
 
 /** Итог перемотки страницы. */
@@ -130,6 +138,7 @@ export interface PlayResult {
 export class ShadowTimeline {
   readonly #readDurationUs: DurationReader;
   readonly #readPageSeekRange: PageSeekRangeReader;
+  readonly #readLoopAttribute: LoopAttributeReader;
   readonly #signal: TimelineSignalSink;
   #pagePaused: boolean;
   #ended = false;
@@ -151,10 +160,18 @@ export class ShadowTimeline {
 
   /**
    * @param readPageSeekRange где странице можно перематываться (по умолчанию — вся шкала, как до 10a3).
+   * @param readLoopAttribute есть ли у элемента `loop` (по умолчанию — нет, как до 16b2).
    */
-  constructor(init: TimelineInit, readDurationUs: DurationReader, signal: TimelineSignalSink, readPageSeekRange: PageSeekRangeReader = () => WHOLE_TIMELINE) {
+  constructor(
+    init: TimelineInit,
+    readDurationUs: DurationReader,
+    signal: TimelineSignalSink,
+    readPageSeekRange: PageSeekRangeReader = () => WHOLE_TIMELINE,
+    readLoopAttribute: LoopAttributeReader = () => false,
+  ) {
     this.#readDurationUs = readDurationUs;
     this.#readPageSeekRange = readPageSeekRange;
+    this.#readLoopAttribute = readLoopAttribute;
     this.#signal = signal;
     this.#pagePaused = init.paused;
     this.#pageRate = init.pageRate;
@@ -422,10 +439,25 @@ export class ShadowTimeline {
     this.#applyClockState(nowMs);
   }
 
-  /** Состояние часов → `ended` и readyState (с положенными событиями переходов). */
+  /** Состояние часов → `ended` (или повтор с начала при `loop`) и readyState (с положенными событиями переходов). */
   #applyClockState(nowMs: number): void {
-    if (this.#clockState === "ended" && !this.#ended) this.#enterEnded({ timeupdateAlreadySent: false }, nowMs);
+    if (this.#clockState === "ended" && !this.#ended && !this.#restartForLoop(nowMs)) this.#enterEnded({ timeupdateAlreadySent: false }, nowMs);
     this.#setReadyState(this.#derivedReadyState(), nowMs);
+  }
+
+  /**
+   * Атрибут `loop` (стандарт HTML, «reaches the end»): ролик не кончается, а перематывается на начало и играет
+   * дальше — без `pause` и `ended`. Shorts так крутит ролик; без этого окно стояло бы на последнем кадре, а
+   * страница ждала бы повтора, которого не будет (16b2). Плееру перемотку и `play` шлёт контроллер по сигналу
+   * `loop_restart`. Повтора нет, если страница на паузе или шкала не перематывается (у эфира конца нет).
+   * Возвращает, начат ли повтор.
+   */
+  #restartForLoop(nowMs: number): boolean {
+    if (this.#pagePaused || !this.#readLoopAttribute()) return false;
+    const restart = this.pageSeek(0, nowMs);
+    if (restart.kind !== "seeking") return false;
+    this.#signal({ kind: "loop_restart", targetUs: restart.targetUs });
+    return true;
   }
 
   /** Конец ролика по стандарту: `timeupdate`, пауза с `pause`, затем `ended`. */

@@ -29,6 +29,8 @@ export interface FakeMediaState {
   playbackRate: number;
   defaultPlaybackRate: number;
   muted: boolean;
+  /** Атрибут `loop` (16b2: тень повторяет ролик с начала). */
+  loop: boolean;
   volume: number;
   readyState: number;
   networkState: number;
@@ -282,6 +284,7 @@ export function createFakeMediaDom() {
       playbackRate: 1,
       defaultPlaybackRate: 1,
       muted: false,
+      loop: false,
       volume: 1,
       readyState: 4,
       networkState: 1,
@@ -348,6 +351,12 @@ export function createFakeMediaDom() {
     }
     get networkState(): number {
       return this.real.networkState;
+    }
+    get loop(): boolean {
+      return this.real.loop;
+    }
+    set loop(value: boolean) {
+      this.real.loop = Boolean(value);
     }
     get muted(): boolean {
       return this.real.muted;

@@ -142,6 +142,8 @@ export class ShadowController implements ShadowBehavior {
       () => this.#durationUs(),
       (signal) => this.#onTimelineSignal(signal),
       () => this.#timeSource.pageSeekRange(),
+      // `loop` тень не подменяет: страница видит настоящий атрибут, его и читаем (оригинальным геттером).
+      () => media.loop !== undefined && readOriginal(media.loop, element) === true,
     );
     this.#follower = new RealElementFollower(
       {
@@ -498,6 +500,11 @@ export class ShadowController implements ShadowBehavior {
     switch (signal.kind) {
       case "event":
         this.#queue.enqueueEvent(signal.type);
+        return;
+      case "loop_restart":
+        // Плеер про `loop` не знает: повтор с начала для него — перемотка страницы и `play`, как у TikTok.
+        this.#emitPageSeek(signal.targetUs);
+        this.#emit({ kind: "page_playback", request: { kind: "play" } });
         return;
       case "settle_play_promises":
         this.#settlePendingPlays(signal.outcome);

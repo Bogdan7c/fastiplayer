@@ -50,6 +50,8 @@ export interface MediaElementOriginals {
   /** Нужны тени файла (сессия 09b): снимок перед снятием источника. */
   readonly currentSrc: OriginalAccessor | undefined;
   readonly seekable: OriginalAccessor | undefined;
+  /** Атрибут `loop` (16b2): ролик с ним по стандарту не кончается, а идёт с начала (Shorts). */
+  readonly loop: OriginalAccessor | undefined;
   /** Нужен сторожу при возврате страницы (11b2): идёт ли настоящая перемотка элемента не в тени. */
   readonly seeking: OriginalAccessor | undefined;
   readonly play: OriginalFunction;
@@ -162,6 +164,7 @@ export function captureElementOriginals(win: Window): ElementOriginals {
       networkState: requireAccessor(mediaPrototype, "networkState"),
       currentSrc: optionalAccessor(mediaPrototype, "currentSrc"),
       seekable: optionalAccessor(mediaPrototype, "seekable"),
+      loop: optionalAccessor(mediaPrototype, "loop"),
       seeking: optionalAccessor(mediaPrototype, "seeking"),
       play: requireMethod(mediaPrototype, "play"),
       pause: requireMethod(mediaPrototype, "pause"),
