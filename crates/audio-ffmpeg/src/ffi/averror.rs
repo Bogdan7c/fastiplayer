@@ -15,6 +15,10 @@ const AVERROR_INVALIDDATA: i32 = ffmpeg_sys_next::AVERROR_INVALIDDATA;
 const AVERROR_ENOMEM: i32 = ffmpeg_sys_next::AVERROR(libc::ENOMEM);
 /// `AVERROR(EINVAL)`: неверный вызов API (не данные пакета).
 const AVERROR_EINVAL: i32 = ffmpeg_sys_next::AVERROR(libc::EINVAL);
+/// `AVERROR_PATCHWELCOME`: возможность потока FFmpeg не реализует — это не битый пакет.
+const AVERROR_PATCHWELCOME: i32 = ffmpeg_sys_next::AVERROR_PATCHWELCOME;
+/// `AVERROR(ENOSYS)`: функция не поддерживается — тоже постоянная причина.
+const AVERROR_ENOSYS: i32 = ffmpeg_sys_next::AVERROR(libc::ENOSYS);
 
 /// Длина буфера для `av_strerror` (FFmpeg: `AV_ERROR_MAX_STRING_SIZE` = 64).
 const ERROR_MESSAGE_BUFFER_BYTES: usize = 64;
@@ -39,12 +43,16 @@ pub(super) fn error_from_averror(operation: &'static str, code: i32) -> AudioFfm
 /// Встроенный AAC-декодер на битых данных возвращает не только
 /// `AVERROR_INVALIDDATA`: при ошибке заголовка кадра FFmpeg 8.1 отдаёт
 /// внутренний отрицательный код без текста (проверено пробой на мусоре `0xFF`).
-/// Поэтому здесь всё, кроме нехватки памяти и неверного вызова API, — ошибка
-/// этого пакета: декодер остаётся годным для следующих.
+/// Поэтому здесь всё, кроме нехватки памяти, неверного вызова API и «FFmpeg этого
+/// не умеет», — ошибка этого пакета: декодер остаётся годным для следующих.
+/// Постоянные причины не сливаются с битым пакетом: иначе неподдерживаемый
+/// поток молча играл бы тишиной с предупреждением на каждый пакет.
 pub(super) fn packet_error_from_averror(operation: &'static str, code: i32) -> AudioFfmpegError {
     match code {
         AVERROR_ENOMEM => AudioFfmpegError::AllocationFailed { operation },
-        AVERROR_EINVAL => error_from_averror(operation, code),
+        AVERROR_EINVAL | AVERROR_PATCHWELCOME | AVERROR_ENOSYS => {
+            error_from_averror(operation, code)
+        }
         _ => AudioFfmpegError::CorruptPacket {
             message: format!("{operation}: {} ({code})", averror_message(code)),
         },
@@ -65,4 +73,33 @@ fn averror_message(code: i32) -> String {
     // SAFETY: после успешного `av_strerror` буфер содержит строку с нулём в конце.
     let message = unsafe { CStr::from_ptr(message_buffer.as_ptr()) };
     message.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_errors_are_packet_errors_and_unsupported_features_are_not() {
+        // Битые данные, включая внутренний код заголовка кадра без текста (проба на мусоре 0xFF).
+        for code in [AVERROR_INVALIDDATA, -50_531_338] {
+            assert!(matches!(
+                packet_error_from_averror("avcodec_send_packet", code),
+                AudioFfmpegError::CorruptPacket { .. }
+            ));
+        }
+        // «FFmpeg этого не умеет» и неверный вызов — постоянная ошибка операции с кодом.
+        for code in [AVERROR_PATCHWELCOME, AVERROR_ENOSYS, AVERROR_EINVAL] {
+            assert!(matches!(
+                packet_error_from_averror("avcodec_send_packet", code),
+                AudioFfmpegError::Ffmpeg { code: reported, .. } if reported == code
+            ));
+        }
+        assert_eq!(
+            packet_error_from_averror("avcodec_receive_frame", AVERROR_ENOMEM),
+            AudioFfmpegError::AllocationFailed {
+                operation: "avcodec_receive_frame"
+            }
+        );
+    }
 }
