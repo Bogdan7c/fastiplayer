@@ -19,11 +19,15 @@
 //!   шире, проверка только дольше, результат тот же).
 //!
 //! Внутри среза правило применяется ровно как раньше; снаружи оно не может сработать,
-//! поэтому ответ совпадает с перебором всей полки.
+//! поэтому ответ совпадает с перебором всей полки. Общее время ДЕКОДИРОВАНИЯ, которое
+//! правило требует у сегментов одного кодирования, — условие дополнительное к общему
+//! времени показа: оно срез только сужает.
 
 use crate::framing::{MediaTime, TimedSpan, TrackSpans};
 
-use super::{LaneShelf, ShelfEntry, ShelfRules, certain_extent_of, earlier, later};
+use super::{
+    IncomingSegment, LaneShelf, ShelfEntry, ShelfRules, certain_extent_of, earlier, later,
+};
 
 /// Самые дальние границы сегмента по всем отрезкам, которые участвуют в правиле замены.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,21 +90,19 @@ impl ShelfEntry {
 }
 
 impl LaneShelf {
-    /// Снимает с полки сегменты, которые накрывает новый (`timing`, по дорожкам —
-    /// `tracks`): его замена. Проверяется только окрестность нового (описание модуля).
+    /// Снимает с полки сегменты, которые повторяет новый `incoming`: его замена (правило —
+    /// [`ShelfRules::replaces`]). Проверяется только окрестность нового (описание модуля).
     ///
     /// Возвращает снятые в порядке полки: их байты освободятся, когда вызывающий их
     /// отпустит (и труба дочитает, если сегмент уже был подан).
     pub(crate) fn take_overlapped_by(
         &mut self,
-        timing: TimedSpan,
-        tracks: &TrackSpans,
+        incoming: IncomingSegment<'_>,
         rules: &ShelfRules,
     ) -> Vec<ShelfEntry> {
-        let incoming = certain_extent_of(timing);
-        let neighbourhood = self.neighbourhood_of(Extent::of(timing, tracks));
+        let neighbourhood = self.neighbourhood_of(Extent::of(incoming.timing, incoming.tracks));
         let overlapped: Vec<usize> = neighbourhood
-            .filter(|&index| rules.replaces(&self.entries[index], incoming, tracks))
+            .filter(|&index| rules.replaces(&self.entries[index], incoming))
             .collect();
         let mut taken = Vec::with_capacity(overlapped.len());
         // Снимаем с конца, чтобы места ещё не снятых не сдвигались.

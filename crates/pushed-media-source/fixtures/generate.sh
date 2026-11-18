@@ -142,3 +142,23 @@ ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=1.6" \
     -pix_fmt yuv420p -threads 1 -fflags +bitexact -map_metadata -1 \
     -movflags empty_moov+default_base_moof+frag_every_frame+skip_trailer \
     "$here/video-h264-64-bframes-per-frame.mp4"
+
+# --- B-кадры и фрагменты, разрезанные посреди группы кадров (находка TikTok, 16b2 моста):
+# страница кладёт ролик несколькими `appendBuffer`, по одному `moof`+`mdat` на вызов, и режет
+# их не по ключевым кадрам, а где кончились скачанные байты. Ключевой кадр один — в начале.
+# H.264 Main с пирамидой B-кадров (`bf=3`, `b-adapt=0`): порядок декодирования I, затем группы
+# P B b b; показ отстаёт на два кадра. 2,4 с при 25 к/с = 60 кадров.
+# - video-h264-64-bframes-midgop-13.mp4 — фрагменты по 13 кадров (13, 13, 13, 13, 8). Первый
+#   стык попадает между группами P B b b (времена показа соседей не накладываются), остальные
+#   режут группу: её B-кадры показываются РАНЬШЕ кадра P, оставшегося в предыдущем фрагменте,
+#   и отрезки показа соседей накладываются на 80–160 мс, хотя декодирование идёт встык;
+# - video-h264-64-bframes-midgop-14.mp4 — те же кадры (`-c copy`), фрагменты по 14 кадров
+#   (14, 14, 14, 14, 4): КАЖДЫЙ стык режет группу, начиная с первого.
+bframes_midgop=(-fflags +bitexact -map_metadata -1 -movflags empty_moov+default_base_moof+skip_trailer)
+ffmpeg "${common[@]}" -f lavfi -i "testsrc2=size=64x64:rate=25:duration=2.4" \
+    -c:v libx264 -preset medium -profile:v main -bf 3 -b-pyramid normal \
+    -x264-params "b-adapt=0:open-gop=0:scenecut=0" -g 250 -keyint_min 250 -sc_threshold 0 \
+    -pix_fmt yuv420p -threads 1 "${bframes_midgop[@]}" -frag_duration 520000 \
+    "$here/video-h264-64-bframes-midgop-13.mp4"
+ffmpeg "${common[@]}" -i "$here/video-h264-64-bframes-midgop-13.mp4" -c copy \
+    "${bframes_midgop[@]}" -frag_duration 560000 "$here/video-h264-64-bframes-midgop-14.mp4"

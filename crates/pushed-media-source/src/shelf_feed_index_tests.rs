@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use super::super::{Delivery, LaneShelf, ShelfEntry, ShelfRules};
+use super::super::{Delivery, IncomingSegment, LaneShelf, ShelfEntry, ShelfRules};
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
@@ -78,13 +78,16 @@ impl Shelf {
     /// Кладёт сегмент с дорожками `tracks` (время декодирования = время показа).
     fn put_with_tracks(&mut self, start_ms: i64, end_ms: i64, tracks: TrackSpans) -> usize {
         let timing = TimedSpan::exact(span(start_ms, end_ms));
-        let replaced = self
-            .shelf
-            .take_overlapped_by(timing, &tracks, &rules())
-            .len();
+        let decode = DecodeTiming::follows_presentation(timing, tracks.clone());
+        let incoming = IncomingSegment {
+            timing,
+            tracks: &tracks,
+            decode: &decode,
+            key: &self.key,
+        };
+        let replaced = self.shelf.take_overlapped_by(incoming, &rules()).len();
         let media =
             ChargedSegment::charge(&self.ledger, Bytes::from_static(&[0; 8])).expect("room");
-        let decode = DecodeTiming::follows_presentation(timing, tracks.clone());
         self.shelf.insert(ShelfEntry::waiting(
             timing,
             tracks,

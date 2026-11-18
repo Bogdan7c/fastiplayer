@@ -140,3 +140,170 @@ fn audio_after_video_of_the_same_time_continues_the_episode() {
         .expect("the audio of the same time is fed");
     assert_eq!(next.continuity(), EpisodeContinuity::MayContinue);
 }
+
+// --- Замена и время декодирования (сессия 16b2 моста, ролики TikTok) ---
+//
+// Видео с B-кадрами, кадр 40 мс, показ отстаёт от декодирования на два кадра. Фрагменты
+// разрезаны посреди группы кадров: P остался в предыдущем, его B — в следующем, поэтому
+// отрезки показа соседей накладываются на 160 мс, а декодирование идёт встык.
+
+/// Фрагмент видео с записанным временем декодирования: (показ, декодирование), мс.
+struct ReorderedVideo {
+    presentation: (i64, i64),
+    decode: (i64, i64),
+}
+
+/// Первый фрагмент ролика: 13 кадров, последний по декодированию — кадр P.
+const FIRST: ReorderedVideo = ReorderedVideo {
+    presentation: (80, 680),
+    decode: (0, 520),
+};
+/// Его продолжение: начинается с B-кадров, показываемых раньше того кадра P.
+const CONTINUATION: ReorderedVideo = ReorderedVideo {
+    presentation: (520, 1_240),
+    decode: (520, 1_040),
+};
+
+impl Shelf {
+    /// Кладёт фрагмент видео с записанным временем декодирования и ключом `key`;
+    /// возвращает число снятых.
+    fn put_reordered(&mut self, fragment: &ReorderedVideo, key: EpisodeKey) -> usize {
+        let (timing, tracks) = video_only(fragment.presentation.0, fragment.presentation.1);
+        let (decode_timing, decode_tracks) = video_only(fragment.decode.0, fragment.decode.1);
+        let decode = DecodeTiming::follows_presentation(decode_timing, decode_tracks);
+        self.put_segment(timing, tracks, decode, key, 1)
+    }
+
+    /// Ключ другого кодирования: свой init (страница сменила качество).
+    fn another_rendition(&self) -> EpisodeKey {
+        let init = ChargedSegment::charge(&self.ledger, Bytes::from_static(b"next")).expect("room");
+        EpisodeKey::new(
+            PushedContainer::FragmentedMp4,
+            Some(init),
+            TimestampOffset::ZERO,
+        )
+    }
+}
+
+#[test]
+fn a_fragment_cut_inside_a_group_of_pictures_does_not_replace_its_predecessor() {
+    let mut shelf = Shelf::new();
+    let key = shelf.key.clone();
+    assert_eq!(shelf.put_reordered(&FIRST, key.clone()), 0);
+
+    // Показ накладывается на 160 мс (> допуска 10 мс), но общих кадров нет: декодирование
+    // продолжения начинается ровно там, где кончилось у первого. Оба остаются.
+    assert_eq!(shelf.put_reordered(&CONTINUATION, key), 0);
+
+    assert_eq!(shelf.starts_ms(), [80, 520]);
+    assert_eq!(shelf.media_bytes(), 2);
+}
+
+#[test]
+fn a_continuation_that_arrived_first_is_not_replaced_by_its_predecessor() {
+    let mut shelf = Shelf::new();
+    let key = shelf.key.clone();
+    // Порядок прихода обратный (страница докачала начало позже): правило симметрично.
+    assert_eq!(shelf.put_reordered(&CONTINUATION, key.clone()), 0);
+    assert_eq!(shelf.put_reordered(&FIRST, key), 0);
+    assert_eq!(shelf.starts_ms(), [80, 520]);
+}
+
+#[test]
+fn a_repeat_of_a_fragment_with_reordered_frames_still_replaces_it() {
+    let mut shelf = Shelf::new();
+    let key = shelf.key.clone();
+    shelf.put_reordered(&FIRST, key.clone());
+    shelf.put_reordered(&CONTINUATION, key.clone());
+
+    // Страница прислала продолжение ещё раз: то же время показа И декодирования — повтор.
+    // Снят только он сам: первый фрагмент делит с ним показ, но не кадры.
+    assert_eq!(shelf.put_reordered(&CONTINUATION, key), 1);
+
+    assert_eq!(shelf.starts_ms(), [80, 520]);
+    assert_eq!(shelf.media_bytes(), 2, "the repeat replaced, not doubled");
+}
+
+#[test]
+fn another_cut_of_the_same_frames_still_replaces_what_it_covers() {
+    let mut shelf = Shelf::new();
+    let key = shelf.key.clone();
+    shelf.put_reordered(&FIRST, key.clone());
+    shelf.put_reordered(&CONTINUATION, key.clone());
+
+    // Те же кадры другой нарезкой: фрагмент начинается посреди первого и кончается посреди
+    // продолжения — общее время декодирования есть с обоими, оба сняты.
+    let recut = ReorderedVideo {
+        presentation: (240, 960),
+        decode: (240, 800),
+    };
+    assert_eq!(shelf.put_reordered(&recut, key), 2);
+    assert_eq!(shelf.starts_ms(), [240]);
+}
+
+#[test]
+fn another_rendition_of_the_same_time_replaces_whatever_its_decode_time() {
+    let mut shelf = Shelf::new();
+    let key = shelf.key.clone();
+    // Однокадровый фрагмент (низкая задержка): показ 240–280 мс, декодирование 160–200 мс.
+    let frame = ReorderedVideo {
+        presentation: (240, 280),
+        decode: (160, 200),
+    };
+    shelf.put_reordered(&frame, key);
+
+    // Тот же кадр в другом качестве: у этого кодирования задержка показа на кадр меньше,
+    // и время декодирования с лежащим не пересекается. Оси декодирования разных
+    // кодирований несравнимы — решает показ: замена.
+    let other_rendition = ReorderedVideo {
+        presentation: (240, 280),
+        decode: (200, 240),
+    };
+    let other_key = shelf.another_rendition();
+    assert_eq!(shelf.put_reordered(&other_rendition, other_key), 1);
+    assert_eq!(shelf.starts_ms(), [240]);
+}
+
+#[test]
+fn another_rendition_cut_inside_a_group_of_pictures_replaces_by_presentation_time() {
+    let mut shelf = Shelf::new();
+    let key = shelf.key.clone();
+    shelf.put_reordered(&FIRST, key);
+
+    // Те же отрезки, что у продолжения, но init другой: это не продолжение лежащего
+    // (его кадры от того кодирования не декодируются), а новое качество поверх старого.
+    let other_key = shelf.another_rendition();
+    assert_eq!(shelf.put_reordered(&CONTINUATION, other_key), 1);
+    assert_eq!(shelf.starts_ms(), [520]);
+}
+
+#[test]
+fn without_recorded_decode_time_overlapping_presentation_still_replaces() {
+    let mut shelf = Shelf::new();
+    // WebM: времени декодирования нет, им служит время показа — правило прежнее.
+    assert_eq!(shelf.put_fragment(video_only(80, 680)), 0);
+    assert_eq!(shelf.put_fragment(video_only(520, 1_240)), 1);
+    assert_eq!(shelf.starts_ms(), [520]);
+}
+
+#[test]
+fn a_kept_continuation_feeds_after_its_predecessor_in_the_same_episode() {
+    let mut shelf = Shelf::new();
+    let rules = rules();
+    let key = shelf.key.clone();
+    shelf.put_reordered(&FIRST, key.clone());
+    shelf.put_reordered(&CONTINUATION, key);
+    let first = shelf.shelf.next_to_feed(None, &rules).expect("first");
+    let fed = shelf.shelf.take_for_feeding(first, &rules).expect("fed");
+    assert_eq!(fed.span.start(), at(80));
+
+    // Продолжение идёт тому же демуксеру: новый эпизод ждал бы ключевого кадра, а его
+    // в продолжении нет.
+    let next = shelf
+        .shelf
+        .next_to_feed(Some(&fed.fed_to), &rules)
+        .expect("the continuation is fed");
+    assert_eq!(next.continuity(), EpisodeContinuity::MayContinue);
+    let fed = shelf.shelf.take_for_feeding(next, &rules).expect("fed");
+    assert_eq!(fed.span.start(), at(520));
+}

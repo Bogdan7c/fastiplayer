@@ -7,8 +7,8 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use super::{
-    Delivery, IncomingMedia, LaneShelf, LateJoinCandidates, LateJoinWindow, PlayedSoFar,
-    ShelfEntry, ShelfRemoval, ShelfRules,
+    Delivery, IncomingMedia, IncomingSegment, LaneShelf, LateJoinCandidates, LateJoinWindow,
+    PlayedSoFar, ShelfEntry, ShelfRemoval, ShelfRules,
 };
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
@@ -82,21 +82,33 @@ impl Shelf {
         self.put_with_tracks(timing, TrackSpans::default(), size)
     }
 
-    /// Как `put_timed`, но с временем дорожек сегмента.
+    /// Как `put_timed`, но с временем дорожек сегмента (время декодирования = время показа).
     fn put_with_tracks(&mut self, timing: TimedSpan, tracks: TrackSpans, size: usize) -> usize {
-        let replaced = self
-            .shelf
-            .take_overlapped_by(timing, &tracks, &rules())
-            .len();
-        let media = ChargedSegment::charge(&self.ledger, Bytes::from(vec![0; size])).expect("room");
         let decode = DecodeTiming::follows_presentation(timing, tracks.clone());
-        self.shelf.insert(ShelfEntry::waiting(
+        let key = self.key.clone();
+        self.put_segment(timing, tracks, decode, key, size)
+    }
+
+    /// Кладёт сегмент так же, как буфер потока: снимает то, что он повторяет, и кладёт
+    /// его самого; возвращает число снятых.
+    fn put_segment(
+        &mut self,
+        timing: TimedSpan,
+        tracks: TrackSpans,
+        decode: DecodeTiming,
+        key: EpisodeKey,
+        size: usize,
+    ) -> usize {
+        let incoming = IncomingSegment {
             timing,
-            tracks,
-            decode,
-            media,
-            self.key.clone(),
-        ));
+            tracks: &tracks,
+            decode: &decode,
+            key: &key,
+        };
+        let replaced = self.shelf.take_overlapped_by(incoming, &rules()).len();
+        let media = ChargedSegment::charge(&self.ledger, Bytes::from(vec![0; size])).expect("room");
+        self.shelf
+            .insert(ShelfEntry::waiting(timing, tracks, decode, media, key));
         replaced
     }
 

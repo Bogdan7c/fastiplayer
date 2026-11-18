@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use super::{Delivery, IncomingMedia, LaneShelf, ShelfEntry, ShelfRules};
+use super::{Delivery, IncomingMedia, IncomingSegment, LaneShelf, ShelfEntry, ShelfRules};
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::{EpisodeContinuity, EpisodeKey, FeedCursor};
@@ -87,9 +87,15 @@ impl FrameShelf {
             TimedSpan::exact(frame_span(decode_ms)),
             TrackSpans::default(),
         );
-        let replaced =
-            self.shelf
-                .take_overlapped_by(presentation, &TrackSpans::default(), &rules());
+        let replaced = self.shelf.take_overlapped_by(
+            IncomingSegment {
+                timing: presentation,
+                tracks: &TrackSpans::default(),
+                decode: &decode,
+                key: &self.key,
+            },
+            &rules(),
+        );
         assert!(
             replaced.is_empty(),
             "frames of one GOP never replace each other"

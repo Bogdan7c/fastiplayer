@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use super::super::{LaneShelf, ShelfEntry, ShelfRules};
+use super::super::{IncomingSegment, LaneShelf, ShelfEntry, ShelfRules};
 use crate::buffer_window::BufferWindow;
 use crate::container::PushedContainer;
 use crate::feed::EpisodeKey;
@@ -69,15 +69,21 @@ impl Shelf {
 
     /// Кладёт сегмент; возвращает начала снятых им (мс).
     fn put(&mut self, timing: TimedSpan, tracks: TrackSpans) -> Vec<i64> {
+        let decode = DecodeTiming::follows_presentation(timing, tracks.clone());
+        let incoming = IncomingSegment {
+            timing,
+            tracks: &tracks,
+            decode: &decode,
+            key: &self.key,
+        };
         let replaced: Vec<i64> = self
             .shelf
-            .take_overlapped_by(timing, &tracks, &rules())
+            .take_overlapped_by(incoming, &rules())
             .iter()
             .map(|entry| entry.span().start().as_micros() / MS)
             .collect();
         let media =
             ChargedSegment::charge(&self.ledger, Bytes::from_static(&[0; 8])).expect("room");
-        let decode = DecodeTiming::follows_presentation(timing, tracks.clone());
         self.shelf.insert(ShelfEntry::waiting(
             timing,
             tracks,

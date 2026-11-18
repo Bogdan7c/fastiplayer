@@ -47,7 +47,7 @@ use crate::lane::{LaneId, LaneMailbox};
 use crate::live_timeline::LiveTimelineFeed;
 use crate::mailbox::FeedBacklog;
 use crate::page_seek::PageSeekBook;
-use crate::shelf::{LaneShelf, ShelfEntry, ShelfRules};
+use crate::shelf::{IncomingSegment, LaneShelf, ShelfEntry, ShelfRules};
 
 mod delivery_progress;
 mod eviction;
@@ -348,8 +348,12 @@ impl StreamBuffer {
         // Сначала снимаем то, что новый сегмент заменит: его место освобождается
         // до проверки потолка (повтор того же времени не требует двойной памяти).
         let replaced = state.lane_mut(lane)?.shelf.take_overlapped_by(
-            segment.timing,
-            &segment.tracks,
+            IncomingSegment {
+                timing: segment.timing,
+                tracks: &segment.tracks,
+                decode: &segment.decode,
+                key: &segment.key,
+            },
             &self.rules,
         );
         drop(replaced);
