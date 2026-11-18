@@ -2,6 +2,8 @@
 
 Часть [16b](16b-short-video-feeds.md), решения 344, 345. Разведка — [results/16b0.md](results/16b0.md).
 
+> **Поправка 18 ноября 2026 (решения 347–351, итог — [results/16b1.md](results/16b1.md)).** Свой clean-room-декодер SBR/PS не делается: нормативный текст есть только в платном ISO/IEC 14496-3. HE-AAC декодирует встроенный AAC-декодер нашего FFmpeg через новый crate `audio-ffmpeg`; маршрут AAC в crate `audio` выбирает FFmpeg по паспорту дорожки или по данным SBR внутри первого пакета. Пункты про clean-room и метод сверки ниже — история разведки.
+
 > Выполни сессию 16b1 плана `user/browser-bridge/`: наш AAC-декодер учится HE-AAC v1 (SBR) и v2 (PS). Сначала прочитай `user/browser-bridge/README.md`, этот файл, `results/16b0.md`, решения 344–346 в `decisions.md`, план собственного декодера AC-3 `user/ac3-eac3-support/` (README и итоговый отчёт), `mem:audio/core`, `mem:audio/ac3-eac3-decoder`, `mem:dependency-patches/core`.
 
 ## Зачем

@@ -13,7 +13,7 @@
 - Видеодекодирование: контракт потока `mem:video-core/decoder-stream-boundary`; FFmpeg software `mem:video-ffmpeg/software-design`; VA-API `mem:video-vaapi/core`.
 - FFmpeg по умолчанию свой (2026-10-20, решение владельца): crate `ffmpeg-vendor` собирает закреплённые LGPL FFmpeg 8.1.3 + dav1d 1.5.4 (SHA-256; с 2026-10-28 накладывает свои патчи исходников из `crates/ffmpeg-vendor/patches/`, нужен GNU `patch`) вместе с бинарём, `libavcodec_fastiplayer.so` кладётся в `target/<profile>/lib/` (RUNPATH `$ORIGIN/lib`); системный — `--no-default-features --features system-ffmpeg`. Сборке нужны meson/nasm/ninja/curl: `mem:video-ffmpeg/build-tooling`.
 - Рендер: `mem:render-video/core`, раскладка render-core `mem:render-core/module-layout-s22`; frame-server/scrub `mem:frame-server/core`.
-- Аудио: `mem:audio/core`.
+- Аудио: `mem:audio/core`; HE-AAC (SBR/PS) через AAC-декодер нашего FFmpeg, crate `audio-ffmpeg`, маршрут `audio::decoder::aac_route`: `mem:audio/he-aac-ffmpeg`.
 - Demux: `mem:demux-api/core`, `mem:symphonia-demux/core`, `mem:mpeg-ts-demux/core`, `mem:flv-demux/core`; кодеки `mem:codec-core/h264` (+ h265/av1); заголовки AC-3/E-AC-3 `mem:ac3-syncframe/core`; сырые `.ac3/.eac3` `mem:ac3-elementary-demux/core`; собственный clean-room декодер AC-3/E-AC-3 (`ac3-decoder`; сторонний декодер удалён 2026-10-17) `mem:ac3-decoder/core`.
 - Открытие источников без UI (local/direct/web-media leaves, вынесено из app-egui): `mem:media-source-open/core`.
 - Источники байтов: `mem:source-core/core`; сетевые протоколы (HLS/DASH/Smooth/HDS/HTTP/FTP/yt-dlp): `mem:media-services/core`; XML: `mem:xml/core`.

@@ -30,7 +30,6 @@ optional = true
 [dev-dependencies]
 # Сквозные тесты читают пакеты HE-AAC из настоящих MP4/fMP4/MPEG-TS теми же
 # демуксерами, что и плеер.
-demux-api.workspace = true
 media-core.workspace = true
 symphonia-demux.workspace = true
 

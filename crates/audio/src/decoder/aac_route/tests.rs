@@ -160,6 +160,20 @@ mod with_ffmpeg {
     }
 
     #[test]
+    fn low_complexity_passport_with_sbr_inside_packets_switches_too() {
+        // Радио, перепакованное ffmpeg в MP4/fMP4: паспорт честно говорит «AAC-LC 22,05 кГц»
+        // (2 байта из заголовка ADTS), а SBR лежит только внутри кадров.
+        let low_complexity_22k_stereo = [0x13, 0x90];
+        let frames = adts_frames(&he_aac_fixture("v1-stereo-implicit.adts"));
+        let mut decoder =
+            create_audio_decoder(track_config(22_050, 2, Some(&low_complexity_22k_stereo)))
+                .expect("decoder");
+        let (_, rates) = decode_frames(&mut decoder, &frames);
+        assert!(!rates.is_empty());
+        assert!(rates.iter().all(|rate| *rate == 44_100), "rates: {rates:?}");
+    }
+
+    #[test]
     fn implicit_parametric_stereo_with_a_mono_header_plays_as_stereo() {
         // ADTS v2: заголовок говорит «1 канал», стерео даёт PS.
         let frames = adts_frames(&he_aac_fixture("v2-ps-implicit.adts"));

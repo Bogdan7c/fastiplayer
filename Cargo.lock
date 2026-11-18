@@ -519,7 +519,6 @@ name = "audio-ffmpeg"
 version = "0.2.0"
 dependencies = [
  "audio-core",
- "demux-api",
  "ffmpeg-sys-next 8.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc",
  "media-core",

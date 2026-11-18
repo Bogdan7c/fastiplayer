@@ -26,6 +26,9 @@
 ## AC-3 / E-AC-3 (2026-10-16)
 - Exact `A_AC3`/`A_EAC3` → crate-private `decoder/ac3` поверх собственного `ac3-decoder` (2026-10-17; сторонний декодер удалён): f32 без обрезки, настоящий формат каждого кадра (смену 2.0↔5.1/частоты пересобирает player-core); family `Ac3`/`Eac3` в snapshot; битый packet → тишина + warn; постоянная причина (unsupported/неконвертируемая раскладка) → одна ошибка, затем тишина. Детали: `mem:audio/ac3-eac3-decoder`.
 
+## HE-AAC (16b1 моста, 2026-11-18)
+- Codec id AAC идёт через маршрут `decoder::aac_route`: паспорт HE-AAC (SBR/PS с ядром LC) → `audio-ffmpeg` (встроенный `aac` FFmpeg); AAC-LC → патч Symphonia, SBR внутри пакета переключает на HE-AAC на том же пакете; xHE-AAC и прочие типы → прежний отказ. Фичи `audio/ffmpeg`, `audio/vendored-ffmpeg`. Детали: `mem:audio/he-aac-ffmpeg`.
+
 ## Громкость пользователя (UX-11, 2026-10-06)
 
 - Concrete `AudioOutput` масштабирует каждый сэмпл громкостью в `output_sample_for_intent` (тест в `output/processing.rs`). Сохранение громкости/mute между запусками — app-слой: `mem:app-egui/user-audio-level-persistence-ux11`; семантика громкости в player-core не менялась.
