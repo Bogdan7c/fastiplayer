@@ -27,6 +27,11 @@
 //!    без выбора → страница сама оказывается на Dub B (чтение работает), а запись после сеанса
 //!    ровно та, какой была: `used_at` не изменился (записи не было).
 //!
+//! # Сценарий `series-memory-autoplay` (16e, Chromium и Firefox)
+//! «Озвучка та же после автоперехода»: серия доиграла, страница сама ставит следующую в озвучке по
+//! умолчанию, экстеншен по памяти возвращает выбранную; контроль без памяти — серия 2 остаётся в
+//! Dub A. Подробно — [`autoplay`].
+//!
 //! Эти сценарии требуют готовой функции памяти выбора в экстеншене. Без неё они честно падают на
 //! «страница сама не перешла на Dub B».
 //!
@@ -49,6 +54,8 @@
 //!
 //! Приговор `series-memory-incognito` требует `tab.incognito === true` у вкладки стенда в обоих сеансах.
 
+mod autoplay;
+mod autoplay_judge;
 mod judge;
 mod session;
 mod storage;
@@ -60,7 +67,8 @@ use self::judge::{
     judge_restart,
 };
 use self::session::{
-    GENERATION_LINE_PREFIX, PagePick, SessionPlan, begin_session, end_session, wait_for_grant,
+    EpisodeAutoplay, GENERATION_LINE_PREFIX, PagePick, SessionPlan, begin_session, end_session,
+    wait_for_grant,
 };
 use self::storage::{
     BENCH_SERIES_KEY, ForgetReply, STORAGE_KEY, StoredMemory, StoredSeriesChoice,
@@ -109,7 +117,7 @@ pub(super) fn page_ids() -> Vec<&'static str> {
     vec![SERIES_PAGE]
 }
 
-/// Оба сценария, каждый в свежем окружении.
+/// Все три строки, каждая в свежем окружении.
 pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     if !filter.admits(SERIES_PAGE) {
         return Vec::new();
@@ -120,6 +128,10 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
     let started = Instant::now();
     let incognito =
         stand.with_environment(|environment| drive_incognito(stand, environment, browser));
+    let incognito_elapsed = started.elapsed();
+    let started = Instant::now();
+    let autoplay =
+        stand.with_environment(|environment| autoplay::drive_autoplay(stand, environment, browser));
     vec![
         StepResult::new(
             "series-memory-restart",
@@ -133,6 +145,13 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
             browser,
             SERIES_PAGE,
             incognito,
+            incognito_elapsed,
+        ),
+        StepResult::new(
+            "series-memory-autoplay",
+            browser,
+            SERIES_PAGE,
+            autoplay,
             started.elapsed(),
         ),
     ]
@@ -356,6 +375,7 @@ fn drive_restart(
     let plan = SessionPlan {
         window_privacy: WindowPrivacy::Normal,
         page_pick: Some(PAGE_PICK),
+        episode_autoplay: EpisodeAutoplay::Off,
     };
     let mut run = match begin_session(stand, environment, browser, plan)? {
         Ok(run) => run,
@@ -369,6 +389,7 @@ fn drive_restart(
     let plan = SessionPlan {
         window_privacy: WindowPrivacy::Normal,
         page_pick: None,
+        episode_autoplay: EpisodeAutoplay::Off,
     };
     let mut run = match begin_session(stand, environment, browser, plan)? {
         Ok(run) => run,
@@ -488,6 +509,7 @@ fn drive_incognito(
     let plan = SessionPlan {
         window_privacy: WindowPrivacy::Private,
         page_pick: Some(PAGE_PICK),
+        episode_autoplay: EpisodeAutoplay::Off,
     };
     let mut run = match begin_session(stand, environment, browser, plan)? {
         Ok(run) => run,
@@ -502,6 +524,7 @@ fn drive_incognito(
     let plan = SessionPlan {
         window_privacy: WindowPrivacy::Private,
         page_pick: None,
+        episode_autoplay: EpisodeAutoplay::Off,
     };
     let mut run = match begin_session(stand, environment, browser, plan)? {
         Ok(run) => run,
@@ -559,13 +582,38 @@ mod tests {
         let plan = SessionPlan {
             window_privacy: WindowPrivacy::Normal,
             page_pick: Some(PAGE_PICK),
+            episode_autoplay: EpisodeAutoplay::Off,
         };
         assert_eq!(plan.page_query(), "&mode=handoff&pick_dub=dub-b@1500");
         let plain = SessionPlan {
             window_privacy: WindowPrivacy::Normal,
             page_pick: None,
+            episode_autoplay: EpisodeAutoplay::Off,
         };
         assert_eq!(plain.page_query(), "&mode=handoff");
+        let autoplay = SessionPlan {
+            episode_autoplay: EpisodeAutoplay::NextInDefaultDub,
+            ..plan
+        };
+        assert_eq!(
+            autoplay.page_query(),
+            "&mode=handoff&pick_dub=dub-b@1500&autoplay_next=default_dub"
+        );
+    }
+
+    #[test]
+    fn the_page_understands_the_autoplay_the_scenario_sends() {
+        let source = page_source();
+        // Значение параметра и строка поколения — договор со строкой `series-memory-autoplay`.
+        assert!(source.contains("raw !== 'default_dub'"));
+        assert!(source.contains("ctx.log(`episode-${state.episode}-ended`)"));
+        assert!(source.contains("openGeneration('autoplay', 0)"));
+        // Автопереход ставит озвучку сайта по умолчанию — иначе строка ничего бы не доказывала.
+        assert!(source.contains("state.dub = DUBS[0].id;"));
+        assert!(source.contains(&format!(
+            "{{ id: '{}', label: 'Dub A' }}",
+            judge::DEFAULT_DUB
+        )));
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub(super) const PICKED_DUB: &str = "dub-b";
 pub(super) const PICKED_DUB_LABEL: &str = "Dub B";
 
 /// Значение поля `имя=значение` в строке журнала страницы.
-fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+pub(super) fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let prefix = format!("{name}=");
     line.split_whitespace()
         .find_map(|token| token.strip_prefix(prefix.as_str()))
@@ -44,7 +44,7 @@ pub(super) fn switches_to(lines: &[String], dub_id: &str) -> usize {
 
 /// Что общего у любого сеанса: пропуск посредника, отчёт страницы, запрещённые строки плеера,
 /// провалы шагов сценария.
-fn session_failures(
+pub(super) fn session_failures(
     label: &str,
     record: &SessionRecord,
     failed_steps: &[String],
@@ -72,7 +72,7 @@ fn session_failures(
 }
 
 /// Приговор с журналами страниц всех сеансов: при провале они нужны, чтобы увидеть, что страница делала.
-fn with_page_logs(mut verdict: Verdict, sessions: &[(&str, &SessionRecord)]) -> Verdict {
+pub(super) fn with_page_logs(mut verdict: Verdict, sessions: &[(&str, &SessionRecord)]) -> Verdict {
     if verdict.outcome == Outcome::Fail {
         for (label, record) in sessions {
             verdict
@@ -96,7 +96,7 @@ fn describe_memory(memory: &StoredMemory) -> String {
 }
 
 /// Запись должна быть ровно одна, под ожидаемым отпечатком, с озвучкой `audio`.
-fn entry_failures(
+pub(super) fn entry_failures(
     when: &str,
     memory: &StoredMemory,
     fingerprint: &str,

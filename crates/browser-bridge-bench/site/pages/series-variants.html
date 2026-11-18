@@ -31,6 +31,10 @@ import { requireMimeSupport, observeHandoff } from '../lib/scenario-kit.js';
 //   адаптер узнаёт, что у озвучки нет текущей серии, и отвечает `no_such_episode`, ничего не нажимая.
 //   Клик по такой кнопке (рукой человека) страница отклоняет и остаётся, где была:
 //   `dub refused dub=<id> episode=<серия>`, нового поколения нет.
+// - `&autoplay_next=default_dub` (16e, «озвучка та же после автоперехода») — серия доиграла (`ended`),
+//   и страница САМА ставит следующую, как сайт с автопереходом, но в озвучке сайта по умолчанию
+//   (Dub A): такой сайт выбор зрителя не помнит. Пишет `episode-<N>-ended` и `generation cause=autoplay …`.
+//   Вернуть выбранную озвучку обязана память выбора экстеншена (14b2). Без параметра автоперехода нет.
 // Каждое новое поколение страница пишет в журнал строкой `generation …`: по ним судит стенд.
 
 /** Серии: один и тот же ассет с дорожками озвучек, ключ серии — номер. */
@@ -65,8 +69,17 @@ await runScenario('series-variants', async (ctx) => {
     requireMimeSupport(catalog, refs);
     controls.dataset.episodeKey = String(state.episode);
     ctx.log(`generation cause=${cause} episode=${state.episode} dub=${state.dub} quality=${state.quality} from=${Math.floor(positionS)}`);
-    await player.newGeneration({ refs, positionS, autoplay: true });
-    pageGenerationNumbers.push(player.generations);
+    const ownNumber = player.generations + 1;
+    try {
+      await player.newGeneration({ refs, positionS, autoplay: true });
+    } catch (error) {
+      // Следующее поколение (например, озвучка, которую память экстеншена нажала сразу после
+      // автоперехода) прервало `play()` этого: браузер честно отвечает `AbortError`. Для сайта это
+      // норма, а поколение всё равно открывала страница — учитываем его и выходим без ошибки.
+      if (error?.name !== 'AbortError' || player.generations <= ownNumber) throw error;
+      ctx.log(`generation ${ownNumber} play was interrupted by generation ${player.generations}`);
+    }
+    pageGenerationNumbers.push(ownNumber);
   }
 
   // Кнопки озвучек: выбранная помечена aria-pressed — так адаптер читает выбор.
@@ -151,6 +164,24 @@ await runScenario('series-variants', async (ctx) => {
     if (!button) throw new Error(`pick_dub must look like <dub id>@<ms> with a known dub id, got '${raw}'`);
     return { button, delayMs: Number(match[2]) };
   }
+  // Автопереход (16e): разбор строгий — незнакомое значение валит страницу, а не выключает автопереход молча.
+  const autoplayNext = parseAutoplayNext(ctx.params.raw.get('autoplay_next'));
+  function parseAutoplayNext(raw) {
+    if (raw === null) return false;
+    if (raw !== 'default_dub') throw new Error(`autoplay_next must be 'default_dub', got '${raw}'`);
+    return true;
+  }
+  // Серия доиграла: следующая с нуля в озвучке по умолчанию. Последняя серия — конец, как у сайта.
+  function playNextEpisodeInDefaultDub() {
+    ctx.log(`episode-${state.episode}-ended`);
+    if (state.episode >= EPISODE_COUNT) return;
+    state.episode += 1;
+    state.dub = DUBS[0].id;
+    renderDubs();
+    openGeneration('autoplay', 0).catch((error) => ctx.check('autoplay-next-episode', false, `${error?.name}: ${error?.message}`));
+  }
+  if (autoplayNext) video.addEventListener('ended', playNextEpisodeInDefaultDub);
+
   const hooks = pickDub === null ? {} : {
     'pick-dub': async () => {
       await new Promise((resolve) => setTimeout(resolve, pickDub.delayMs));

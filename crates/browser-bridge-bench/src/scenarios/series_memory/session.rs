@@ -49,6 +49,26 @@ impl PagePick {
     }
 }
 
+/// Что страница делает, когда серия доиграла (16e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EpisodeAutoplay {
+    /// Автоперехода нет: страница стоит на доигравшей серии (поведение 14b2).
+    Off,
+    /// Страница сама ставит следующую серию в озвучке сайта по умолчанию (Dub A), как сайт,
+    /// который выбор зрителя не помнит: `&autoplay_next=default_dub` в `series-variants.html`.
+    NextInDefaultDub,
+}
+
+impl EpisodeAutoplay {
+    /// Хвост адреса страницы (пусто, если автоперехода нет).
+    fn query_suffix(self) -> &'static str {
+        match self {
+            Self::Off => "",
+            Self::NextInDefaultDub => "&autoplay_next=default_dub",
+        }
+    }
+}
+
 /// Как открыть сеанс.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SessionPlan {
@@ -56,15 +76,21 @@ pub(super) struct SessionPlan {
     pub window_privacy: WindowPrivacy,
     /// Выбор, который страница сделает сама (`None` — страница сама ничего не нажимает).
     pub page_pick: Option<PagePick>,
+    /// Автопереход страницы после конца серии.
+    pub episode_autoplay: EpisodeAutoplay,
 }
 
 impl SessionPlan {
     /// Хвост адреса страницы прогона.
     pub(super) fn page_query(self) -> String {
-        match self.page_pick {
-            Some(pick) => format!("{HANDOFF_MODE_QUERY}{}", pick.query_suffix()),
-            None => HANDOFF_MODE_QUERY.to_owned(),
-        }
+        let pick = self
+            .page_pick
+            .map(PagePick::query_suffix)
+            .unwrap_or_default();
+        format!(
+            "{HANDOFF_MODE_QUERY}{pick}{}",
+            self.episode_autoplay.query_suffix()
+        )
     }
 }
 
