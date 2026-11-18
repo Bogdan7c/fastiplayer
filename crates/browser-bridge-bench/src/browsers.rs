@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 pub use error::BrowserError;
 pub use hand_off::{
     HandOffError, HandOffOptions, HandOffOutcome, LocalAddressConsent, ReloadReason,
+    hand_off_from_service_page,
 };
 pub use popup_probe::{FocusedElement, PopupSnapshot};
 

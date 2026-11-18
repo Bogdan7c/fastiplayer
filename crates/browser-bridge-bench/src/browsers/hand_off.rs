@@ -231,6 +231,27 @@ pub(crate) fn parse_robot_output(
     }
 }
 
+/// Отдать вкладку командой из УЖЕ открытой служебной страницы, не открывая новой вкладки (16b2).
+///
+/// Обычный робот ([`super::BrowserUnderTest::hand_off_tab`]) открывает служебную страницу новой
+/// вкладкой: на время команды вкладка сайта становится скрытой. Стенду это не мешает, а ленты коротких
+/// видео (Instagram, TikTok) в скрытой вкладке ставят ролик на паузу, и опрос видит уже не то, что
+/// человек. Человек жмёт кнопку попапа, вкладка сайта при этом остаётся видимой. Здесь тот же скрипт
+/// робота и тот же строгий разбор, только доставка через служебную страницу, которую открыл
+/// [`super::BrowserUnderTest::open_service_page`] (она не забирает активность у вкладки сайта).
+pub fn hand_off_from_service_page(
+    browser: &mut dyn super::BrowserUnderTest,
+    page_url_prefix: &str,
+) -> Result<HandOffOutcome, super::BrowserError> {
+    // Префикс адреса уходит в скрипт литералом JSON: так кавычки и обратные косые в адресе не ломают JS.
+    let prefix_literal = serde_json::to_string(page_url_prefix).map_err(|error| {
+        super::BrowserError::protocol("service page", format!("prefix literal: {error}"))
+    })?;
+    let script = format!("async (api) => ({ROBOT_FUNCTION})(api, {prefix_literal}, {{}})");
+    let raw = browser.run_in_service_page(&script)?;
+    Ok(parse_robot_output(&raw, page_url_prefix)?)
+}
+
 /// `started` называет окно плеера одним из двух значений договора экстеншена.
 fn names_player_window(reply: &serde_json::Value) -> bool {
     matches!(

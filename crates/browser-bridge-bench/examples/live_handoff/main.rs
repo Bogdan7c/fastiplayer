@@ -57,6 +57,11 @@
 //! (15c) — перед передачей опросить фреймы вкладки по одному с замером времени (`frame_survey_probe.rs`);
 //! `--scroll-to <селектор>` — до клика прокрутить страницу к элементу, как человек колесом (`page_scroll.rs`).
 //!
+//! Ленты (16b2): `--candidate-probe each-attempt` — перед каждой попыткой передачи напечатать признаки
+//! кандидатов опроса вкладки и вердикты фона (`candidate_probe.rs`). `--hand-off service-page` — робот шлёт
+//! команду передачи из уже открытой служебной страницы, не открывая новую вкладку: вкладка сайта остаётся
+//! видимой, как при нажатии кнопки попапа (обычный `robot` на время команды её скрывает).
+//!
 //! Сайты, где видео стартует только по клику (Ashdi, Tortuga, 13b2): `--click-at <x>,<y>` — клик настоящей
 //! мышью стенда по точке невидимого экрана после паузы `--wait`, до передачи. `--screenshots <каталог>` —
 //! снимки невидимого экрана (до клика, после клика и каждые 15 с после передачи) копируются в каталог:
@@ -76,6 +81,7 @@
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
+mod candidate_probe;
 mod frame_survey_probe;
 mod live_end_probe;
 mod page_scroll;
@@ -91,7 +97,7 @@ use std::time::{Duration, Instant};
 
 use browser_bridge_bench::browsers::{
     BrowserKind, BrowserUnderTest, ExtensionSource, HandOffOutcome, LaunchOptions, TabHandle,
-    WindowPrivacy, launch,
+    WindowPrivacy, hand_off_from_service_page, launch,
 };
 use browser_bridge_bench::desktop_input::{DesktopInput, Point};
 use browser_bridge_bench::environment::{
@@ -102,6 +108,7 @@ use browser_bridge_bench::media::ensure_media;
 use browser_bridge_bench::player_control::PlayerControl;
 use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
+use candidate_probe::report_candidates;
 use frame_survey_probe::report_frame_survey;
 use live_end_probe::{report_live_end, tab_pattern_of};
 use page_scroll::scroll_page_to;
@@ -111,7 +118,8 @@ use playerjs_page::{
 };
 use tab_hiding::{TabHiding, parse_after_seconds};
 use youtube_page::{
-    YoutubeQualityStep, ask_youtube_quality, parse_youtube_quality, report_youtube_page,
+    YoutubeQualityStep, ask_youtube_quality, ensure_service_page, parse_youtube_quality,
+    report_youtube_page,
 };
 
 /// Строки журнала плеера, которые интересны человеку.
@@ -173,8 +181,11 @@ enum Target {
 /// Кто отдаёт видео в плеер.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HandOff {
-    /// Робот раз в секунду зовёт команду передачи.
+    /// Робот раз в секунду зовёт команду передачи из новой вкладки служебной страницы.
     Robot,
+    /// Робот раз в секунду зовёт команду передачи из уже открытой служебной страницы (16b2):
+    /// вкладка сайта не скрывается, ленты не ставят ролик на паузу.
+    RobotFromServicePage,
     /// Человек жмёт значок экстеншена, робот только показывает журнал.
     Person,
 }
@@ -238,6 +249,8 @@ struct Arguments {
     playerjs_pick: Option<PlayerJsPick>,
     /// Перед передачей опросить фреймы вкладки по одному с замером времени (`--frame-survey-probe once`, 15c).
     frame_survey_probe: bool,
+    /// Перед каждой попыткой передачи печатать кандидатов опроса и вердикты фона (`--candidate-probe each-attempt`, 16b2).
+    candidate_probe: bool,
     /// Перед кликом прокрутить страницу к элементу по селектору (`--scroll-to`, 15c), `None` — не крутить.
     scroll_to: Option<String>,
     /// Через сколько после передачи скрыть вкладку страницы (`--hide-tab-after`, 16a), `None` — не скрывать.
@@ -318,6 +331,7 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut youtube_report_every = None;
     let mut live_end_probe_every = None;
     let mut frame_survey_probe = false;
+    let mut candidate_probe = false;
     let mut scroll_to = None;
     let mut hide_tab_after = None;
     let mut pause_play_after = None;
@@ -335,6 +349,7 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--press", "none") => press = Press::Nobody,
             ("--hand-off", "robot") => hand_off = HandOff::Robot,
             ("--hand-off", "person") => hand_off = HandOff::Person,
+            ("--hand-off", "service-page") => hand_off = HandOff::RobotFromServicePage,
             ("--url", _) => target = Some(Target::Url(value)),
             ("--stand-page", _) => stand_pages.push(value),
             ("--autoplay", "allowed") => autoplay_without_gesture = true,
@@ -389,6 +404,7 @@ fn parse_arguments() -> Result<Arguments, String> {
                 playerjs_report_every = Some(Duration::from_secs(every.max(1)));
             }
             ("--frame-survey-probe", "once") => frame_survey_probe = true,
+            ("--candidate-probe", "each-attempt") => candidate_probe = true,
             ("--scroll-to", _) => scroll_to = Some(value),
             ("--playerjs-pick", _) => playerjs_pick = Some(parse_playerjs_pick(&value)?),
             ("--next-after", _) => next_after.push(parse_after_seconds(&name, &value)?),
@@ -435,6 +451,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         youtube_report_every,
         live_end_probe_every,
         frame_survey_probe,
+        candidate_probe,
         scroll_to,
         hide_tab_after,
         pause_play_after,
@@ -504,15 +521,59 @@ fn stand_page_url(site: &StandSite, page: &str) -> String {
     )
 }
 
+/// Откуда робот шлёт команду передачи.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandRoute {
+    /// Новая вкладка служебной страницы на время команды (вкладка сайта скрыта).
+    NewServiceTab,
+    /// Уже открытая служебная страница (вкладка сайта остаётся видимой, 16b2).
+    OpenServicePage,
+}
+
+/// Что печатать перед каждой попыткой передачи.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttemptProbe {
+    /// Ничего не печатать.
+    Silent,
+    /// Кандидаты опроса и вердикты фона (`candidate_probe.rs`).
+    Candidates,
+}
+
 /// Зовёт передачу, пока она не состоится или не выйдет время. Возвращает, состоялась ли она.
 fn hand_off_by_robot(
     browser: &mut dyn BrowserUnderTest,
     tab: &TabHandle,
     url: &str,
     deadline: Instant,
+    route: CommandRoute,
+    probe: AttemptProbe,
+    service_page_open: &mut bool,
 ) -> bool {
+    let mut attempt = 0_u32;
     while Instant::now() < deadline {
-        match browser.hand_off_tab(tab, url) {
+        attempt += 1;
+        if probe == AttemptProbe::Candidates {
+            report_candidates(
+                browser,
+                tab,
+                service_page_open,
+                url,
+                &format!("attempt {attempt}"),
+            );
+        }
+        let outcome = match route {
+            CommandRoute::NewServiceTab => browser.hand_off_tab(tab, url),
+            CommandRoute::OpenServicePage => {
+                if ensure_service_page(browser, tab, service_page_open, "hand-off") {
+                    hand_off_from_service_page(browser, url)
+                } else {
+                    // Строку о сбое уже напечатал `ensure_service_page`; ждём следующую попытку.
+                    sleep(HAND_OFF_RETRY);
+                    continue;
+                }
+            }
+        };
+        match outcome {
             Ok(HandOffOutcome::Started) => return true,
             Ok(other) => println!("hand-off: {other:?}"),
             Err(error) => println!("hand-off failed: {error}"),
@@ -686,8 +747,30 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         report_frame_survey(browser.as_mut(), &tab, &mut service_page_open);
     }
     let deadline = Instant::now() + Duration::from_secs(arguments.seconds);
+    let attempt_probe = if arguments.candidate_probe {
+        AttemptProbe::Candidates
+    } else {
+        AttemptProbe::Silent
+    };
     let started = match arguments.hand_off {
-        HandOff::Robot => hand_off_by_robot(browser.as_mut(), &tab, url, deadline),
+        HandOff::Robot => hand_off_by_robot(
+            browser.as_mut(),
+            &tab,
+            url,
+            deadline,
+            CommandRoute::NewServiceTab,
+            attempt_probe,
+            &mut service_page_open,
+        ),
+        HandOff::RobotFromServicePage => hand_off_by_robot(
+            browser.as_mut(),
+            &tab,
+            url,
+            deadline,
+            CommandRoute::OpenServicePage,
+            attempt_probe,
+            &mut service_page_open,
+        ),
         HandOff::Person => true,
     };
     println!("hand-off started: {started}");
