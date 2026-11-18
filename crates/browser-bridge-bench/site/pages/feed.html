@@ -10,6 +10,13 @@ body{margin:0;background:#111;color:#ccc;font:14px system-ui,sans-serif}
 .reel{height:100vh;scroll-snap-align:start;position:relative;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #333;box-sizing:border-box}
 .reel-caption{position:absolute;top:8px;left:12px}
 .reel-video{height:70vh;max-width:90vw;background:#000}
+/* Раскладка «блок ленты» (форма halfway, живой Instagram): документ неподвижен, листается #feed. Секция ниже
+   окна (90vh) с зазором, прилипание к её середине: от соседних роликов сверху и снизу остаётся полоска. */
+html.inner-scroller{scroll-snap-type:none;height:100%;overflow:hidden}
+html.inner-scroller body{height:100%;overflow:hidden}
+html.inner-scroller #feed{height:100vh;overflow-y:auto;scroll-snap-type:y mandatory}
+html.inner-scroller .reel{height:90vh;margin:3vh 0;scroll-snap-align:center;border-bottom:0}
+html.inner-scroller .reel-video{height:100%}
 </style>
 </head>
 <body>
@@ -22,10 +29,11 @@ import { loadCatalog } from '../lib/bench-player.js';
 import { requireMimeSupport } from '../lib/scenario-kit.js';
 import { installEntryProbe } from '../lib/entry-probe.js';
 import { REEL_COUNT, ReelFeed, ReelSource, feedState, logWheelEvents, serveRobotCommands } from '../lib/feed-kit.js';
-import { createShape, SHAPES } from '../lib/feed-shapes.js';
+import { createShape, layoutOf, LAYOUT_INNER_SCROLLER, SHAPES } from '../lib/feed-shapes.js';
 
 // Лента коротких видео (сессия 16b2): три ролика в рост окна, листаются колесом. Форма ленты — параметр
-// адреса `shape=many|moved|pool` (Instagram / YouTube Shorts / TikTok, подробности в lib/feed-shapes.js).
+// адреса `shape=many|moved|pool|halfway` (Instagram по разведке 16b0 / YouTube Shorts / TikTok / Instagram по
+// живому прогону 18 ноября без входа, подробности в lib/feed-shapes.js).
 //  * Обычный режим (без робота): страница сама листает ленту до конца и проверяет свою форму;
 //  * режим передачи: ролик 1 играет, страница ждёт робота. Робот отдаёт вкладку и листает НАСТОЯЩИМ
 //    колесом мыши; всё, что сайт делает при прокрутке, происходит само. Судит Rust.
@@ -40,8 +48,11 @@ await runScenario('feed', async (ctx) => {
     requireMimeSupport(catalog, [{ assetId: `reel-${number}`, trackId: catalog.assets[`reel-${number}`].tracks[0].id }]);
   }
   const source = new ReelSource(ctx, catalog);
-  const feed = new ReelFeed(ctx, { waitUntilOldIsGone: true });
-  feed.mount(document.getElementById('feed'));
+  const feedBlock = document.getElementById('feed');
+  const innerScroller = layoutOf(shape) === LAYOUT_INNER_SCROLLER;
+  if (innerScroller) document.documentElement.classList.add('inner-scroller');
+  const feed = new ReelFeed(ctx, { waitUntilOldIsGone: true, scroller: innerScroller ? feedBlock : null });
+  feed.mount(feedBlock);
   const behaviour = createShape(shape, ctx, source, feed);
   feed.waitUntilOldIsGone = behaviour.waitUntilOldIsGone;
   const wheel = logWheelEvents(ctx);

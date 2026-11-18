@@ -16,7 +16,7 @@ import { callOriginal, readOriginal, writeOriginal } from "./shadow/originals.ts
 import { captureElementOriginals, installShadowOverrides, startHeldShadow, startShadow, type ShadowEnvironment } from "./shadow/index.ts";
 
 /** Окружение тени без ответа реестра: его подставляет контроллер при каждом запуске тени. */
-export type ShadowEnvironmentBase = Omit<ShadowEnvironment, "isMediaSourceObjectUrl" | "visibleAreaOf">;
+export type ShadowEnvironmentBase = Omit<ShadowEnvironment, "isMediaSourceObjectUrl" | "visibleShareOf">;
 
 /** Окно, против которого собирается тень (в тестах — фейк с тем же составом). */
 export type ShadowWindow = Window & { readonly performance: { now(): number } };
@@ -59,7 +59,7 @@ function captureTimeoutScheduler(win: ShadowWindow): TimeoutScheduler {
 export function shadowStarterFor(environment: ShadowEnvironmentBase | null): ShadowStarter {
   return (element, emit, options) => {
     if (environment === null) throw new Error("shadow environment is unavailable in this document");
-    return startShadow(element, emit, { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl, visibleAreaOf: options.visibleAreaOf }, options.source);
+    return startShadow(element, emit, { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl, visibleShareOf: options.visibleShareOf }, options.source);
   };
 }
 
@@ -70,7 +70,7 @@ export function heldShadowStarterFor(environment: ShadowEnvironmentBase | null):
     return startHeldShadow(
       element,
       emit,
-      { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl, visibleAreaOf: options.visibleAreaOf },
+      { ...environment, isMediaSourceObjectUrl: options.isMediaSourceObjectUrl, visibleShareOf: options.visibleShareOf },
       options.source,
       options.initialPlayback ?? "as_real_element",
     );

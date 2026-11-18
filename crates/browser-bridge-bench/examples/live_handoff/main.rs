@@ -78,10 +78,15 @@
 //! плеер сайта сделал с `MediaSource` и `<video>` во всех фреймах вкладки (`live_end_probe.rs`): так видно,
 //! как сайт кончает эфир — меняет длительность, зовёт `endOfStream`, ставит новый источник или снимает его.
 //!
+//! Листание ленты (16b2): `--wheel-at <x>,<y> --wheel-after <с>` (второе можно повторять) — через столько
+//! секунд после передачи настоящее колесо невидимого экрана крутится вниз в этой точке (`feed_wheel.rs`);
+//! `--wheel-notches <n>` — щелчков в рывке. Только `--display virtual`.
+//!
 //! Экстеншен должен быть собран (`npm run build` в `extensions/browser`), плеер берётся из
 //! `target/release`. Адреса и журнал остаются только в выводе: в отчёты их не копировать.
 
 mod candidate_probe;
+mod feed_wheel;
 mod frame_survey_probe;
 mod live_end_probe;
 mod page_scroll;
@@ -109,6 +114,7 @@ use browser_bridge_bench::player_control::PlayerControl;
 use browser_bridge_bench::screen_capture::ScreenCapture;
 use browser_bridge_bench::site::{StandSite, StandSiteConfig};
 use candidate_probe::report_candidates;
+use feed_wheel::{FeedWheel, FeedWheelRequest};
 use frame_survey_probe::report_frame_survey;
 use live_end_probe::{report_live_end, tab_pattern_of};
 use page_scroll::scroll_page_to;
@@ -257,6 +263,8 @@ struct Arguments {
     hide_tab_after: Option<Duration>,
     /// Пауза и play в окне через столько секунд после передачи (`--pause-play-after`, 16d1).
     pause_play_after: Option<Duration>,
+    /// Рывки настоящего колеса над лентой после передачи (`--wheel-at`, `--wheel-after`, 16b2).
+    feed_wheel: Option<FeedWheelRequest>,
 }
 
 /// Перемотка из окна плеера (13c): за буфер страницы, чтобы её ABR сразу качал новое качество.
@@ -272,11 +280,11 @@ struct SeekPlan {
 fn parse_point(value: &str) -> Result<Point, String> {
     let (x, y) = value
         .split_once(',')
-        .ok_or_else(|| format!("--click-at expects x,y, got {value}"))?;
+        .ok_or_else(|| format!("a screen point is x,y, got {value}"))?;
     let coordinate = |text: &str| {
         text.trim()
             .parse::<u32>()
-            .map_err(|error| format!("--click-at {value}: {error}"))
+            .map_err(|error| format!("screen point {value}: {error}"))
     };
     Ok(Point::new(coordinate(x)?, coordinate(y)?))
 }
@@ -335,6 +343,9 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut scroll_to = None;
     let mut hide_tab_after = None;
     let mut pause_play_after = None;
+    let mut wheel_at = None;
+    let mut wheel_after = Vec::new();
+    let mut wheel_notches = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments
@@ -381,6 +392,15 @@ fn parse_arguments() -> Result<Arguments, String> {
             ("--hide-tab-after", _) => hide_tab_after = Some(parse_after_seconds(&name, &value)?),
             ("--pause-play-after", _) => {
                 pause_play_after = Some(parse_after_seconds(&name, &value)?)
+            }
+            ("--wheel-at", _) => wheel_at = Some(parse_point(&value)?),
+            ("--wheel-after", _) => wheel_after.push(parse_after_seconds(&name, &value)?),
+            ("--wheel-notches", _) => {
+                wheel_notches = Some(
+                    value
+                        .parse::<u32>()
+                        .map_err(|error| format!("--wheel-notches: {error}"))?,
+                );
             }
             ("--youtube-quality", _) => youtube_qualities.push(parse_youtube_quality(&value)?),
             // Форму проверяет сам плеер при старте: неверная строка — его ошибка в журнале, а не тихий пропуск.
@@ -455,6 +475,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         scroll_to,
         hide_tab_after,
         pause_play_after,
+        feed_wheel: FeedWheelRequest::from_options(wheel_at, wheel_after, wheel_notches)?,
     })
 }
 
@@ -598,6 +619,10 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             .collect(),
         (Target::StandPages(_), None) => return Err("the stand site did not start".to_owned()),
     };
+    // Мышь, колесо и снимки — только на большом невидимом экране с правом на ввод.
+    let needs_pointer_stand = arguments.click_at.is_some()
+        || arguments.screenshots.is_some()
+        || arguments.feed_wheel.is_some();
     let environment = BenchEnvironment::create(EnvironmentOptions {
         display: arguments.display,
         player_bin_dir: repository.join("target/release"),
@@ -614,7 +639,7 @@ fn run(arguments: &Arguments) -> Result<(), String> {
             .unwrap_or_else(|| "info".to_owned()),
         work_root: std::env::temp_dir(),
         // Мышь и снимки экрана стенда — только когда их попросили: обычный прогон их не трогает.
-        desktop: if arguments.click_at.is_some() || arguments.screenshots.is_some() {
+        desktop: if needs_pointer_stand {
             DesktopSetup::pointer_stand()
         } else {
             DesktopSetup::default()
@@ -625,10 +650,10 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         },
     })
     .map_err(|error| error.to_string())?;
-    if (arguments.click_at.is_some() || arguments.screenshots.is_some())
-        && arguments.display != DisplayTarget::Virtual
-    {
-        return Err("--click-at and --screenshots work only with --display virtual".to_owned());
+    if needs_pointer_stand && arguments.display != DisplayTarget::Virtual {
+        return Err(
+            "--click-at, --wheel-at and --screenshots work only with --display virtual".to_owned(),
+        );
     }
     let screenshots = match &arguments.screenshots {
         Some(destination) => {
@@ -813,6 +838,17 @@ fn run(arguments: &Arguments) -> Result<(), String> {
     let mut next_screenshot = Instant::now() + SCREENSHOT_EVERY;
     let mut tab_hiding = TabHiding::planned(handed_off_at, arguments.hide_tab_after);
     let mut pause_play = PausePlay::planned(handed_off_at, arguments.pause_play_after);
+    // Колесо ленты (16b2): своя связь с невидимым экраном на весь прогон.
+    let mut feed_wheel = match &arguments.feed_wheel {
+        Some(request) => {
+            let endpoint = environment
+                .desktop_endpoint()
+                .map_err(|error| error.to_string())?;
+            let input = DesktopInput::connect(&endpoint).map_err(|error| error.to_string())?;
+            Some((FeedWheel::planned(handed_off_at, request), input))
+        }
+        None => None,
+    };
     while started && Instant::now() < deadline {
         if let Some(shots) = &screenshots
             && Instant::now() >= next_screenshot
@@ -822,6 +858,9 @@ fn run(arguments: &Arguments) -> Result<(), String> {
         }
         tab_hiding.poll(browser.as_mut(), Instant::now());
         pause_play.poll(&control, Instant::now());
+        if let Some((wheel, input)) = &mut feed_wheel {
+            wheel.poll(input, Instant::now(), handed_off_at);
+        }
         if !tab_closed && tab_return_at.is_some_and(|at| Instant::now() >= at) {
             tab_closed = true;
             close_tab_and_ask_back(browser.as_mut(), &tab, &control);

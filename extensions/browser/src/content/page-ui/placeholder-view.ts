@@ -3,17 +3,18 @@
 // общего слоя (`ui-layer.ts`). Только вид и положение; когда показывать и что делать по нажатию — решает
 // `placeholder-controller.ts`.
 import type { PageUiRect } from "../../shared/entry-contract.ts";
-import { applyImportantStyles, type UiDocument, type UiElement, type UiEvent } from "./ui-dom.ts";
+import { applyImportantStyles, type UiDocument, type UiElement, type UiEvent, type UiWheelEvent } from "./ui-dom.ts";
 import type { UiLayer } from "./ui-layer.ts";
+import { passWheelToPage } from "./wheel-pass-through.ts";
 
 export const PLACEHOLDER_TEXT = "Playing in Fastiplayer";
 export const RETURN_BUTTON_LABEL = "Return";
 
 /**
  * События, которые панель гасит у себя: клик по заглушке не должен дойти до страницы, иначе её плеер решил
- * бы, что нажали на видео (пауза, полноэкранный режим, реклама). `wheel` НЕ гасится: колесо над заглушкой
- * обязано прокручивать страницу. Слушатели захвата страницы на `window`/`document` браузер зовёт раньше нас —
- * их не остановить, но цель у них — наш хост, а не видео.
+ * бы, что нажали на видео (пауза, полноэкранный режим, реклама). `wheel` здесь нет: колесо над заглушкой
+ * обязано листать страницу, им занимается `wheel-pass-through.ts`. Слушатели захвата страницы на
+ * `window`/`document` браузер зовёт раньше нас — их не остановить, но цель у них — наш хост, а не видео.
  */
 export const SWALLOWED_EVENT_TYPES = ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "auxclick", "dblclick", "contextmenu", "touchstart", "touchend"] as const;
 
@@ -113,6 +114,14 @@ export function createPlaceholderView(document: UiDocument, layer: UiLayer): Pla
       event.stopImmediatePropagation();
     };
     for (const type of SWALLOWED_EVENT_TYPES) createdPanel.addEventListener(type, swallow);
+    // Колесо над заглушкой листает страницу под ней, как листало бы без заглушки: и документ, и блок ленты
+    // внутри неподвижного документа (Instagram). Слушатель не пассивный: прокрутив блок сам, он гасит родное
+    // действие колеса. Событие вида `wheel` — всегда `WheelEvent`, отсюда приведение типа.
+    createdPanel.addEventListener(
+      "wheel",
+      (event) => void passWheelToPage(event as UiWheelEvent, (clientX, clientY) => document.pageScrollBlockUnder(clientX, clientY, layer.host())),
+      { passive: false },
+    );
     return { panel: createdPanel, text, returnButton: button };
   }
 

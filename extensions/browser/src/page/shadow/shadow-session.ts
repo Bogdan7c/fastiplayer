@@ -231,7 +231,7 @@ export class ShadowController implements ShadowBehavior {
           this.#timeline.onClock(this.#timeSource.pageTickOf(command), nowMs);
           this.#follower.onClockTick(nowMs);
           // Тик — вторая точка проверки ухода с экрана: страница могла сначала поставить паузу, а потом унести ролик.
-          this.#checkScreenExit();
+          this.#checkScreenExit("clock_tick");
           // Пульс — последним: если отправка оборвёт передачу, после него тень уже ничего не делает.
           if (this.#pulse.onClockTick(nowMs)) this.#emit({ kind: "shadow_alive" });
           return;
@@ -375,23 +375,25 @@ export class ShadowController implements ShadowBehavior {
     this.#attempt("page pause", () => {
       if (this.#timeline.pause(this.#env.now())) this.#emit({ kind: "page_playback", request: { kind: "pause" } });
     });
-    // Сразу после паузы: Instagram ставит на паузу ролик, который уже за краем окна, и через 0,1–0,4 с запускает
-    // следующий. Фону нужно успеть взвести сторож, тиков часов ждать нельзя.
-    this.#checkScreenExit();
+    // Сразу после паузы: Instagram ставит ролик на паузу посреди прокрутки и той же задачей (или через
+    // десятки миллисекунд) запускает следующий. Фону нужно успеть взвести сторож, тиков часов ждать нельзя.
+    this.#checkScreenExit("page_pause_call");
   }
 
   /**
-   * Лента листается (16b2, решения 354, 359): ролик ушёл с экрана, и страница его остановила — донести фону
-   * один раз на уход. Площадь читается только на паузе: играющий ролик вне экрана переезд не открывает.
-   * Сбой чтения площади не мешает остальной работе тика: проверка в своём `#attempt`.
+   * Лента листается (16b2, решения 354, 359): ролик уходит с экрана, и страница его остановила — донести фону
+   * один раз на уход. Доля на экране читается только на паузе: играющий ролик вне экрана переезд не открывает.
+   * Сбой чтения доли не мешает остальной работе тика: проверка в своём `#attempt`. `moment` — кто спрашивает:
+   * у вызова `pause()` страницы и у тика часов разное «ушёл с экрана» (screen-exit-watch.ts).
    */
-  #checkScreenExit(): void {
+  #checkScreenExit(moment: "page_pause_call" | "clock_tick"): void {
     this.#attempt("screen exit", () => {
       if (!this.#timeline.paused) {
         this.#screenExit.notePlaying();
         return;
       }
-      const step = this.#screenExit.notePaused(this.#env.visibleAreaOf(this.#element));
+      const visibleShare = this.#env.visibleShareOf(this.#element);
+      const step = moment === "page_pause_call" ? this.#screenExit.notePausedByPage(visibleShare) : this.#screenExit.noteStoppedOnTick(visibleShare);
       if (step === "report_left_screen") this.#emit({ kind: "video_left_screen" });
     });
   }

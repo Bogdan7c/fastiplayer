@@ -46,6 +46,31 @@ const PREVIEW_PLAYING_MARK: &str = "preview-playing";
 /// Пауза между рывками колеса к комментариям: страница успевает показать превью и записать это.
 const COMMENTS_BURST_PAUSE: Duration = Duration::from_secs(2);
 
+/// Где на странице стоит курсор, когда робот крутит колесо.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum WheelPlace {
+    /// В центре окна страницы: над роликом, то есть над заглушкой «Playing in Fastiplayer».
+    OverReel,
+    /// У левого края окна страницы: в ленте, но мимо ролика и заглушки.
+    BesideReel,
+}
+
+/// Доля ширины окна страницы, где курсор стоит «мимо ролика»: ролик ленты не шире 90 % окна и стоит по
+/// центру, поэтому в крайних 5 % его нет.
+const BESIDE_REEL_SHARE_X: f64 = 0.025;
+/// Доля ширины окна страницы для курсора «над роликом»: центр.
+const OVER_REEL_SHARE_X: f64 = 0.5;
+
+impl WheelPlace {
+    /// Доля ширины окна страницы, в которой крутится колесо.
+    fn share_x(self) -> f64 {
+        match self {
+            Self::OverReel => OVER_REEL_SHARE_X,
+            Self::BesideReel => BESIDE_REEL_SHARE_X,
+        }
+    }
+}
+
 /// Строки журнала страницы с `needle`.
 fn page_lines(hand: &ReturnHand<'_, '_>, needle: &str) -> Vec<String> {
     hand.run_ref().page_log_lines(needle)
@@ -78,15 +103,20 @@ pub(super) fn shown_stream_widths(
         .collect())
 }
 
-/// Один рывок настоящего колеса в центре видимой части страницы. Перед каждым рывком браузер выводится
-/// вперёд и страница заново калибруется: окно плеера после переезда могло снова оказаться сверху.
-fn wheel_burst(hand: &ReturnHand<'_, '_>, run: &RunId) -> Result<(), ScenarioError> {
+/// Один рывок настоящего колеса на середине высоты видимой части страницы, по ширине — где велит
+/// `wheel`. Перед каждым рывком браузер выводится вперёд и страница заново калибруется: окно плеера
+/// после переезда могло снова оказаться сверху.
+fn wheel_burst(
+    hand: &ReturnHand<'_, '_>,
+    run: &RunId,
+    wheel: WheelPlace,
+) -> Result<(), ScenarioError> {
     let place = hand.locate(run)?;
     let viewport = place.target_rect("viewport").ok_or_else(|| {
         ScenarioError::EntryNotActivated("the page reported no viewport to scroll in".into())
     })?;
-    let centre = place.screen_point_in(viewport, 0.5, 0.5);
-    hand.scroll_wheel(centre, WheelDirection::Down, NOTCHES_PER_BURST)
+    let point = place.screen_point_in(viewport, wheel.share_x(), 0.5);
+    hand.scroll_wheel(point, WheelDirection::Down, NOTCHES_PER_BURST)
 }
 
 /// Рост кадров между двумя сводками, начиная с НОВЫХ строк журнала (старые сводки не в счёт).
@@ -121,6 +151,7 @@ fn wait_for_new_generation(hand: &mut ReturnHand<'_, '_>, before: usize) -> Resu
 pub(super) fn scroll_to_reel(
     hand: &mut ReturnHand<'_, '_>,
     target_reel: u32,
+    wheel: WheelPlace,
 ) -> Result<ScrollRecord, ScenarioError> {
     let run = hand.run_ref().run.clone();
     let started_mark = format!("reel-started n={target_reel}");
@@ -128,7 +159,7 @@ pub(super) fn scroll_to_reel(
     let generations_before = loaded_generations(hand)?.len();
     let mut page_started_next_reel = Err("no wheel burst was made".to_owned());
     for burst in 1..=MAX_BURSTS {
-        wheel_burst(hand, &run)?;
+        wheel_burst(hand, &run, wheel)?;
         if page_lines(hand, TRUSTED_WHEEL_MARK).len() == wheel_before {
             // Страница могла записать событие с опозданием: даём ей время, прежде чем сказать «не дошло».
             std::thread::sleep(WHEEL_REPORT_GRACE);
@@ -222,7 +253,7 @@ pub(super) fn scroll_to_comments(
     let run = hand.run_ref().run.clone();
     let mut stimulus = Err("no wheel burst was made".to_owned());
     for burst in 1..=MAX_BURSTS {
-        wheel_burst(hand, &run)?;
+        wheel_burst(hand, &run, WheelPlace::OverReel)?;
         if !page_lines(hand, MAIN_PAUSED_ON_LEAVING_MARK).is_empty() {
             // Страница сама остановила главный ролик: это уже не случай «листаем к комментариям».
             stimulus = Err("the page paused the main video when it left the screen".to_owned());

@@ -3,6 +3,7 @@
 // в node:test без браузера. Настоящий документ подключается одним переходником (`real-ui-document.ts`).
 
 import type { PageUiRect } from "../../shared/entry-contract.ts";
+import type { PageScrollBlock } from "./wheel-pass-through.ts";
 
 /** Событие, как его видит наш код: только то, что нам нужно прочитать или остановить. */
 export interface UiEvent {
@@ -14,7 +15,21 @@ export interface UiEvent {
   preventDefault(): void;
 }
 
+/** Событие колеса мыши: где курсор и на сколько крутят (единицы — `deltaMode` стандарта DOM). */
+export interface UiWheelEvent extends UiEvent {
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly deltaX: number;
+  readonly deltaY: number;
+  readonly deltaMode: number;
+}
+
 export type UiEventListener = (event: UiEvent) => void;
+
+/** Настройки слушателя: `passive: false` — слушатель вправе погасить родное действие (`preventDefault`). */
+export interface UiListenerOptions {
+  readonly passive: boolean;
+}
 
 /** Элемент слоя страницы. */
 export interface UiElement {
@@ -26,7 +41,7 @@ export interface UiElement {
   append(...children: UiElement[]): void;
   replaceChildren(...children: UiElement[]): void;
   remove(): void;
-  addEventListener(type: string, listener: UiEventListener): void;
+  addEventListener(type: string, listener: UiEventListener, options?: UiListenerOptions): void;
   removeEventListener(type: string, listener: UiEventListener): void;
   getBoundingClientRect(): PageUiRect;
 }
@@ -57,6 +72,11 @@ export interface UiDocument {
   createElement(tagName: string): UiElement;
   /** Маленькая иконка «играть» (инлайновый SVG: `web_accessible_resources` не нужен). */
   createPlayIcon(): UiElement;
+  /**
+   * Блок СТРАНИЦЫ под точкой окна, если убрать наш слой `layerHost` (колесо над заглушкой, 16b2); `null` —
+   * под точкой нет ничего, кроме нашего слоя. Откуда колесо поедет дальше, решает `wheel-pass-through.ts`.
+   */
+  pageScrollBlockUnder(clientX: number, clientY: number, layerHost: UiHostElement | null): PageScrollBlock | null;
 }
 
 /** Задать набор инлайновых свойств с `!important`: стили сайта (`div { ... !important }`) их не переопределят. */

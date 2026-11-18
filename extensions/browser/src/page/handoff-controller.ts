@@ -108,6 +108,8 @@ export interface NextVideoHolds {
   releaseElement(element: object): void;
   /** Передача элемента кончилась (режим 2, 12a): повторный запуск того же элемента засчитается после нового ввода. */
   noteHandoffEnded(element: object): void;
+  /** Переданный ролик уходит с экрана, страница его остановила (16b2): прежние отказы переезда больше не в счёт. */
+  noteHandedOffVideoLeftScreen(): void;
 }
 
 /** Идущая передача одного элемента. */
@@ -339,7 +341,7 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     } else {
       active.session = this.#environment.startShadow(element as HTMLMediaElement, emit, {
         isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
-        visibleAreaOf: (video) => this.#environment.candidates.visibleAreaOf(video),
+        visibleShareOf: (video) => this.#environment.candidates.visibleShareOf(video),
         source: shadowSource,
       });
     }
@@ -626,6 +628,8 @@ export class HandoffController implements MseListener, WorkerMediaSourceListener
     if (outgoing.kind === "handoff_ended") this.#tap((tap) => tap.handoffEnded(outgoing.cause));
     // До отправки: тень после `handoff_ended` не шлёт ничего, и её запоздавшие события не наши.
     if (endsHandoff) this.#release();
+    // Лента листнулась: сторож узнаёт об этом здесь же, раньше фона, — его отказы до этого мига устарели.
+    if (event.kind === "video_left_screen") this.#environment.nextVideo.noteHandedOffVideoLeftScreen();
     try {
       this.#port?.send(outgoing);
     } catch {

@@ -1,5 +1,6 @@
 // Переходник: настоящий `document` -> узкий `UiDocument`. Единственное место слоя страницы, знающее про
 // браузерный DOM; остальное тестируется фейками.
+import { pageScrollBlockUnder, scrollBlockPageOf } from "./real-page-scroll-block.ts";
 import type { UiDocument, UiDocumentRoot, UiElement, UiHostElement } from "./ui-dom.ts";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -24,5 +25,6 @@ export function createRealUiDocument(document: Document): UiDocument {
     createHost: (tagName) => document.createElement(tagName) as unknown as UiHostElement,
     createElement: (tagName) => document.createElement(tagName) as unknown as UiElement,
     createPlayIcon: () => createPlayIcon(document),
+    pageScrollBlockUnder: (clientX, clientY, layerHost) => pageScrollBlockUnder(scrollBlockPageOf(document), clientX, clientY, layerHost),
   };
 }

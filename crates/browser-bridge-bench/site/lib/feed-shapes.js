@@ -1,4 +1,4 @@
-// Три формы ленты коротких видео, снятые с живых сайтов в Firefox (сессия 16b2). Страница сама листает
+// Формы ленты коротких видео, снятые с живых сайтов в Firefox (сессия 16b2). Страница сама листает
 // ролики по прокрутке, как настоящий сайт: следит за секциями (`ReelFeed`), а форма решает, что делать с
 // элементами `<video>`, когда лента ушла на следующий ролик.
 //
@@ -9,6 +9,13 @@
 //    следующего ролика (убрать и вставить в одной задаче) и даёт ему новый MediaSource. Паузы нет.
 //  * `pool`  (TikTok): два `<video>` по очереди. Следующий загружен заранее; по прокрутке прежний убирается
 //    из документа и ставится на паузу, заранее загруженный показывается и играет (со звуком). Адрес тот же.
+//  * `halfway` (Instagram, живой прогон 18 ноября 2026 БЕЗ ВХОДА, с мостом и наблюдателем в главном мире;
+//    форма `many` снята раньше, со входом и без моста, — чем из этого вызвана разница, не установлено): лента
+//    листается внутри блока (`overflow-y:auto`, `scroll-snap-type:y mandatory`), документ неподвижен. Ролик
+//    ниже окна, поэтому соседние ролики всегда выглядывают полоской сверху и снизу. Страница переключает
+//    ролик НА ПОЛПУТИ прокрутки одной задачей: `play()` нового, через 1-2 мс `pause()` прежнего, который в
+//    этот миг ещё виден на 12-53 % своей площади, затем включает новому звук. После прилипания от прежнего
+//    ролика остаётся видимая полоска: «видимая площадь 0» у него наступает только на следующей прокрутке.
 
 import { REEL_COUNT, announceReelStarted, randomDelayMs, sleep } from './feed-kit.js';
 
@@ -18,7 +25,16 @@ export const REMOVE_AFTER_PAUSE_MS = 6000;
 const NEXT_PLAY_DELAY_RANGE_MS = [80, 400];
 
 /** Имена форм из параметра адреса `shape`. */
-export const SHAPES = ['many', 'moved', 'pool'];
+export const SHAPES = ['many', 'moved', 'pool', 'halfway'];
+
+/** Раскладки ленты: листается сам документ или блок ленты внутри неподвижного документа. */
+export const LAYOUT_DOCUMENT = 'document';
+export const LAYOUT_INNER_SCROLLER = 'inner-scroller';
+
+/** Раскладка формы: её выбирает страница ДО создания ленты (от неё зависят стили и за чем следить). */
+export function layoutOf(shape) {
+  return shape === 'halfway' ? LAYOUT_INNER_SCROLLER : LAYOUT_DOCUMENT;
+}
 
 /** Строит форму по имени. `feed` — `ReelFeed`, `source` — `ReelSource`. */
 export function createShape(shape, context, source, feed) {
@@ -26,6 +42,7 @@ export function createShape(shape, context, source, feed) {
     case 'many': return new ManyShape(context, source, feed);
     case 'moved': return new MovedShape(context, source, feed);
     case 'pool': return new PoolShape(context, source, feed);
+    case 'halfway': return new HalfwayShape(context, source, feed);
     default: throw new Error(`unknown shape '${shape}'`);
   }
 }
@@ -89,6 +106,81 @@ class ManyShape {
     const old = await this.#prepareOnce(number - 1);
     this.context.check(`many-reel-${number - 1}-paused-by-page`, old.video.paused, `paused=${old.video.paused}`);
     this.context.check(`many-url-pushed-for-reel-${number}`, history.state?.reel === number, `state=${JSON.stringify(history.state)} path=${location.pathname}`);
+  }
+}
+
+/** Видимая доля площади элемента в окне (0..1): по ней страница записывает, что ролик ещё был на экране. */
+function visibleShareOf(element) {
+  const { left, top, right, bottom, width, height } = element.getBoundingClientRect();
+  if (!(width > 0 && height > 0)) return 0;
+  const visibleWidth = Math.max(0, Math.min(right, window.innerWidth) - Math.max(left, 0));
+  const visibleHeight = Math.max(0, Math.min(bottom, window.innerHeight) - Math.max(top, 0));
+  return (visibleWidth * visibleHeight) / (width * height);
+}
+
+/** Живой Instagram (18 ноября 2026, без входа): переключение на полпути, прежний ролик ещё виден и остаётся выглядывать. */
+class HalfwayShape {
+  name = 'halfway';
+  // Переход, как только следующий ролик виден достаточно: прежний в этот миг ещё на экране.
+  waitUntilOldIsGone = false;
+
+  constructor(context, source, feed) {
+    this.context = context;
+    this.source = source;
+    this.feed = feed;
+    /** Номер ролика -> Promise { video, player } (элемент готовится один раз). */
+    this.entries = new Map();
+    /** Видимая доля прежнего ролика в миг его паузы при последнем переходе (для проверки формы). */
+    this.oldShareAtPause = null;
+  }
+
+  #prepareOnce(number) {
+    if (!this.entries.has(number)) {
+      this.entries.set(number, this.source.prepare(number, { muted: true }).then((entry) => {
+        this.feed.sectionOf(number).append(entry.video);
+        return entry;
+      }));
+    }
+    return this.entries.get(number);
+  }
+
+  async start() {
+    const first = await this.#prepareOnce(1);
+    await first.video.play();
+    first.video.muted = false;
+    const playing = await announceReelStarted(this.context, first.video, 1, this.name);
+    // Следующий ролик готов заранее: переключение обязано уложиться в одну задачу.
+    await this.#prepareOnce(2);
+    return playing;
+  }
+
+  async onAdvance(from, to) {
+    this.context.log(`reel-switch from=${from} to=${to} shape=${this.name} t=${this.context.elapsedMs()}`);
+    const old = await this.#prepareOnce(from);
+    const next = await this.#prepareOnce(to);
+    // ОДНА задача, порядок живого сайта: сначала `play()` нового, сразу за ним `pause()` прежнего (тот ещё
+    // на экране), потом новому включается звук. Между этими строками нет ни одного `await`.
+    const started = next.video.play();
+    this.oldShareAtPause = visibleShareOf(old.video);
+    old.video.pause();
+    next.video.muted = false;
+    history.pushState({ reel: to }, '', `/reels/${to}/`);
+    this.context.log(`halfway-old-paused n=${from} visible_share=${this.oldShareAtPause.toFixed(2)}`);
+    await started;
+    await announceReelStarted(this.context, next.video, to, this.name);
+    if (to < REEL_COUNT) await this.#prepareOnce(to + 1);
+  }
+
+  /** Итоговые проверки обычного режима: пауза застала прежний ролик на экране, новый играет со звуком. */
+  async checkAfter(number) {
+    const old = await this.#prepareOnce(number - 1);
+    const current = await this.#prepareOnce(number);
+    this.context.check(`halfway-reel-${number - 1}-paused-by-page`, old.video.paused, `paused=${old.video.paused}`);
+    // Суть формы: пауза застала прежний ролик на экране, и после прилипания от него осталась полоска.
+    this.context.check(`halfway-reel-${number - 1}-was-on-screen-when-paused`, this.oldShareAtPause > 0, `visible_share=${this.oldShareAtPause}`);
+    this.context.check(`halfway-reel-${number - 1}-still-peeks`, visibleShareOf(old.video) > 0, `visible_share=${visibleShareOf(old.video)}`);
+    this.context.check(`halfway-reel-${number}-plays-with-sound`, !current.video.paused && !current.video.muted, `paused=${current.video.paused} muted=${current.video.muted}`);
+    this.context.check(`halfway-url-pushed-for-reel-${number}`, history.state?.reel === number, `state=${JSON.stringify(history.state)}`);
   }
 }
 

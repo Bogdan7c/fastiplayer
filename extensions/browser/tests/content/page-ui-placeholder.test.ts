@@ -4,8 +4,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { PLACEHOLDER_LAYOUT_RECHECK_MS, PLACEHOLDER_LEAVE_CLICK_SHIELD_MS } from "../../src/content/page-ui/placeholder-controller.ts";
 import { PLACEHOLDER_TEXT, RETURN_BUTTON_LABEL } from "../../src/content/page-ui/placeholder-view.ts";
+import { WHEEL_DELTA_MODE, WHEEL_LINE_PX } from "../../src/content/page-ui/wheel-pass-through.ts";
 import { setupPageUi, type PageUiHarness } from "./support/page-ui-harness.ts";
-import { FakeUiEvent, FakeVideoTarget, type FakeElement } from "./support/fake-ui-dom.ts";
+import { FakePageBlock, FakeUiEvent, FakeUiWheelEvent, FakeVideoTarget, type FakeElement } from "./support/fake-ui-dom.ts";
 
 const VIDEO_RECT = { left: 100, top: 50, width: 640, height: 360 };
 
@@ -225,13 +226,137 @@ describe("заглушка: «Return»", () => {
     assert.equal(harness.returnRequests.count, 2);
   });
 
-  it("колесо над заглушкой не гасится: страница прокручивается", async () => {
+  it("клики по заглушке гасятся", async () => {
     const { harness } = await handedOff();
     const { panel } = placeholderParts(harness);
-    assert.equal(panel.listeners.get("wheel")?.size ?? 0, 0);
     for (const type of ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "contextmenu"]) {
       assert.equal(panel.listeners.get(type)?.size, 1, `${type} гасится`);
     }
+  });
+});
+
+/** Лента Instagram под заглушкой: видео -> секция -> блок ленты с прилипанием -> неподвижный документ. */
+function instagramFeedUnderPlaceholder() {
+  const documentScroller = new FakePageBlock({ isDocumentScroller: true, scrollsVertically: true, maxScrollTop: 56 });
+  const feedBlock = new FakePageBlock({ parent: documentScroller, scrollsVertically: true, snapsToPositions: true, scrollTop: 32, maxScrollTop: 2_657 });
+  const section = new FakePageBlock({ parent: feedBlock });
+  const video = new FakePageBlock({ parent: section });
+  return { documentScroller, feedBlock, video };
+}
+
+describe("заглушка: колесо мыши листает страницу под ней (находка живой проверки Instagram)", () => {
+  it("лента в блоке внутри неподвижного документа: колесо над заглушкой листает блок ленты, документ не едет", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const { documentScroller, feedBlock, video } = instagramFeedUnderPlaceholder();
+    harness.doc.pageBlockUnderPlaceholder = video;
+    const wheel = new FakeUiWheelEvent({ clientX: 420, clientY: 230, deltaY: 144 });
+    panel.dispatch("wheel", wheel);
+    assert.deepEqual(feedBlock.scrolls, [{ left: 0, top: 144, motion: "smooth" }], "блок ленты получил прокрутку на величину колеса");
+    assert.deepEqual(documentScroller.scrolls, [], "документ сами не двигаем");
+    assert.equal(wheel.prevented, true, "родное действие погашено: документ от того же колеса не поедет");
+    assert.deepEqual(harness.doc.pageBlockLookups, [{ clientX: 420, clientY: 230, layerHost: harness.doc.hosts[0] }], "блок ищут под курсором, не считая нашего слоя");
+  });
+
+  it("слушатель колеса не пассивный: иначе браузер не дал бы погасить родную прокрутку документа", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    assert.deepEqual(panel.listenerOptions.get("wheel"), { passive: false });
+  });
+
+  it("обычная страница (листается документ): колесо оставлено браузеру — родная прокрутка, как раньше", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const documentScroller = new FakePageBlock({ isDocumentScroller: true, scrollsVertically: true, maxScrollTop: 5_000 });
+    const video = new FakePageBlock({ parent: new FakePageBlock({ parent: documentScroller }) });
+    harness.doc.pageBlockUnderPlaceholder = video;
+    const wheel = new FakeUiWheelEvent({ deltaY: 144 });
+    panel.dispatch("wheel", wheel);
+    assert.equal(wheel.prevented, false);
+    assert.deepEqual(documentScroller.scrolls, []);
+  });
+
+  it("колесо вверх листает ленту назад, у верхнего края блока уходит дальше — документу", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const { feedBlock, video } = instagramFeedUnderPlaceholder();
+    harness.doc.pageBlockUnderPlaceholder = video;
+    panel.dispatch("wheel", new FakeUiWheelEvent({ deltaY: -144 }));
+    assert.deepEqual(feedBlock.scrolls, [{ left: 0, top: -144, motion: "smooth" }]);
+    // Блок докручен до самого верха: вверх ему ехать некуда, колесо достаётся браузеру.
+    feedBlock.scrollTop = 0;
+    feedBlock.scrolls.length = 0;
+    const atTop = new FakeUiWheelEvent({ deltaY: -144 });
+    panel.dispatch("wheel", atTop);
+    assert.deepEqual(feedBlock.scrolls, []);
+    assert.equal(atTop.prevented, false);
+  });
+
+  it("блок без прилипания двигается сразу и ровно на величину колеса; блок, который колесом не листается, пропускается", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const documentScroller = new FakePageBlock({ isDocumentScroller: true });
+    const appShell = new FakePageBlock({ parent: documentScroller, scrollsVertically: true, maxScrollTop: 3_000 });
+    // `overflow: hidden` с длинным содержимым: колесом не листается, хотя место есть.
+    const clipped = new FakePageBlock({ parent: appShell, scrollsVertically: false, maxScrollTop: 400 });
+    harness.doc.pageBlockUnderPlaceholder = new FakePageBlock({ parent: clipped });
+    panel.dispatch("wheel", new FakeUiWheelEvent({ deltaY: 100 }));
+    assert.deepEqual(clipped.scrolls, []);
+    assert.deepEqual(appShell.scrolls, [{ left: 0, top: 100, motion: "instant" }]);
+  });
+
+  it("колесо в строках и в страницах переводится в пиксели блока", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const { feedBlock, video } = instagramFeedUnderPlaceholder();
+    feedBlock.clientHeight = 955;
+    harness.doc.pageBlockUnderPlaceholder = video;
+    panel.dispatch("wheel", new FakeUiWheelEvent({ deltaY: 3, deltaMode: WHEEL_DELTA_MODE.line }));
+    panel.dispatch("wheel", new FakeUiWheelEvent({ deltaY: 1, deltaMode: WHEEL_DELTA_MODE.page }));
+    assert.deepEqual(feedBlock.scrolls.map((scroll) => scroll.top), [3 * WHEEL_LINE_PX, 955]);
+  });
+
+  it("поддельное колесо (скрипт страницы) ничего не листает", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const { feedBlock, video } = instagramFeedUnderPlaceholder();
+    harness.doc.pageBlockUnderPlaceholder = video;
+    const forged = new FakeUiWheelEvent({ deltaY: 144, isTrusted: false });
+    panel.dispatch("wheel", forged);
+    assert.deepEqual(feedBlock.scrolls, []);
+    assert.equal(forged.prevented, false);
+  });
+
+  it("под заглушкой только наш слой — колесо оставлено браузеру, ничего не ломается", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    harness.doc.pageBlockUnderPlaceholder = null;
+    const wheel = new FakeUiWheelEvent({ deltaY: 144 });
+    panel.dispatch("wheel", wheel);
+    assert.equal(wheel.prevented, false);
+  });
+
+  it("колесо листает, а клик по-прежнему до страницы не доходит (решения 236, 239)", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const { feedBlock, video } = instagramFeedUnderPlaceholder();
+    harness.doc.pageBlockUnderPlaceholder = video;
+    panel.dispatch("wheel", new FakeUiWheelEvent({ deltaY: 144 }));
+    assert.equal(feedBlock.scrolls.length, 1);
+    const click = new FakeUiEvent(true, panel);
+    panel.dispatch("click", click);
+    assert.equal(click.stopped && click.immediatelyStopped, true, "клик погашен на заглушке");
+    assert.equal(panel.css("pointer-events"), "auto !important", "заглушка по-прежнему ловит указатель");
+  });
+
+  it("щит после конца передачи тоже листает ленту колесом", async () => {
+    const { harness } = await handedOff();
+    const { panel } = placeholderParts(harness);
+    const { feedBlock, video } = instagramFeedUnderPlaceholder();
+    harness.doc.pageBlockUnderPlaceholder = video;
+    harness.ui.handedOffVideo.videoLeft();
+    panel.dispatch("wheel", new FakeUiWheelEvent({ deltaY: 144 }));
+    assert.equal(feedBlock.scrolls.length, 1);
   });
 });
 

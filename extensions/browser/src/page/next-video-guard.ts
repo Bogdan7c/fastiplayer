@@ -28,6 +28,12 @@
 // отменяет нового нажатия play человеком (режим 2). Иначе хвост взвода сеанса, задержавший вернувшееся после
 // «Return» видео, навсегда отнимал бы его у режима 2 (находка стенда 12a, строка `after-return`).
 //
+// Отказ переезда относится к шагу ленты, на котором видео задержали (16b2, находка живой проверки Instagram).
+// Лента запускает следующий ролик той же задачей, что останавливает наш, и хвост прежнего взвода успевает
+// задержать его раньше, чем фон узнает, что наш ролик ушёл с экрана: фон отвечает «не сейчас», и без поправки
+// этот ролик остался бы отпущенным навсегда — играл бы в браузере со звуком, без заглушки. Поэтому, когда
+// переданный ролик уходит с экрана (`noteHandedOffVideoLeftScreen`), прежние отказы переезда больше не в счёт.
+//
 // Режим 2 «автозапуск» (сессия 12a): вне взвода фона сторож тоже задерживает видео, но только если охрана
 // включена настройкой, а запустил видео со звуком САМ человек (`ViewerPlayWatch`: свежий жест или кредит
 // клика). Механика та же (тень в вызове `play()`, на `loadedmetadata`, по доверенному `play`), донесение
@@ -121,6 +127,8 @@ interface HeldEntry extends HeldVideo {
   readonly trigger: HeldVideoTrigger;
   /** Видео держится под предложением «Ask» (12b); `null` — обычное удержание до решения фона. */
   offer: ViewerOfferHold | null;
+  /** На каком шаге ленты видео задержали: отказ фона говорит о том шаге, а не о нынешнем (см. шапку). */
+  readonly feedStepWhenHeld: number;
 }
 
 /** Удержание под предложением: какую игру страница видела до него (её модель вернёт при любом исходе, кроме «снято»). */
@@ -147,6 +155,8 @@ export class NextVideoGuard {
   readonly #deferredRealPlays = new WeakMap<object, () => unknown>();
   /** Сколько раз сторож сам перематывал элемент на секунду плеера (возврат страницы). */
   readonly #returnSeeks = new WeakMap<object, number>();
+  /** Шаг ленты: сколько раз переданный ролик этого документа уходил с экрана (см. шапку). */
+  #feedStep = 0;
   #armedUntilMs = Number.NEGATIVE_INFINITY;
   /** Цель взвода возврата страницы; `undefined` — обычный взвод переезда (09c2). */
   #pageReturn: PageReturnTarget | undefined;
@@ -183,6 +193,15 @@ export class NextVideoGuard {
   /** Передача элемента кончилась (Return, окно закрыто, замена): повторный запуск засчитается после нового ввода. */
   noteHandoffEnded(element: object): void {
     this.#environment.viewerPlay.noteHandoffEnded(element);
+  }
+
+  /**
+   * Переданный ролик этого документа уходит с экрана, и страница его остановила: лента листнулась (16b2).
+   * Отказы переезда, полученные до этого, больше не в счёт — следующий ролик можно задержать и спросить
+   * фон заново. Отказы режима 2 (нажатие play человеком) шагом ленты не меряются.
+   */
+  noteHandedOffVideoLeftScreen(): void {
+    this.#feedStep += 1;
   }
 
   /** Забрать задержанное видео для передачи (`null` — такого нет). */
@@ -232,7 +251,7 @@ export class NextVideoGuard {
     const entry = this.#held.get(element);
     if (entry === undefined) return;
     this.#held.delete(element);
-    this.#remember(element, entry.trigger);
+    this.#remember(element, entry);
     // «Play here»: страница снова видит игру, и снятая тень запускает настоящий элемент (`as_shadow`).
     this.#finishOffer(entry);
     try {
@@ -240,6 +259,9 @@ export class NextVideoGuard {
     } catch {
       this.#environment.reportOddity("could not release a held video");
     }
+    // Фон отказал, не зная, что лента уже листнулась (его ответ и донесение тени разминулись в пути): видео
+    // только что заиграло само — спросить фон о нём снова сразу, а не ждать продления взвода целую секунду.
+    if (entry.trigger === "next_video" && entry.feedStepWhenHeld !== this.#feedStep) this.#considerRunningVideo(element);
   }
 
   /** Доверенные события окна: один слушатель на документ, ставится при первом взводе или включении охраны. */
@@ -488,7 +510,7 @@ export class NextVideoGuard {
     if (kind === null) return false;
     const video = element as HTMLMediaElement;
     const declined = this.#declined[trigger].get(element);
-    if (declined !== undefined && declined === this.#fingerprintOf(video)) return false;
+    if (declined !== undefined && declined === this.#declineMarkOf(video, trigger, this.#feedStep)) return false;
     const key = registry.keyOf(video);
     // Описание — до тени: она заглушит настоящий элемент, а фону нужно, как его видела страница.
     const candidates = withHeldPlaying(environment.candidates.describe(), key);
@@ -502,7 +524,7 @@ export class NextVideoGuard {
     };
     const session = environment.startHeldShadow(video, (event) => forward(event), {
       isMediaSourceObjectUrl: (url) => registry.isMediaSourceObjectUrl(url),
-      visibleAreaOf: (element) => environment.candidates.visibleAreaOf(element),
+      visibleShareOf: (element) => environment.candidates.visibleShareOf(element),
       source: kind,
       initialPlayback,
     });
@@ -510,6 +532,7 @@ export class NextVideoGuard {
       key,
       trigger,
       offer: null,
+      feedStepWhenHeld: this.#feedStep,
       session,
       connect: (emit) => {
         forward = emit;
@@ -544,8 +567,17 @@ export class NextVideoGuard {
     }
   }
 
-  #remember(element: object, trigger: HeldVideoTrigger): void {
-    this.#declined[trigger].set(element, this.#fingerprintOf(element));
+  #remember(element: object, entry: HeldEntry): void {
+    this.#declined[entry.trigger].set(element, this.#declineMarkOf(element, entry.trigger, entry.feedStepWhenHeld));
+  }
+
+  /**
+   * Метка отказа: чем было видео и, для переезда, на каком шаге ленты его задержали. Совпала с нынешней —
+   * видео уже отпускали в тех же обстоятельствах, снова не задерживаем.
+   */
+  #declineMarkOf(element: object, trigger: HeldVideoTrigger, feedStep: number): string {
+    const fingerprint = this.#fingerprintOf(element);
+    return trigger === "next_video" ? `${fingerprint}|feed-step-${feedStep}` : fingerprint;
   }
 
   /** Что должно измениться, чтобы отпущенное видео задержали снова: источник или видимость. */

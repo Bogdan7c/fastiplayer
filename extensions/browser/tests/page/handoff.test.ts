@@ -701,10 +701,44 @@ test("лента (16b2): ролик унесли за край окна и ст�
     await isolated.settle();
     isolated.received.length = 0;
 
-    // Instagram: ролик ушёл за нижний край окна, страница ставит его на паузу.
+    // Ролик ушёл за нижний край окна целиком (TikTok вынимает его из документа), страница ставит его на паузу.
     video.rect = { left: 0, top: 5_000, right: 640, bottom: 5_360 };
     video.pause();
     await isolated.settle();
     assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen" }]);
+  });
+});
+
+test("лента (находка живой проверки Instagram): пауза посреди прокрутки, ролик ещё наполовину на экране — video_left_screen уходит сразу", async () => {
+  const harness = startRealShadowHarness();
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    await isolated.settle();
+    isolated.received.length = 0;
+
+    // Окно фейковой страницы 1280×720. Ролик 640×360 уехал вверх так, что в окне осталось 150 px его высоты
+    // (41 % площади — как в живом замере): страница ставит его на паузу и тут же запускает следующий.
+    video.rect = { left: 0, top: -210, right: 640, bottom: 150 };
+    video.pause();
+    await isolated.settle();
+    assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen" }]);
+  });
+});
+
+test("лента: пауза ролика, которого край окна срезал чуть-чуть (виден на 90 %), переезд не открывает", async () => {
+  const harness = startRealShadowHarness();
+  const { video } = playingPage(harness);
+  await withChannel(harness, async (isolated) => {
+    await describeAndBegin(isolated);
+    await isolated.waitFor(10);
+    await isolated.settle();
+    isolated.received.length = 0;
+
+    video.rect = { left: 0, top: -36, right: 640, bottom: 324 };
+    video.pause();
+    await isolated.settle();
+    assert.deepEqual(kinds(isolated.received), ["page_playback"]);
   });
 });

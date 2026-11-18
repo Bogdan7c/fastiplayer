@@ -1,7 +1,8 @@
 // Фейковый DOM для слоя страницы экстеншена: узкий `UiDocument`, события, фейковая мышь и хранилище.
 import type { PageUiRect } from "../../../src/shared/entry-contract.ts";
 import type { PointerMoveEvent, PointerSource } from "../../../src/content/page-ui/overlay-button-controller.ts";
-import type { UiDocument, UiElement, UiEvent, UiEventListener, UiHostElement, UiShadowRoot } from "../../../src/content/page-ui/ui-dom.ts";
+import type { UiDocument, UiElement, UiEvent, UiEventListener, UiHostElement, UiListenerOptions, UiShadowRoot, UiWheelEvent } from "../../../src/content/page-ui/ui-dom.ts";
+import type { PageScrollBlock, ScrollMotion } from "../../../src/content/page-ui/wheel-pass-through.ts";
 import type { PlaceholderGeometryChange, PlaceholderGeometrySignals } from "../../../src/content/page-ui/placeholder-geometry.ts";
 
 export class FakeUiEvent implements UiEvent {
@@ -19,11 +20,52 @@ export class FakeUiEvent implements UiEvent {
   preventDefault(): void { this.prevented = true; }
 }
 
+/** Колесо мыши над точкой окна; по умолчанию — настоящее, в пикселях. */
+export class FakeUiWheelEvent extends FakeUiEvent implements UiWheelEvent {
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly deltaX: number;
+  readonly deltaY: number;
+  readonly deltaMode: number;
+  constructor(wheel: { clientX?: number; clientY?: number; deltaX?: number; deltaY?: number; deltaMode?: number; isTrusted?: boolean }) {
+    super(wheel.isTrusted ?? true);
+    this.clientX = wheel.clientX ?? 0;
+    this.clientY = wheel.clientY ?? 0;
+    this.deltaX = wheel.deltaX ?? 0;
+    this.deltaY = wheel.deltaY ?? 0;
+    this.deltaMode = wheel.deltaMode ?? 0;
+  }
+}
+
+/** Блок страницы под заглушкой: факты раскладки задаёт тест, прокрутки копятся в `scrolls`. */
+export class FakePageBlock implements PageScrollBlock {
+  parent: FakePageBlock | null = null;
+  isDocumentScroller = false;
+  scrollsVertically = false;
+  scrollsHorizontally = false;
+  scrollTop = 0;
+  scrollLeft = 0;
+  maxScrollTop = 0;
+  maxScrollLeft = 0;
+  clientHeight = 900;
+  clientWidth = 1200;
+  snapsToPositions = false;
+  readonly scrolls: { left: number; top: number; motion: ScrollMotion }[] = [];
+  constructor(facts: Partial<Omit<FakePageBlock, "scrolls" | "scrollBy">> = {}) {
+    Object.assign(this, facts);
+  }
+  scrollBy(step: { readonly left: number; readonly top: number; readonly motion: ScrollMotion }): void {
+    this.scrolls.push({ ...step });
+  }
+}
+
 export class FakeElement implements UiElement {
   readonly styleValues = new Map<string, { value: string; priority: string }>();
   readonly attributes = new Map<string, string>();
   readonly children: FakeElement[] = [];
   readonly listeners = new Map<string, Set<UiEventListener>>();
+  /** С какими настройками поставлен слушатель каждого вида (последний). */
+  readonly listenerOptions = new Map<string, UiListenerOptions | undefined>();
   parent: FakeElement | FakeShadow | FakeRoot | null = null;
   textContent: string | null = null;
   /** Прямоугольник, который «нарисовал бы браузер». */
@@ -54,10 +96,11 @@ export class FakeElement implements UiElement {
     if (at >= 0) siblings?.splice(at, 1);
     this.parent = null;
   }
-  addEventListener(type: string, listener: UiEventListener): void {
+  addEventListener(type: string, listener: UiEventListener, options?: UiListenerOptions): void {
     const set = this.listeners.get(type) ?? new Set();
     set.add(listener);
     this.listeners.set(type, set);
+    this.listenerOptions.set(type, options);
   }
   removeEventListener(type: string, listener: UiEventListener): void { this.listeners.get(type)?.delete(listener); }
   getBoundingClientRect(): PageUiRect { return this.rect; }
@@ -128,6 +171,14 @@ export class FakeUiDocument implements UiDocument {
   createHost(tagName: string): FakeHost { const host = new FakeHost(tagName, this.supportsPopover); this.hosts.push(host); return host; }
   createElement(tagName: string): FakeElement { return new FakeElement(tagName); }
   createPlayIcon(): FakeElement { return new FakeElement("svg"); }
+  /** Что на странице лежит под заглушкой (задаёт тест); `null` — под точкой только наш слой. */
+  pageBlockUnderPlaceholder: FakePageBlock | null = null;
+  /** Каждый вопрос «что под точкой»: точка и слой, который просили не считать. */
+  readonly pageBlockLookups: { clientX: number; clientY: number; layerHost: UiHostElement | null }[] = [];
+  pageScrollBlockUnder(clientX: number, clientY: number, layerHost: UiHostElement | null): FakePageBlock | null {
+    this.pageBlockLookups.push({ clientX, clientY, layerHost });
+    return this.pageBlockUnderPlaceholder;
+  }
   /** Все элементы тени единственного хоста. */
   shadowElements(): FakeElement[] { return this.hosts[0]?.shadow?.all() ?? []; }
 }

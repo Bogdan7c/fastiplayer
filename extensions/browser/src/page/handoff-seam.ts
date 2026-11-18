@@ -23,11 +23,11 @@ export interface ShadowSessionHandle {
 export type MediaSourceObjectUrlCheck = (url: string) => boolean;
 
 /**
- * Видимая площадь элемента в CSS-пикселях тем же правилом, что у опроса кандидатов (`VideoCandidates`):
- * пересечение с окном, 0 — за окном, вне документа или скрыт стилями (решение 68). Тени она нужна, чтобы
- * заметить уход ролика с экрана (16b2); второго способа мерить «на экране» нет.
+ * Какая доля площади элемента сейчас на экране (0..1), тем же правилом «скрыт», что у опроса кандидатов
+ * (`VideoCandidates`): 1 — виден целиком, 0 — за окном, вне документа или скрыт стилями (решение 68). Тени
+ * она нужна, чтобы заметить уход ролика с экрана (16b2); второго способа мерить «на экране» нет.
  */
-export type VisibleAreaReader = (element: HTMLMediaElement) => number;
+export type VisibleShareReader = (element: HTMLMediaElement) => number;
 
 /**
  * Что передаётся под тенью (сессия 09b):
@@ -50,8 +50,8 @@ export interface ShadowStartOptions {
    * поколение на том же элементе от blob-адреса обычного файла).
    */
   readonly isMediaSourceObjectUrl: MediaSourceObjectUrlCheck;
-  /** Видимая площадь элемента (уход ролика ленты с экрана, 16b2). */
-  readonly visibleAreaOf: VisibleAreaReader;
+  /** Доля элемента на экране (уход ролика ленты с экрана, 16b2). */
+  readonly visibleShareOf: VisibleShareReader;
   readonly source: ShadowSourceKind;
   /**
    * Только для задержанной тени: страница уже просила играть, а настоящий `play()` сторож не звал (взвод

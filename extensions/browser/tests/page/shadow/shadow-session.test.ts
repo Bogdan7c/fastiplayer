@@ -586,7 +586,7 @@ describe("тень: элемент ушёл из документа и сбой 
         mediaSession: createCountingGuard().guard,
         now: () => harness.clock.nowMs,
         isMediaSourceObjectUrl: () => true,
-        visibleAreaOf: () => 0,
+        visibleShareOf: () => 0,
         scheduleTimeout: harness.timers.schedule,
       }, "media_source"),
     );

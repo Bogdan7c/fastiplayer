@@ -9,8 +9,12 @@
 //! `DesktopSetup::pointer_stand`). Ленту листает САМА страница по прокрутке, как настоящий сайт
 //! (`site/pages/feed.html`, `feed-hover.html`); робот только отдаёт ролик 1 и крутит колесо.
 //!
-//! Строки таблицы [`FEED_ROWS`]: три формы ленты (`many`, `moved`, `pool`) и два случая, где окно
+//! Строки таблицы [`FEED_ROWS`]: формы ленты (`many`, `moved`, `pool`, `halfway`) и два случая, где окно
 //! НЕ переезжает. Приговор общий и чистый: [`judge::judge_feed`].
+//!
+//! Форма `halfway` — живой Instagram 18 ноября 2026, без входа (находки живой проверки, решение 361): лента листается внутри
+//! блока, страница переключает ролик на полпути прокрутки (прежний ещё на экране), а колесо человек
+//! крутит прямо над роликом, то есть над нашей заглушкой «Playing in Fastiplayer».
 
 mod judge;
 mod steps;
@@ -30,6 +34,7 @@ use crate::browsers::{BrowserError, BrowserKind, HandOffOutcome, hand_off_from_s
 use crate::environment::{BenchEnvironment, DesktopSetup, PlayerConfigProfile};
 use crate::observe::read_host_evidence;
 use judge::{ExpectedWindow, FeedEvidence, ScrollRecord, StayRecord, judge_feed};
+use steps::WheelPlace;
 
 /// Ширины кадра трёх роликов ленты (ассеты `reel-1..3` каталога медиа: 640x360, 512x288, 384x216). По
 /// строке журнала плеера о размере потока видно, какой ролик сейчас в окне.
@@ -43,8 +48,9 @@ const END_NOTICE_MARKER: &str = "Browser session end notice shown";
 /// Что делает строка с лентой.
 #[derive(Debug, Clone, Copy)]
 enum FeedScenario {
-    /// Листаем колесом вперёд на `scrolls` роликов; окно обязано идти за лентой.
-    Scroll { scrolls: usize },
+    /// Листаем колесом вперёд на `scrolls` роликов; окно обязано идти за лентой. `wheel` — где на
+    /// странице стоит курсор, когда крутится колесо.
+    Scroll { scrolls: usize, wheel: WheelPlace },
     /// Настоящая мышь наводится на превью рядом с главным видео; окно остаётся.
     HoverPreview,
     /// Колесо уводит главный ролик с экрана (страница его не останавливает), ниже заигрывает превью.
@@ -70,21 +76,51 @@ const FEED_ROWS: &[FeedRow] = &[
         step_id: "feed-many",
         page_id: "feed",
         query_suffix: "&mode=handoff&shape=many",
-        scenario: FeedScenario::Scroll { scrolls: 2 },
+        scenario: FeedScenario::Scroll {
+            scrolls: 2,
+            wheel: WheelPlace::OverReel,
+        },
     },
     // YouTube Shorts: один элемент переезжает по секциям, новый MediaSource, паузы нет.
     FeedRow {
         step_id: "feed-moved",
         page_id: "feed",
         query_suffix: "&mode=handoff&shape=moved",
-        scenario: FeedScenario::Scroll { scrolls: 1 },
+        scenario: FeedScenario::Scroll {
+            scrolls: 1,
+            wheel: WheelPlace::OverReel,
+        },
     },
     // TikTok: два элемента по очереди, прежний убирается из документа и ставится на паузу.
     FeedRow {
         step_id: "feed-pool",
         page_id: "feed",
         query_suffix: "&mode=handoff&shape=pool",
-        scenario: FeedScenario::Scroll { scrolls: 2 },
+        scenario: FeedScenario::Scroll {
+            scrolls: 2,
+            wheel: WheelPlace::OverReel,
+        },
+    },
+    // Живой Instagram (18 ноября 2026, без входа): страница переключает ролик на полпути (прежний ещё на экране и потом
+    // выглядывает полоской). Колесо — мимо ролика: строка проверяет только переезд окна.
+    FeedRow {
+        step_id: "feed-halfway",
+        page_id: "feed",
+        query_suffix: "&mode=handoff&shape=halfway",
+        scenario: FeedScenario::Scroll {
+            scrolls: 2,
+            wheel: WheelPlace::BesideReel,
+        },
+    },
+    // То же, но колесо крутят над роликом, то есть над заглушкой: лента в блоке обязана листаться.
+    FeedRow {
+        step_id: "feed-halfway-over-plate",
+        page_id: "feed",
+        query_suffix: "&mode=handoff&shape=halfway",
+        scenario: FeedScenario::Scroll {
+            scrolls: 2,
+            wheel: WheelPlace::OverReel,
+        },
     },
     // Превью по наведению рядом с главным видео: наш ролик на экране, переезда нет.
     FeedRow {
@@ -146,7 +182,7 @@ fn run_row(stand: &Stand, browser: BrowserKind, row: FeedRow) -> StepResult {
 /// Ожидание приговора для сценария строки.
 fn expected_window(scenario: FeedScenario) -> ExpectedWindow {
     match scenario {
-        FeedScenario::Scroll { scrolls } => ExpectedWindow::FollowsFeed {
+        FeedScenario::Scroll { scrolls, .. } => ExpectedWindow::FollowsFeed {
             reel_stream_widths: &REEL_STREAM_WIDTHS[..=scrolls],
         },
         FeedScenario::HoverPreview | FeedScenario::ScrollToComments => {
@@ -256,11 +292,11 @@ fn follow_the_feed(
         stay: None,
     };
     match scenario {
-        FeedScenario::Scroll { scrolls } => {
+        FeedScenario::Scroll { scrolls, wheel } => {
             for target_reel in 2..=(scrolls as u32 + 1) {
                 after
                     .scrolls
-                    .push(steps::scroll_to_reel(hand, target_reel)?);
+                    .push(steps::scroll_to_reel(hand, target_reel, wheel)?);
             }
         }
         FeedScenario::HoverPreview => after.stay = Some(steps::hover_over_preview(hand)?),
@@ -338,7 +374,10 @@ mod tests {
 
     #[test]
     fn a_scroll_row_expects_one_more_reel_than_it_scrolls() {
-        let window = expected_window(FeedScenario::Scroll { scrolls: 2 });
+        let window = expected_window(FeedScenario::Scroll {
+            scrolls: 2,
+            wheel: WheelPlace::OverReel,
+        });
         assert_eq!(
             window,
             ExpectedWindow::FollowsFeed {
@@ -348,6 +387,35 @@ mod tests {
         assert_eq!(
             expected_window(FeedScenario::HoverPreview),
             ExpectedWindow::StaysOnFirstReel { stream_width: 640 }
+        );
+    }
+
+    #[test]
+    fn the_live_instagram_shape_is_scrolled_both_beside_the_reel_and_over_the_plate() {
+        // Две находки живой проверки — две строки одной формы: переезд окна (колесо мимо ролика) и колесо
+        // над заглушкой. Пропади любая — находка осталась бы без строки стенда.
+        let wheels: Vec<WheelPlace> = FEED_ROWS
+            .iter()
+            .filter(|row| row.query_suffix.ends_with("shape=halfway"))
+            .filter_map(|row| match row.scenario {
+                FeedScenario::Scroll { scrolls: 2, wheel } => Some(wheel),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wheels, [WheelPlace::BesideReel, WheelPlace::OverReel]);
+        // Страница обязана знать форму и писать метку, по которой видно: пауза застала ролик на экране.
+        let shapes = site_file("lib/feed-shapes.js");
+        for needle in [
+            "case 'halfway'",
+            "halfway-old-paused n=",
+            "LAYOUT_INNER_SCROLLER",
+        ] {
+            assert!(shapes.contains(needle), "feed-shapes.js lost '{needle}'");
+        }
+        let feed = site_file("pages/feed.html");
+        assert!(
+            feed.contains("html.inner-scroller #feed{height:100vh;overflow-y:auto;scroll-snap-type:y mandatory}"),
+            "feed.html lost the inner scroller layout of the halfway shape"
         );
     }
 

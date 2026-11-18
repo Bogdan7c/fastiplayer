@@ -71,10 +71,10 @@ export interface ShadowHarness {
   readonly mediaSourceUrls: Set<string>;
   readonly timers: FakeTimers;
   /**
-   * Видимая площадь элемента для тени (16b2); без записи — элемент на экране (`ON_SCREEN_AREA_PX`).
-   * 0 — ушёл с экрана (прокрутили или вынули из документа).
+   * Доля элемента на экране для тени (16b2); без записи — элемент виден целиком (`WHOLE_ON_SCREEN`).
+   * 0 — ушёл с экрана совсем (прокрутили или вынули из документа).
    */
-  readonly visibleAreas: Map<FakeVideo, number>;
+  readonly visibleShares: Map<FakeVideo, number>;
   start(video: FakeVideo): ShadowSession;
   /** Тень файла `<video src>` (сессия 09b). */
   startFile(video: FakeVideo): ShadowSession;
@@ -84,8 +84,8 @@ export interface ShadowHarness {
   tick(session: ShadowSession, positionSeconds: number, state: "playing" | "paused" | "waiting" | "ended", ratePermille?: number, relation?: ClockRelation): void;
 }
 
-/** Видимая площадь элемента на экране по умолчанию: 640×360. */
-export const ON_SCREEN_AREA_PX = 640 * 360;
+/** Доля элемента на экране по умолчанию: виден целиком. */
+export const WHOLE_ON_SCREEN = 1;
 
 /** Blob-адрес MediaSource, с которым фейковый DOM создаёт видео (fake-media-dom.ts). */
 export const PLAYING_VIDEO_MEDIA_SOURCE_URL = "blob:https://site.example/ms-1";
@@ -111,7 +111,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
   const { guard, calls } = createCountingGuard();
   const mediaSourceUrls = new Set<string>([PLAYING_VIDEO_MEDIA_SOURCE_URL]);
   const timers = createFakeTimers();
-  const visibleAreas = new Map<FakeVideo, number>();
+  const visibleShares = new Map<FakeVideo, number>();
   const startWith = (video: FakeVideo, source: ShadowSourceKind): ShadowSession =>
     startShadow(
       video as unknown as HTMLMediaElement,
@@ -122,7 +122,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
         mediaSession: options.mediaSession ?? guard,
         now: () => clock.nowMs,
         isMediaSourceObjectUrl: (url) => mediaSourceUrls.has(url),
-        visibleAreaOf: (element) => visibleAreas.get(element as unknown as FakeVideo) ?? ON_SCREEN_AREA_PX,
+        visibleShareOf: (element) => visibleShares.get(element as unknown as FakeVideo) ?? WHOLE_ON_SCREEN,
         scheduleTimeout: timers.schedule,
       },
       source,
@@ -135,7 +135,7 @@ export function createShadowHarness(options: ShadowHarnessOptions = {}): ShadowH
     guardCalls: calls,
     mediaSourceUrls,
     timers,
-    visibleAreas,
+    visibleShares,
     start: (video) => startWith(video, "media_source"),
     startFile: (video) => startWith(video, "file"),
     startLive: (video) => startWith(video, "live_hls"),

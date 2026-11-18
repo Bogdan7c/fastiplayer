@@ -62,16 +62,21 @@ export class ReelSource {
 /**
  * Вертикальная лента: секции в рост окна (`100vh`), прилипание к границе секции (scroll-snap). Следит за
  * тем, какая секция видна, и вызывает `onAdvance(from, to)`, когда лента ушла на следующий ролик.
+ *
+ * Прокручивается либо сам документ (раскладка `document`), либо блок ленты внутри неподвижного документа
+ * (раскладка `inner-scroller`, так устроен живой Instagram: `overflow-y:auto` у блока, документ не листается).
  */
 export class ReelFeed {
   /**
    * @param {object} options
-   * @param {boolean} options.waitUntilOldIsGone переход только когда прежняя секция ушла с экрана ПОЛНОСТЬЮ
-   *   (Instagram, TikTok); иначе — как только следующая видна достаточно (Shorts).
+   * @param {boolean} options.waitUntilOldIsGone переход только когда прежняя секция ушла с экрана ПОЛНОСТЬЮ;
+   *   иначе — как только следующая видна достаточно (Shorts, живой Instagram).
+   * @param {Element|null} [options.scroller] блок, который прокручивается вместо документа (`null` — документ).
    */
-  constructor(context, { waitUntilOldIsGone }) {
+  constructor(context, { waitUntilOldIsGone, scroller = null }) {
     this.context = context;
     this.waitUntilOldIsGone = waitUntilOldIsGone;
+    this.scroller = scroller;
     this.sections = [];
     this.ratios = new Array(REEL_COUNT + 1).fill(0);
     this.current = 1;
@@ -109,7 +114,7 @@ export class ReelFeed {
   watch(onAdvance) {
     this.onAdvance = onAdvance;
     let scheduled = false;
-    window.addEventListener('scroll', () => {
+    (this.scroller ?? window).addEventListener('scroll', () => {
       if (scheduled) return;
       scheduled = true;
       requestAnimationFrame(() => { scheduled = false; this.#measure(); this.#maybeAdvance(); });
@@ -117,19 +122,31 @@ export class ReelFeed {
     this.#measure();
   }
 
-  /** Обновляет видимую долю каждой секции (0..1) по её прямоугольнику в окне. */
+  /** Верх и низ видимой области ленты в координатах окна: окно документа или прямоугольник блока ленты. */
+  #visibleBand() {
+    if (this.scroller === null) return { top: 0, bottom: window.innerHeight };
+    const { top, bottom } = this.scroller.getBoundingClientRect();
+    return { top, bottom };
+  }
+
+  /** Обновляет видимую долю каждой секции (0..1) по её прямоугольнику в видимой области ленты. */
   #measure() {
-    const viewportHeight = window.innerHeight;
+    const band = this.#visibleBand();
     for (let number = 1; number <= REEL_COUNT; number += 1) {
       const { top, bottom, height } = this.sections[number].getBoundingClientRect();
-      const visiblePx = Math.max(0, Math.min(bottom, viewportHeight) - Math.max(top, 0));
+      const visiblePx = Math.max(0, Math.min(bottom, band.bottom) - Math.max(top, band.top));
       this.ratios[number] = height > 0 ? visiblePx / height : 0;
     }
   }
 
   /** Страница сама листает ленту до ролика `number` (обычный режим без робота: колеса нет). */
   scrollToReel(number) {
-    window.scrollTo({ top: (number - 1) * window.innerHeight, behavior: 'instant' });
+    if (this.scroller === null) {
+      window.scrollTo({ top: (number - 1) * window.innerHeight, behavior: 'instant' });
+      return;
+    }
+    // Блок ленты прилипает к середине секции: ставим её по центру, как это сделала бы прокрутка.
+    this.sections[number].scrollIntoView({ block: 'center', behavior: 'instant' });
   }
 
   #maybeAdvance() {

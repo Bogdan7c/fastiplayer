@@ -32,6 +32,20 @@ export function visibleAreaPx(rect: ViewportRect, viewport: { readonly width: nu
   return Math.round(visibleWidth * visibleHeight);
 }
 
+/**
+ * Какая доля площади элемента сейчас в окне: 1 — виден целиком, 0 — за окном или нулевого размера.
+ * Площадь в пикселях для этого не годится: по ней не отличить «ролик виден наполовину» от «маленький
+ * ролик виден целиком».
+ */
+export function visibleShare(rect: ViewportRect, viewport: { readonly width: number; readonly height: number }): number {
+  const wholeArea = (rect.right - rect.left) * (rect.bottom - rect.top);
+  if (!(wholeArea > 0)) return 0;
+  const visibleWidth = Math.min(rect.right, viewport.width) - Math.max(rect.left, 0);
+  const visibleHeight = Math.min(rect.bottom, viewport.height) - Math.max(rect.top, 0);
+  if (!(visibleWidth > 0) || !(visibleHeight > 0)) return 0;
+  return Math.min(1, (visibleWidth * visibleHeight) / wholeArea);
+}
+
 /** Что описанию кандидатов нужно знать о DRM (владелец метки — `DrmMarks`). */
 export interface ProtectionReader {
   isProtected(element: object): boolean;
@@ -138,11 +152,13 @@ export class VideoCandidates {
   }
 
   /**
-   * Видимая площадь одного элемента (тень ролика ленты, 16b2) тем же правилом, что у опроса. Вне документа
-   * прямоугольник нулевой, площадь 0. Чтения могут бросить — ловит вызывающий.
+   * Какая доля одного элемента сейчас на экране (тень ролика ленты, 16b2): 1 — целиком, 0 — за окном, вне
+   * документа (прямоугольник нулевой) или скрыт стилями — «скрыт» тем же правилом, что у опроса (решение 68).
+   * Чтения могут бросить — ловит вызывающий.
    */
-  visibleAreaOf(element: Element): number {
-    return this.#visibleAreaOf(element, this.#dom.createVisibilityProbe());
+  visibleShareOf(element: Element): number {
+    const share = visibleShare(this.#dom.rectOf(element), this.#dom.viewportSize());
+    return share > 0 && this.#dom.createVisibilityProbe()(element) ? 0 : share;
   }
 
   /** Форма источника элемента (чтения могут бросить — ловит вызывающий). */
