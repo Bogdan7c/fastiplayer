@@ -1,0 +1,38 @@
+[package]
+name = "audio-ffmpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "HE-AAC (SBR, Parametric Stereo) decoding through the pinned LGPL FFmpeg AAC decoder."
+
+[features]
+default = []
+# Код FFmpeg FFI; сам по себе — системный FFmpeg (pkg-config/FFMPEG_DIR).
+ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]
+# Закреплённый LGPL FFmpeg 8.1.3 (тот же, что у video-ffmpeg) через патч ffmpeg-sys-next.
+vendored-ffmpeg = ["ffmpeg", "ffmpeg-sys-next/fastiplayer-vendored"]
+
+[dependencies]
+audio-core.workspace = true
+thiserror.workspace = true
+# Коды errno для `AVERROR(EAGAIN)` и `c_char` буфера `av_strerror` (только с FFmpeg).
+libc = { workspace = true, optional = true }
+
+# Не workspace-зависимость намеренно: guardrail разрешает FFmpeg-crate-ы только
+# в video-ffmpeg и audio-ffmpeg (решение 348 плана моста).
+[dependencies.ffmpeg-sys-next]
+version = "8.1.0"
+default-features = false
+features = ["avcodec"]
+optional = true
+
+[dev-dependencies]
+# Сквозные тесты читают пакеты HE-AAC из настоящих MP4/fMP4/MPEG-TS теми же
+# демуксерами, что и плеер.
+demux-api.workspace = true
+media-core.workspace = true
+symphonia-demux.workspace = true
+
+[lints]
+workspace = true

@@ -1896,6 +1896,53 @@ class SourceTextPolicyTests(unittest.TestCase):
         # Ровно один запрещённый edge: player-core; audio разрешён.
         self.assertEqual(decoder_edges, {"player-core"})
 
+    def test_only_concrete_audio_route_may_depend_on_audio_ffmpeg(self) -> None:
+        """Обёртка FFmpeg для HE-AAC остаётся деталью `audio` (решение 348)."""
+
+        packages = {
+            "audio": package_with_dependencies("audio", (("audio-ffmpeg", None),)),
+            "player-core": package_with_dependencies(
+                "player-core", (("audio-ffmpeg", None),)
+            ),
+            "audio-ffmpeg": package_with_dependencies("audio-ffmpeg", ()),
+        }
+        violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(packages),
+            GUARDRAIL.direct_all_manifest_dependencies(packages),
+            frozenset({"audio-ffmpeg"}),
+        )
+        wrapper_edges = {
+            violation.owner
+            for violation in violations
+            if violation.dependency == "audio-ffmpeg"
+        }
+        # Ровно один запрещённый edge: player-core; audio разрешён.
+        self.assertEqual(wrapper_edges, {"player-core"})
+
+    def test_ffmpeg_bindings_are_allowed_only_in_video_and_audio_ffmpeg(self) -> None:
+        """FFmpeg-биндинги: video-ffmpeg и audio-ffmpeg можно, остальным нельзя."""
+
+        packages = {
+            "video-ffmpeg": package_with_dependencies(
+                "video-ffmpeg", (("ffmpeg-sys-next", None),)
+            ),
+            "audio-ffmpeg": package_with_dependencies(
+                "audio-ffmpeg", (("ffmpeg-sys-next", None),)
+            ),
+            "audio": package_with_dependencies("audio", (("ffmpeg-sys-next", None),)),
+        }
+        violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(packages),
+            GUARDRAIL.direct_all_manifest_dependencies(packages),
+            frozenset(packages),
+        )
+        binding_edges = {
+            violation.owner
+            for violation in violations
+            if violation.dependency == "ffmpeg-sys-next"
+        }
+        self.assertEqual(binding_edges, {"audio"})
+
     def test_failure_output_contains_file_and_rule(self) -> None:
         """CLI diagnostic остаётся actionable: path и policy rule печатаются вместе."""
 

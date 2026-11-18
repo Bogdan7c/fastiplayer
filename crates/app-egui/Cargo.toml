@@ -21,8 +21,9 @@ path = "src/main.rs"
 # Фичи cargo складываются: если включены обе, побеждает vendored.
 default = ["vendored-ffmpeg"]
 # Код FFmpeg-декодера (используется в cfg); сам по себе = системный FFmpeg.
-ffmpeg = ["video-ffmpeg/ffmpeg"]
-vendored-ffmpeg = ["ffmpeg", "video-ffmpeg/vendored-ffmpeg"]
+# Тот же FFmpeg декодирует и HE-AAC (решение 347 плана моста).
+ffmpeg = ["video-ffmpeg/ffmpeg", "audio/ffmpeg"]
+vendored-ffmpeg = ["ffmpeg", "video-ffmpeg/vendored-ffmpeg", "audio/vendored-ffmpeg"]
 system-ffmpeg = ["ffmpeg"]
 
 [dependencies]

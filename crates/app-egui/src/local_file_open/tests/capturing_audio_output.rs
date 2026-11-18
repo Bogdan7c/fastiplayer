@@ -14,12 +14,15 @@ use player_core::{
 };
 
 /// Что дошло до output-а за всё воспроизведение (сумма по всем созданным output-ам).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct CapturedAudio {
     /// Число PCM frames (по одному сэмплу на канал).
     pub(super) pcm_frames: usize,
     /// Максимальная абсолютная амплитуда сэмпла.
     pub(super) peak_amplitude: f32,
+    /// Формат каждого созданного output-а по порядку: больше одного — плеер
+    /// пересобирал вывод из-за смены формата декодированного звука.
+    pub(super) output_specs: Vec<AudioOutputSpec>,
 }
 
 /// Factory, у которой тест потом спрашивает итог.
@@ -31,7 +34,7 @@ pub(super) struct CapturingAudioOutputFactory {
 impl CapturingAudioOutputFactory {
     /// Снимок накопленного итога.
     pub(super) fn captured(&self) -> CapturedAudio {
-        *self.captured.lock().expect("captured audio lock")
+        self.captured.lock().expect("captured audio lock").clone()
     }
 }
 
@@ -43,6 +46,11 @@ impl AudioOutputFactory for CapturingAudioOutputFactory {
     ) -> anyhow::Result<CreatedAudioOutput> {
         let channels = usize::try_from(spec.channels())?;
         anyhow::ensure!(channels > 0, "decoded audio spec has no channels");
+        self.captured
+            .lock()
+            .map_err(|_| anyhow::anyhow!("captured audio lock poisoned"))?
+            .output_specs
+            .push(spec);
         let output = CapturingAudioOutput {
             channels,
             clock: Arc::new(InstantClock::new(spec.sample_rate)),

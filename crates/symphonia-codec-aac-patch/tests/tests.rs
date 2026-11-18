@@ -1,4 +1,4 @@
-use symphonia_codec_aac::{AacDecoder, AdtsReader};
+use symphonia_codec_aac::{AacDecoder, AdtsReader, IN_BAND_SBR_UNSUPPORTED};
 use symphonia_core::codecs::audio::{
     AudioCodecParameters, AudioDecoder, AudioDecoderOptions, well_known::CODEC_ID_AAC,
 };
@@ -167,4 +167,38 @@ fn pce_with_unmatched_layout_is_unsupported() {
     let error = AacDecoder::try_new(&params, &AudioDecoderOptions::default()).err();
 
     assert!(matches!(error, Some(errors::Error::Unsupported(_))), "{error:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fastiplayer: неявно сигнализированный HE-AAC (SBR только внутри кадров).
+// ---------------------------------------------------------------------------------------------
+
+/// 4 кадра ADTS HE-AAC v1: заголовок «AAC-LC 22,05 кГц», SBR — в `ID_FIL`.
+const IMPLICIT_HE_AAC_ADTS: &[u8] = include_bytes!("fixtures/he-aac-implicit-sbr-4-frames.adts");
+
+#[test]
+fn in_band_sbr_is_reported_instead_of_a_muffled_core() {
+    let mut decoder = AacDecoder::try_new(
+        AudioCodecParameters::new()
+            .for_codec(CODEC_ID_AAC)
+            .with_sample_rate(22_050)
+            .with_channels(symphonia_core::audio::Channels::Positioned(
+                symphonia_core::audio::Position::FRONT_LEFT
+                    | symphonia_core::audio::Position::FRONT_RIGHT,
+            )),
+        &AudioDecoderOptions::default(),
+    )
+    .expect("ADTS header looks like plain AAC-LC");
+
+    use symphonia_core::units::{Duration, Timestamp};
+    for block in adts_raw_data_blocks(IMPLICIT_HE_AAC_ADTS) {
+        let packet = PacketRef::new(0, Timestamp::ZERO, Duration::ZERO, block);
+        let Err(error) = decoder.decode_ref(&packet) else {
+            panic!("in-band SBR must not decode as a core-only buffer");
+        };
+        assert!(
+            matches!(error, errors::Error::Unsupported(message) if message == IN_BAND_SBR_UNSUPPORTED),
+            "unexpected error: {error:?}"
+        );
+    }
 }

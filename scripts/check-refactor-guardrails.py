@@ -82,6 +82,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "atomic-file-store",
         "audio",
         "audio-core",
+        "audio-ffmpeg",
         "bounded-xml-reader",
         "dash-mpd-core",
         "smooth-streaming-manifest-core",
@@ -421,6 +422,15 @@ AC3_DECODER_ALLOWED_DEPENDENCIES = frozenset()
 # Остальные crate-ы (demux, player-core, app) получают звук через `audio-core` и
 # не должны знать конкретный декодер (dev-зависимости для тестов не ограничены).
 AC3_DECODER_ALLOWED_DEPENDENTS = frozenset({"audio"})
+
+# Обёртка FFmpeg для HE-AAC (решение 348 плана моста) — тоже деталь concrete
+# `audio`: только его маршрут AAC выбирает между Symphonia и FFmpeg. Остальные
+# crate-ы получают звук через `audio-core` (dev-зависимости не ограничены).
+AUDIO_FFMPEG_ALLOWED_DEPENDENTS = frozenset({"audio"})
+
+# Crate-ы, которым разрешены FFmpeg-биндинги: программный видеодекодер и
+# декодер HE-AAC (решения 347–348 плана моста).
+FFMPEG_BINDING_OWNER_CRATES = frozenset({"video-ffmpeg", "audio-ffmpeg"})
 
 # Pure web-media planner пересекает только neutral snapshots и не знает
 # concrete provider/service/app/player implementations.
@@ -925,7 +935,11 @@ SOURCE_POLICY_SCAN_ROOTS = ("crates",)
 # относятся к нашему коду, который их использует, а не к сгенерированному API.
 UPSTREAM_FFMPEG_BINDINGS_ROOT = Path("crates/ffmpeg-sys-next-patch")
 
-DIRECT_FFMPEG_TYPE_ALLOWED_ROOTS = (Path("crates/video-ffmpeg"), UPSTREAM_FFMPEG_BINDINGS_ROOT)
+DIRECT_FFMPEG_TYPE_ALLOWED_ROOTS = (
+    Path("crates/video-ffmpeg"),
+    Path("crates/audio-ffmpeg"),
+    UPSTREAM_FFMPEG_BINDINGS_ROOT,
+)
 
 DIRECT_FFMPEG_TYPE_PATTERNS = (
     (
@@ -1676,6 +1690,14 @@ def find_dependency_violations(
         )
     )
     violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset(dependency_map).difference(AUDIO_FFMPEG_ALLOWED_DEPENDENTS),
+            frozenset({"audio-ffmpeg"}),
+            "only concrete audio AAC route depends on audio-ffmpeg; others use audio-core boundary",
+        )
+    )
+    violations.extend(
         find_disallowed_dependencies(
             dependency_map,
             frozenset({"web-media-playback-plan"}),
@@ -1862,9 +1884,9 @@ def find_dependency_violations(
     violations.extend(
         find_forbidden_dependencies(
             all_dependency_map,
-            frozenset(all_dependency_map).difference({"video-ffmpeg"}),
+            frozenset(all_dependency_map).difference(FFMPEG_BINDING_OWNER_CRATES),
             FFMPEG_FORBIDDEN_DEPENDENCIES,
-            "FFmpeg/libav crates are only allowed inside video-ffmpeg",
+            "FFmpeg/libav crates are only allowed inside video-ffmpeg and audio-ffmpeg",
         )
     )
     violations.extend(

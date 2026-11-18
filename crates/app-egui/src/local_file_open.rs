@@ -723,6 +723,7 @@ mod tests {
     }
 
     mod capturing_audio_output;
+    mod he_aac_playback;
     mod prepared_handoff;
     mod shutdown_observation;
     use shutdown_observation::ObservedRelease as ReleaseBit;

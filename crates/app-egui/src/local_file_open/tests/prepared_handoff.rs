@@ -27,14 +27,14 @@ const SCENARIO_DEADLINE: Duration = Duration::from_secs(20);
 const AC3_SAMPLES_PER_FRAME: usize = 1536;
 
 /// Доля PCM фикстуры, которая обязана дойти до output-а (запас на priming декодера).
-const MINIMUM_DELIVERED_SHARE_PERCENT: usize = 90;
+pub(super) const MINIMUM_DELIVERED_SHARE_PERCENT: usize = 90;
 
 /// Локальная фикстура и её точный объём звука (по ffprobe: duration × 48 кГц).
-struct LocalFixture {
-    path: PathBuf,
-    expected_pcm_frames: usize,
+pub(super) struct LocalFixture {
+    pub(super) path: PathBuf,
+    pub(super) expected_pcm_frames: usize,
     /// Держит временный каталог собранной фикстуры до конца теста.
-    _scratch_directory: Option<tempfile::TempDir>,
+    pub(super) _scratch_directory: Option<tempfile::TempDir>,
 }
 
 /// DVB MPEG-TS, только AC-3 mono 48 кГц: 0.384 с = 12 syncframe-ов.
@@ -73,7 +73,7 @@ fn raw_ac3_fixture() -> LocalFixture {
 
 /// Что делает владелец с job-ом после того, как забрал `Prepared`.
 #[derive(Clone, Copy)]
-enum AfterHandoff {
+pub(super) enum AfterHandoff {
     /// Как `drain_local_file_open_job`: job просто выбрасывается.
     DropJob,
     /// Поздний Stop и process shutdown по уже отдавшему результат job-у, затем Drop.
@@ -103,7 +103,10 @@ fn prepare_until_completion(path: PathBuf) -> (LocalFileOpenJob, LocalFileOpenRe
 }
 
 /// Готовит фикстуру job-ом и обращается с job-ом так, как велит сценарий.
-fn prepare_and_hand_off(fixture: &LocalFixture, after_handoff: AfterHandoff) -> PreparedMedia {
+pub(super) fn prepare_and_hand_off(
+    fixture: &LocalFixture,
+    after_handoff: AfterHandoff,
+) -> PreparedMedia {
     let (mut job, completion) = prepare_until_completion(fixture.path.clone());
     let LocalFileOpenResult::Prepared { prepared } = completion else {
         panic!(
@@ -131,7 +134,9 @@ fn prepare_and_hand_off(fixture: &LocalFixture, after_handoff: AfterHandoff) -> 
 }
 
 /// Играет media в настоящем worker-е до конца и возвращает финальный snapshot и PCM.
-fn play_to_terminal_state(prepared_media: PreparedMedia) -> (PlayerSnapshot, CapturedAudio) {
+pub(super) fn play_to_terminal_state(
+    prepared_media: PreparedMedia,
+) -> (PlayerSnapshot, CapturedAudio) {
     let output_factory = Arc::new(CapturingAudioOutputFactory::default());
     let worker_config = PlayerWorkerConfig::default()
         .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory::default()))

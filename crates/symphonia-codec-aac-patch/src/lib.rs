@@ -19,5 +19,5 @@
 mod aac;
 mod adts;
 
-pub use aac::AacDecoder;
+pub use aac::{AacDecoder, IN_BAND_SBR_UNSUPPORTED};
 pub use adts::AdtsReader;

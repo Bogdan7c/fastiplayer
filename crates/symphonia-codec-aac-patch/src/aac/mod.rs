@@ -95,6 +95,12 @@ impl AacChannelElement {
     }
 }
 
+/// Fastiplayer: текст ошибки `Unsupported`, когда внутри пакета AAC-LC найдены
+/// данные SBR (неявно сигнализированный HE-AAC). Его сравнивает маршрут AAC в
+/// crate `audio`, чтобы передать поток декодеру HE-AAC; текст — общий контракт,
+/// поэтому экспортируется константой, а не дублируется строкой.
+pub const IN_BAND_SBR_UNSUPPORTED: &str = "aac: in-band sbr (implicitly signalled he-aac)";
+
 /// AAC coded element order → canonical Symphonia plane mapping.
 const AAC_MONO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::single_at_plane(0)];
 const AAC_STEREO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::pair_at_plane(0)];
@@ -401,7 +407,13 @@ impl AacDecoder {
                         match ext_type {
                             // EXT_SBR_DATA (0xd)
                             // EXT_SBR_DATA_CRC (0xe)
-                            0xd | 0xe => self.asc.sbr_present = true,
+                            //
+                            // Fastiplayer: SBR внутри пакета при «паспорте» AAC-LC или без него
+                            // (неявная сигнализация HE-AAC: ADTS в MPEG-TS, радио, IPTV). Ядро без
+                            // SBR звучало бы глухо и на половинной частоте, поэтому декодер не
+                            // выдаёт его, а сообщает отдельной ошибкой: маршрут AAC в crate `audio`
+                            // передаёт тот же пакет декодеру HE-AAC (решение 349 плана моста).
+                            0xd | 0xe => return unsupported_error(IN_BAND_SBR_UNSUPPORTED),
                             // EXT_FILL (0x0)
                             // EXT_FILL_DATA (0x1)
                             // EXT_DATA_ELEMENT (0x2)

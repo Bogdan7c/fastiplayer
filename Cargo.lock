@@ -496,10 +496,12 @@ dependencies = [
  "ac3-decoder",
  "anyhow",
  "audio-core",
+ "audio-ffmpeg",
  "cpal",
  "opus",
  "ringbuf",
  "symphonia",
+ "symphonia-codec-aac 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -509,6 +511,19 @@ name = "audio-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "audio-ffmpeg"
+version = "0.2.0"
+dependencies = [
+ "audio-core",
+ "demux-api",
+ "ffmpeg-sys-next 8.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc",
+ "media-core",
+ "symphonia-demux",
  "thiserror 2.0.18",
 ]
 

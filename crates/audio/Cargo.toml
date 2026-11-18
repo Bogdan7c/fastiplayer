@@ -5,6 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Декодер HE-AAC (SBR/PS) через FFmpeg (решение 347 плана моста); сам по себе —
+# системный FFmpeg. Без фичи HE-AAC получает честный отказ, AAC-LC играет как раньше.
+ffmpeg = ["audio-ffmpeg/ffmpeg"]
+# Закреплённый LGPL FFmpeg 8.1.3 (тот же, что у видео).
+vendored-ffmpeg = ["ffmpeg", "audio-ffmpeg/vendored-ffmpeg"]
+
 [dependencies]
 audio-core = { workspace = true }
 symphonia = { workspace = true }
@@ -14,6 +22,11 @@ opus = "0.3"
 # Собственный clean-room декодер AC-3/E-AC-3 (std-only) за crate-private
 # adapter-ом `decoder::ac3`.
 ac3-decoder = { workspace = true }
+# Обёртка встроенного AAC-декодера FFmpeg для HE-AAC; маршрут — `decoder::aac_route`.
+audio-ffmpeg = { workspace = true }
+# Тот же crate, что Symphonia использует внутри (заменён нашим патчем): отсюда
+# берётся общий текст ошибки «SBR внутри пакета» (`IN_BAND_SBR_UNSUPPORTED`).
+symphonia-codec-aac = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

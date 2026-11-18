@@ -27,6 +27,7 @@ pub use audio_core::{
     EncodedAudioPacket,
 };
 
+mod aac_route;
 mod ac3;
 mod capability;
 mod conversion;
@@ -42,7 +43,6 @@ use conversion::{
     required_audio_config_value, should_use_opus_fallback, symphonia_codec_id_from_container,
     symphonia_packet_ref_from_encoded_packet, validate_audio_decoder_config,
 };
-#[cfg(test)]
 use symphonia::core::codecs::audio::well_known as symphonia_audio_codec;
 
 use ac3::{Ac3CodecIdentity, Ac3FamilyDecoder};
@@ -87,6 +87,14 @@ pub fn create_audio_decoder(config: AudioDecoderConfig) -> Result<AudioDecoderHa
     }
     if let Some(identity) = Ac3CodecIdentity::from_codec_id(config.codec_id()) {
         return Ok(Box::new(Ac3FamilyDecoder::new(&config, identity)?) as AudioDecoderHandle);
+    }
+    // AAC: маршрут выбирает Symphonia (AAC-LC) или FFmpeg (HE-AAC) по паспорту
+    // дорожки и данным SBR внутри пакета (решения 347–349 плана моста).
+    if symphonia_codec_id_from_container(config.codec_id())
+        == Some(symphonia_audio_codec::CODEC_ID_AAC)
+    {
+        validate_audio_decoder_config(&config)?;
+        return aac_route::create_aac_decoder(&config);
     }
 
     match SymphoniaAudioDecoder::new(&config) {
@@ -230,6 +238,14 @@ impl AudioDecoder for SymphoniaAudioDecoder {
             Err(SymphoniaError::ResetRequired) => {
                 self.decoder.reset();
                 Ok(Vec::new())
+            }
+            // Патч AAC нашёл SBR внутри пакета: сигнал маршруту AAC перейти на HE-AAC.
+            Err(SymphoniaError::Unsupported(message))
+                if message == symphonia_codec_aac::IN_BAND_SBR_UNSUPPORTED =>
+            {
+                Err(anyhow::Error::new(aac_route::InBandSbrDetected {
+                    codec_id: self.codec_id.clone(),
+                }))
             }
             Err(error) => Err(anyhow::anyhow!(
                 "Symphonia audio decode error for {}: {}",

@@ -26,6 +26,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/app-egui
     crates/ui-artwork-egui
     crates/audio-core
+    crates/audio-ffmpeg
     crates/audio-signalsmith
     crates/audio-timestretch
     crates/capability-core

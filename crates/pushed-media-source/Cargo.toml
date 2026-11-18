@@ -33,8 +33,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# Настоящий декодер звука для тестов «до кадра».
-audio.workspace = true
+# Настоящий декодер звука для тестов «до кадра» (с FFmpeg: HE-AAC страниц лент).
+audio = { workspace = true, features = ["vendored-ffmpeg"] }
 # Отчёт о возможностях для безоконной сессии (как у приложения).
 capability-core.workspace = true
 render-core.workspace = true

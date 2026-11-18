@@ -8,10 +8,14 @@ use std::path::Path;
 
 /// Программные декодеры, которые нужны плееру.
 ///
-/// Список обязан совпадать с `FfmpegDecoderId` в `video-ffmpeg::codec_adapter`:
-/// H.264, H.265, VP8, VP9 и AV1. Встроенный декодер `av1` у FFmpeg работает
+/// Видео (H.264, H.265, VP8, VP9, AV1) обязано совпадать с `FfmpegDecoderId` в
+/// `video-ffmpeg::codec_adapter`. Встроенный декодер `av1` у FFmpeg работает
 /// только через аппаратное ускорение, поэтому программный AV1 даёт `libdav1d`.
-pub const ENABLED_DECODERS: [&str; 5] = ["h264", "hevc", "vp8", "vp9", "libdav1d"];
+///
+/// Звук: встроенный `aac` (LGPL, с SBR и Parametric Stereo) нужен только для
+/// HE-AAC v1/v2 — его вызывает `audio-ffmpeg` (решение 347 плана моста).
+/// Обычный AAC-LC по-прежнему декодирует патч Symphonia.
+pub const ENABLED_DECODERS: [&str; 6] = ["h264", "hevc", "vp8", "vp9", "libdav1d", "aac"];
 
 /// Суффикс имён наших библиотек: `libavcodec_fastiplayer.so.62` вместо `libavcodec.so.62`.
 ///
@@ -158,8 +162,11 @@ mod tests {
         assert!(decoder_position > disable_everything_position);
         assert_eq!(
             decoder_argument,
-            "--enable-decoder=h264,hevc,vp8,vp9,libdav1d"
+            "--enable-decoder=h264,hevc,vp8,vp9,libdav1d,aac"
         );
+        // HE-AAC (SBR/PS) декодирует встроенный `aac`; `libfdk_aac` несвободен и запрещён.
+        assert!(ENABLED_DECODERS.contains(&"aac"));
+        assert!(!ENABLED_DECODERS.contains(&"libfdk_aac"));
         // Программный AV1 возможен только через libdav1d.
         assert!(ENABLED_DECODERS.contains(&"libdav1d"));
         assert!(configure_arguments.contains(&"--enable-libdav1d".to_owned()));
