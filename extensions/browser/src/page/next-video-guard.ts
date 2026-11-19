@@ -340,13 +340,32 @@ export class NextVideoGuard {
     return answer;
   }
 
-  /** Запомнить `play()`, ушедший браузеру мимо сторожа. Чужой объект (`play.call(1)`) и наш сбой до страницы не долетают. */
+  /**
+   * Запомнить `play()`, ушедший браузеру мимо сторожа. Чужой объект (`play.call(1)`) и наш сбой до страницы не долетают.
+   * Метка живёт, пока обещание может ждать: её снимает доверенное `playing` с данными (`#forgetPagePlayIfExecuted`),
+   * поэтому сторож слушает сам элемент — слушателя документа до первого взвода нет.
+   */
   #notePagePlayPastGuard(element: object): void {
     try {
-      if (this.#environment.dom.isVideoElement(element)) this.#pagePlaysPastGuard.add(element);
+      if (!this.#environment.dom.isVideoElement(element)) return;
+      this.#pagePlaysPastGuard.add(element);
+      this.#listenOnElement(element);
     } catch {
       this.#environment.reportOddity("next video guard could not note a page play() call");
     }
+  }
+
+  /**
+   * Браузер исполнил обещание `play()` страницы: доверенное `playing`, элемент не на паузе и с данными
+   * (HAVE_FUTURE_DATA). Метка больше ничего не бережёт и снимается. Без этого она переживала ролик: реклама или
+   * серия 1, запущенная до передачи, оставляла метку элементу, и фильм (серия 2) в том же `<video>` не задерживался
+   * на своих метаданных (стенд `ad-film-same-element`, `episodes delayed-next`).
+   */
+  #forgetPagePlayIfExecuted(element: object, eventType: RealMediaEventType | undefined): void {
+    if (eventType !== "playing" || !this.#pagePlaysPastGuard.has(element)) return;
+    const { dom } = this.#environment;
+    if (dom.isPaused(element) || dom.readyStateOf(element) < HAVE_FUTURE_DATA) return;
+    this.#pagePlaysPastGuard.delete(element);
   }
 
   /**
@@ -356,8 +375,8 @@ export class NextVideoGuard {
    * 371, только путь другой: `play()` сказан до взвода, тень встала бы позже — на метаданных или обходом при взводе).
    * Задержание приходит, когда элемент дошёл до HAVE_FUTURE_DATA: доверенное `playing` — ровно тот миг, когда
    * браузер уже забрал обещание на исполнение. Плата — до первого кадра ролик успевает начать играть в браузере.
-   * Пауза страницы или новый источник отвергают такое обещание сами; метка тогда лишь откладывает задержание до
-   * `playing`.
+   * Метку снимает исполненное обещание (`#forgetPagePlayIfExecuted`). Пауза страницы или новый источник до данных
+   * отвергают обещание сами, и метка тогда лишь откладывает задержание до `playing`.
    */
   #pagePlayMayBePending(element: object): boolean {
     return this.#pagePlaysPastGuard.has(element) && this.#environment.dom.readyStateOf(element) < HAVE_FUTURE_DATA;
@@ -533,7 +552,9 @@ export class NextVideoGuard {
   #considerRunningVideo(element: object, eventType?: RealMediaEventType): void {
     try {
       const { dom } = this.#environment;
-      if (!dom.isVideoElement(element) || dom.isEnded(element)) return;
+      if (!dom.isVideoElement(element)) return;
+      this.#forgetPagePlayIfExecuted(element, eventType);
+      if (dom.isEnded(element)) return;
       if (!this.#armed()) {
         this.#releaseDeferredPlay(element);
         if (eventType !== undefined) this.#considerViewerStartedVideo(element, eventType);

@@ -71,6 +71,28 @@ describe("play() страницы ушёл браузеру до взвода: �
     assert.equal(heldReports(sent), 1);
   });
 
+  it("прежний play() браузер давно исполнил, затем новый источник в том же элементе — play() при взводе задержан на метаданных", async () => {
+    // Стенд `ad-film-same-element` и `episodes delayed-next` (регресс b84bfb59): реклама (серия 1) запущена ДО
+    // передачи — `play()` мимо сторожа, браузер исполнил его обещание и ролик играл. Потом тот же `<video>` получил
+    // фильм (серию 2) и `play()` уже при взводе. Метка «обещание страницы может ждать» осталась от рекламы, и тень
+    // не вставала на метаданных фильма: фильм не уходил в окно, а обещание страницы так и не исполнялось.
+    const { guard, sent, fresh } = poolPage();
+    const adPlay = watchOutcome(pagePlay(fresh));
+    fresh.testDataArrived();
+    await flushMicrotasks();
+    assert.equal(adPlay.value, "resolved", "браузер исполнил play() рекламы");
+
+    // Реклама доиграла: тот же элемент, новый источник — данных снова нет.
+    fresh.src = "blob:https://site.example/ms-2";
+    guard.arm(LEASE_MS);
+    const filmPlay = watchOutcome(pagePlay(fresh));
+    fresh.real.readyState = 1;
+    fresh.fireTrusted("loadedmetadata");
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 1, "фильм задержан на метаданных, как без прежнего play()");
+    assert.equal(filmPlay.value, "pending", "обещание фильма у тени, а не отвергнуто");
+  });
+
   it("страховка: play() при взводе по-прежнему задерживается сразу на метаданных, обещание достаётся тени", async () => {
     const { guard, sent, fresh } = poolPage();
     guard.arm(LEASE_MS);
