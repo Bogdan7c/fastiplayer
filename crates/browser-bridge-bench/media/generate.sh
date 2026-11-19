@@ -143,6 +143,11 @@ make_reel() {
 make_reel 1 640x360 360 30 440 36
 make_reel 2 512x288 288 42 660 30
 make_reel 3 384x216 216 36 880 24
+# Ролики 4 и 5 (16b3): быстрые серии прокруток (`feed-edges`) листают пять роликов подряд, и каждый обязан
+# отличаться шириной кадра (320 и 448 не совпадают ни с 640 / 512 / 384, ни друг с другом). Ролик 4 заодно
+# служит «превью другого раздела» в строках ухода из ленты.
+make_reel 4 320x180 180 40 520 24
+make_reel 5 448x252 252 34 770 28
 
 echo "generate.sh: vp9-opus (WebM, 20 s)"
 make_vp9_opus() {
@@ -598,7 +603,7 @@ def validate_hls_asset(asset_id, master_url):
 
 durations = {"h264-aac": 30.0, "dub-a": 30.0, "dub-b": 30.0, "vp9-opus": 20.0, "av1-aac": 12.0,
              "muxed-h264-aac": 20.0, "clearkey-h264": 6.0,
-             "reel-1": 30.0, "reel-2": 42.0, "reel-3": 36.0}
+             "reel-1": 30.0, "reel-2": 42.0, "reel-3": 36.0, "reel-4": 40.0, "reel-5": 34.0}
 track_rows = [line.rstrip("\n").split("\t") for line in open(os.path.join(out_dir, ".tracks.tsv"))]
 assets = {}
 for row in track_rows:

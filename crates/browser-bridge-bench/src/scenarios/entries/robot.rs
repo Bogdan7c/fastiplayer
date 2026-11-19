@@ -84,6 +84,19 @@ impl<'env> Robot<'env> {
         Ok(())
     }
 
+    /// Настоящее колесо там, где курсор уже стоит (быстрая серия прокруток, 16b3).
+    pub(super) fn scroll_wheel_in_place(
+        &self,
+        direction: WheelDirection,
+        notches: u32,
+        notch_pause: Duration,
+    ) -> Result<(), ScenarioError> {
+        self.input
+            .mouse()
+            .scroll_in_place(direction, notches, notch_pause)?;
+        Ok(())
+    }
+
     /// Настоящий левый клик в точку экрана.
     pub(super) fn click_screen(&self, point: Point) -> Result<(), ScenarioError> {
         self.input.mouse().click_at(point)?;

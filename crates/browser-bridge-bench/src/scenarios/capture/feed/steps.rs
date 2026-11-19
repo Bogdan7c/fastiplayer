@@ -4,9 +4,9 @@
 use std::time::{Duration, Instant};
 
 use super::super::super::context::ScenarioError;
-use super::super::super::entries::return_hand::ReturnHand;
-use super::judge::{MIN_FRAMES_GAINED, ScrollRecord, StayRecord};
-use crate::desktop_input::WheelDirection;
+use super::super::super::entries::return_hand::{PagePlace, ReturnHand};
+use super::judge::{FrameGrowthCheck, MIN_FRAMES_GAINED, ScrollRecord, StayRecord};
+use crate::desktop_input::{Point, WheelDirection};
 use crate::observe::{
     FrameGrowth, STREAM_GENERATION_LOADED_MARKER, STREAM_SURFACE_RECONFIGURED_MARKER,
     parse_stream_generation_loaded, parse_stream_surface_width,
@@ -15,27 +15,27 @@ use crate::site::RunId;
 
 /// Сколько щелчков колеса в одном рывке. Рывок — малая прокрутка: лента с прилипанием сама доводит её
 /// до следующей секции, а несколько рывков подряд не перескакивают через ролик.
-const NOTCHES_PER_BURST: u32 = 5;
+pub(super) const NOTCHES_PER_BURST: u32 = 5;
 /// Сколько рывков делаем, пока страница не отреагировала (потолок, чтобы не листать бесконечно).
 const MAX_BURSTS: u32 = 8;
 /// Сколько ждём реакции страницы на рывок (прокрутка, наблюдатель, запуск следующего ролика), с запасом
 /// на случайную паузу страницы 80-400 мс и подготовку элемента.
-const BURST_SETTLE: Duration = Duration::from_secs(8);
+pub(super) const BURST_SETTLE: Duration = Duration::from_secs(8);
 /// Сколько страница может опаздывать с записью события колеса в журнал стенда.
 const WHEEL_REPORT_GRACE: Duration = Duration::from_millis(1500);
 /// Сколько ждём новую загрузку в плеере после того, как страница запустила следующий ролик: сторож
 /// экстеншена, переезд, первое поколение нового потока.
-const RELOCATE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const RELOCATE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Сколько ждём две сводки плеера с ростом кадров (сводки раз в 10 с).
 const GROWTH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Сколько ждём раздражитель отрицательной строки на странице (превью заиграло, ролик ушёл с экрана).
-const STIMULUS_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const STIMULUS_TIMEOUT: Duration = Duration::from_secs(20);
 /// Пауза между уходом мыши в дальний угол и приходом на превью: браузер обязан увидеть именно ВХОД.
 const HOVER_ENTER_PAUSE: Duration = Duration::from_millis(400);
 /// Дальний угол страницы, куда мышь уходит перед наведением (доля ширины и высоты окна).
 const FAR_CORNER_SHARE: f64 = 0.95;
 /// Шаг опроса журналов.
-const POLL_STEP: Duration = Duration::from_millis(200);
+pub(super) const POLL_STEP: Duration = Duration::from_millis(200);
 /// Метка журнала страницы: настоящее колесо дошло до страницы.
 const TRUSTED_WHEEL_MARK: &str = "wheel trusted=true";
 /// Нагрузка страницы перед прокруткой: команда-хук и отметка журнала страницы о том, что нагрузка была.
@@ -95,7 +95,7 @@ impl WheelPlace {
 }
 
 /// Строки журнала страницы с `needle`.
-fn page_lines(hand: &ReturnHand<'_, '_>, needle: &str) -> Vec<String> {
+pub(super) fn page_lines(hand: &ReturnHand<'_, '_>, needle: &str) -> Vec<String> {
     hand.run_ref().page_log_lines(needle)
 }
 
@@ -126,24 +126,54 @@ pub(super) fn shown_stream_widths(
         .collect())
 }
 
-/// Один рывок настоящего колеса на середине высоты видимой части страницы, по ширине — где велит
-/// `wheel`. Перед каждым рывком браузер выводится вперёд и страница заново калибруется: окно плеера
-/// после переезда могло снова оказаться сверху.
+/// Точка экрана на середине высоты видимой части страницы, по ширине — где велит `wheel`. Перед этим
+/// браузер выводится вперёд и страница заново калибруется: окно плеера после переезда могло снова оказаться
+/// сверху.
+pub(super) fn wheel_point(
+    hand: &ReturnHand<'_, '_>,
+    run: &RunId,
+    wheel: WheelPlace,
+) -> Result<Point, ScenarioError> {
+    let place = locate_with_retries(hand, run)?;
+    let viewport = place.target_rect("viewport").ok_or_else(|| {
+        ScenarioError::EntryNotActivated("the page reported no viewport to scroll in".into())
+    })?;
+    Ok(place.screen_point_in(viewport, wheel.share_x(), 0.5))
+}
+
+/// Сколько раз пробуем калибровку экрана, прежде чем сдаться. Две точки калибровки иногда расходятся, пока
+/// окно браузера ещё встаёт на место после передачи (на стенде: «the two calibration points disagree»).
+const LOCATE_ATTEMPTS: u32 = 3;
+/// Пауза между попытками калибровки: окну нужно время встать на место.
+const LOCATE_RETRY_PAUSE: Duration = Duration::from_millis(700);
+
+/// Калибровка страницы с повтором: последняя ошибка возвращается как есть, не глотается.
+fn locate_with_retries(hand: &ReturnHand<'_, '_>, run: &RunId) -> Result<PagePlace, ScenarioError> {
+    let mut attempt = 1;
+    loop {
+        match hand.locate(run) {
+            Ok(place) => return Ok(place),
+            Err(error) if attempt >= LOCATE_ATTEMPTS => return Err(error),
+            Err(_) => {
+                attempt += 1;
+                std::thread::sleep(LOCATE_RETRY_PAUSE);
+            }
+        }
+    }
+}
+
+/// Один рывок настоящего колеса в точке [`wheel_point`].
 fn wheel_burst(
     hand: &ReturnHand<'_, '_>,
     run: &RunId,
     wheel: WheelPlace,
 ) -> Result<(), ScenarioError> {
-    let place = hand.locate(run)?;
-    let viewport = place.target_rect("viewport").ok_or_else(|| {
-        ScenarioError::EntryNotActivated("the page reported no viewport to scroll in".into())
-    })?;
-    let point = place.screen_point_in(viewport, wheel.share_x(), 0.5);
+    let point = wheel_point(hand, run, wheel)?;
     hand.scroll_wheel(point, WheelDirection::Down, NOTCHES_PER_BURST)
 }
 
 /// Рост кадров между двумя сводками, начиная с НОВЫХ строк журнала (старые сводки не в счёт).
-fn frame_growth_from_now(hand: &mut ReturnHand<'_, '_>) -> Result<FrameGrowth, String> {
+pub(super) fn frame_growth_from_now(hand: &mut ReturnHand<'_, '_>) -> Result<FrameGrowth, String> {
     let log = &mut hand.run().player_log;
     log.skip_history().map_err(|error| error.to_string())?;
     log.wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
@@ -151,7 +181,10 @@ fn frame_growth_from_now(hand: &mut ReturnHand<'_, '_>) -> Result<FrameGrowth, S
 }
 
 /// Ждёт, пока число загрузок поколений в плеере станет больше `before`.
-fn wait_for_new_generation(hand: &mut ReturnHand<'_, '_>, before: usize) -> Result<(), String> {
+pub(super) fn wait_for_new_generation(
+    hand: &mut ReturnHand<'_, '_>,
+    before: usize,
+) -> Result<(), String> {
     let deadline = Instant::now() + RELOCATE_TIMEOUT;
     loop {
         let seen = loaded_generations(hand)
@@ -169,6 +202,51 @@ fn wait_for_new_generation(hand: &mut ReturnHand<'_, '_>, before: usize) -> Resu
     }
 }
 
+/// Итог рывков колеса до метки журнала страницы.
+pub(super) struct WheelOutcome {
+    /// Сколько настоящих событий колеса (`wheel trusted=true`) страница получила за рывки.
+    pub trusted_wheel_events: usize,
+    /// Страница записала нужную метку или причина, почему нет.
+    pub reached: Result<(), String>,
+}
+
+/// Крутит настоящее колесо рывками, пока страница не запишет `mark` (потолок — `MAX_BURSTS` рывков).
+pub(super) fn wheel_until_page_logs(
+    hand: &mut ReturnHand<'_, '_>,
+    mark: &str,
+    wheel: WheelPlace,
+) -> Result<WheelOutcome, ScenarioError> {
+    let run = hand.run_ref().run.clone();
+    let wheel_before = page_lines(hand, TRUSTED_WHEEL_MARK).len();
+    let mut reached = Err("no wheel burst was made".to_owned());
+    for burst in 1..=MAX_BURSTS {
+        wheel_burst(hand, &run, wheel)?;
+        if page_lines(hand, TRUSTED_WHEEL_MARK).len() == wheel_before {
+            // Страница могла записать событие с опозданием: даём ей время, прежде чем сказать «не дошло».
+            std::thread::sleep(WHEEL_REPORT_GRACE);
+            if page_lines(hand, TRUSTED_WHEEL_MARK).len() == wheel_before {
+                reached = Err(format!(
+                    "no wheel event reached the page after burst {burst}"
+                ));
+                break;
+            }
+        }
+        match hand.run_ref().wait_page_log_line(mark, BURST_SETTLE) {
+            Ok(_) => {
+                reached = Ok(());
+                break;
+            }
+            Err(message) => {
+                reached = Err(format!("after {burst} burst(s): {message}"));
+            }
+        }
+    }
+    Ok(WheelOutcome {
+        trusted_wheel_events: page_lines(hand, TRUSTED_WHEEL_MARK).len() - wheel_before,
+        reached,
+    })
+}
+
 /// Листает ленту колесом до ролика `target_reel` и собирает улики: дошло ли колесо, запустила ли страница
 /// следующий ролик, переехало ли окно, растут ли кадры.
 pub(super) fn scroll_to_reel(
@@ -176,42 +254,39 @@ pub(super) fn scroll_to_reel(
     target_reel: u32,
     wheel: WheelPlace,
 ) -> Result<ScrollRecord, ScenarioError> {
-    let run = hand.run_ref().run.clone();
-    let started_mark = format!("reel-started n={target_reel}");
-    let wheel_before = page_lines(hand, TRUSTED_WHEEL_MARK).len();
+    scroll_to_reel_then(hand, target_reel, wheel, FrameGrowthCheck::Required, |_| {
+        Ok(())
+    })
+}
+
+/// То же, что [`scroll_to_reel`], но `after_relocation` исполняется сразу после того, как окно загрузило
+/// новое поколение, и до ожидания роста кадров (строка «страница убирает элемент, на который переехало
+/// окно» обязана ударить в первую секунду после переезда). С `FrameGrowthCheck::NotRequired` рост кадров
+/// не ждётся вовсе: он не судится, а ожидание стоило бы десятков секунд до следующей прокрутки.
+pub(super) fn scroll_to_reel_then(
+    hand: &mut ReturnHand<'_, '_>,
+    target_reel: u32,
+    wheel: WheelPlace,
+    frame_growth_check: FrameGrowthCheck,
+    after_relocation: impl FnOnce(&mut ReturnHand<'_, '_>) -> Result<(), ScenarioError>,
+) -> Result<ScrollRecord, ScenarioError> {
     let generations_before = loaded_generations(hand)?.len();
-    let mut page_started_next_reel = Err("no wheel burst was made".to_owned());
-    for burst in 1..=MAX_BURSTS {
-        wheel_burst(hand, &run, wheel)?;
-        if page_lines(hand, TRUSTED_WHEEL_MARK).len() == wheel_before {
-            // Страница могла записать событие с опозданием: даём ей время, прежде чем сказать «не дошло».
-            std::thread::sleep(WHEEL_REPORT_GRACE);
-            if page_lines(hand, TRUSTED_WHEEL_MARK).len() == wheel_before {
-                page_started_next_reel = Err(format!(
-                    "no wheel event reached the page after burst {burst}"
-                ));
-                break;
-            }
-        }
-        match hand
-            .run_ref()
-            .wait_page_log_line(&started_mark, BURST_SETTLE)
-        {
-            Ok(_) => {
-                page_started_next_reel = Ok(());
-                break;
-            }
-            Err(message) => {
-                page_started_next_reel = Err(format!("after {burst} burst(s): {message}"));
-            }
-        }
-    }
-    let trusted_wheel_events = page_lines(hand, TRUSTED_WHEEL_MARK).len() - wheel_before;
+    let started_mark = format!("reel-started n={target_reel}");
+    let WheelOutcome {
+        trusted_wheel_events,
+        reached: page_started_next_reel,
+    } = wheel_until_page_logs(hand, &started_mark, wheel)?;
     let (player_loaded_new_generation, frame_growth) = if page_started_next_reel.is_ok() {
         let loaded = wait_for_new_generation(hand, generations_before);
-        let growth = match &loaded {
-            Ok(()) => frame_growth_from_now(hand),
-            Err(_) => Err("not awaited: the window did not relocate".to_owned()),
+        if loaded.is_ok() {
+            after_relocation(hand)?;
+        }
+        let growth = match (&loaded, frame_growth_check) {
+            (Ok(()), FrameGrowthCheck::Required) => frame_growth_from_now(hand),
+            (Ok(()), FrameGrowthCheck::NotRequired) => {
+                Err("not awaited: the row does not judge it".to_owned())
+            }
+            (Err(_), _) => Err("not awaited: the window did not relocate".to_owned()),
         };
         (loaded, growth)
     } else {
@@ -223,6 +298,7 @@ pub(super) fn scroll_to_reel(
         page_started_next_reel,
         player_loaded_new_generation,
         frame_growth,
+        frame_growth_check,
     })
 }
 
@@ -237,7 +313,10 @@ pub(super) fn run_page_load(hand: &mut ReturnHand<'_, '_>, load: PageLoad) -> Re
 }
 
 /// Ждёт в журнале страницы все `needles`; `Err` называет, чего не дождались.
-fn wait_for_page_facts(hand: &ReturnHand<'_, '_>, needles: &[&str]) -> Result<(), String> {
+pub(super) fn wait_for_page_facts(
+    hand: &ReturnHand<'_, '_>,
+    needles: &[&str],
+) -> Result<(), String> {
     for needle in needles {
         hand.run_ref()
             .wait_page_log_line(needle, STIMULUS_TIMEOUT)

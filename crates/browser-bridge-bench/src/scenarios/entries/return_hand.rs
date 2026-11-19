@@ -286,6 +286,18 @@ impl<'a> ReturnHand<'a, '_> {
         self.ready.robot.scroll_wheel(point, direction, notches)
     }
 
+    /// Настоящее колесо там, где курсор уже стоит (быстрая серия прокруток, 16b3).
+    pub(in crate::scenarios) fn scroll_wheel_in_place(
+        &self,
+        direction: WheelDirection,
+        notches: u32,
+        notch_pause: Duration,
+    ) -> Result<(), ScenarioError> {
+        self.ready
+            .robot
+            .scroll_wheel_in_place(direction, notches, notch_pause)
+    }
+
     /// Настоящий левый клик в точку экрана.
     pub(in crate::scenarios) fn click(&self, point: Point) -> Result<(), ScenarioError> {
         self.ready.robot.click_screen(point)

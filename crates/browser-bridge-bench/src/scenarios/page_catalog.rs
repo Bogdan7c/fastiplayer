@@ -166,6 +166,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     // три формы ленты (`shape=many|moved|pool`) и два случая, где сеанс НЕ переезжает (`feed-hover`).
     page("feed"),
     page("feed-hover"),
+    // 16b3: края ленты (быстрая серия, удаление элемента, уход в другой раздел, конец ленты): `feed-edges`.
+    page("feed-edges"),
     page("live-unload"),
     page("live-unload-new-ms"),
     page_unsupported_in("live-unload-worker", &[BrowserKind::Firefox]),

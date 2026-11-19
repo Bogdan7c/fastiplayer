@@ -213,6 +213,22 @@ impl Mouse<'_> {
         Ok(())
     }
 
+    /// Крутит колесо там, где курсор УЖЕ стоит: без подвода и без пауз до и после, только щелчки с паузой
+    /// `notch_pause` между ними. Нужна быстрым сериям прокруток (16b3): человек крутит колесо подряд, а не
+    /// по одной прокрутке за 0,5 с, как `scroll_at`. Курсор предварительно ставят в нужную точку `move_to`.
+    pub fn scroll_in_place(
+        &self,
+        direction: WheelDirection,
+        notches: u32,
+        notch_pause: Duration,
+    ) -> Result<(), InputError> {
+        for _ in 0..notches {
+            self.link.vertical_scroll(direction.axis_value(1))?;
+            sleep(notch_pause);
+        }
+        Ok(())
+    }
+
     /// Общая последовательность клика любой кнопкой (`button_code` — код evdev).
     fn press_button_at(&self, point: Point, button_code: u32) -> Result<(), InputError> {
         self.move_to(point)?;

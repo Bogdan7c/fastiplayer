@@ -44,6 +44,7 @@ fn good_scroll() -> ScrollRecord {
         page_started_next_reel: Ok(()),
         player_loaded_new_generation: Ok(()),
         frame_growth: Ok(growth(200)),
+        frame_growth_check: FrameGrowthCheck::Required,
     }
 }
 
@@ -62,6 +63,7 @@ fn following() -> FeedEvidence {
         scrolls: vec![good_scroll(), good_scroll()],
         stay: None,
         page_download: None,
+        edge: None,
         target_wait_lines: Vec::new(),
         generations: vec![1, 2, 3],
         // Плеер может написать строку про один ролик дважды: подряд идущие повторы не в счёт.

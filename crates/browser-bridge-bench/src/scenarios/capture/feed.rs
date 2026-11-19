@@ -25,6 +25,9 @@
 //! блока, страница переключает ролик на полпути прокрутки (прежний ещё на экране), а колесо человек
 //! крутит прямо над роликом, то есть над нашей заглушкой «Playing in Fastiplayer».
 
+mod edge_judge;
+mod edge_steps;
+mod edges;
 mod judge;
 mod steps;
 
@@ -42,6 +45,9 @@ use super::{FRAMES_TIMEOUT, MIN_PRESENTED_FRAMES};
 use crate::browsers::{BrowserError, BrowserKind, HandOffOutcome, hand_off_from_service_page};
 use crate::environment::{BenchEnvironment, DesktopSetup, PlayerConfigProfile};
 use crate::observe::read_host_evidence;
+use crate::player_control::PlayerControl;
+use edge_judge::EdgeRecord;
+use edges::{EDGE_ROWS, EdgeScenario};
 use judge::{ExpectedWindow, FeedEvidence, ScrollRecord, StayRecord, judge_feed};
 use steps::WheelPlace;
 
@@ -94,7 +100,7 @@ impl BeforeScrolling {
 }
 
 /// Что делает строка с лентой.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FeedScenario {
     /// Листаем колесом вперёд на `scrolls` роликов; окно обязано идти за лентой. `wheel` — где на
     /// странице стоит курсор, когда крутится колесо.
@@ -103,6 +109,8 @@ enum FeedScenario {
     HoverPreview,
     /// Колесо уводит главный ролик с экрана (страница его не останавливает), ниже заигрывает превью.
     ScrollToComments,
+    /// Края ленты (16b3): быстрая серия, удаление элемента, уход в другой раздел, конец ленты (`edges.rs`).
+    Edge(EdgeScenario),
 }
 
 /// Строка таблицы: страница, адрес и сценарий.
@@ -219,10 +227,15 @@ const FEED_ROWS: &[FeedRow] = &[
     },
 ];
 
+/// Все строки сценария: спокойная лента, затем края (16b3).
+fn all_rows() -> impl Iterator<Item = &'static FeedRow> {
+    FEED_ROWS.iter().chain(EDGE_ROWS)
+}
+
 /// Идентификаторы страниц сценария (для `--page` и таблицы `capture`).
 pub(in crate::scenarios) fn page_ids() -> Vec<&'static str> {
     let mut ids: Vec<&'static str> = Vec::new();
-    for row in FEED_ROWS {
+    for row in all_rows() {
         if !ids.contains(&row.page_id) {
             ids.push(row.page_id);
         }
@@ -237,8 +250,7 @@ pub(in crate::scenarios) fn run_all(
     filter: &PageFilter,
 ) -> Vec<StepResult> {
     let row_filter = std::env::var(ROW_FILTER_VARIABLE).ok();
-    FEED_ROWS
-        .iter()
+    all_rows()
         .filter(|row| filter.admits(row.page_id))
         .filter(|row| {
             row_filter
@@ -271,6 +283,7 @@ fn expected_window(scenario: FeedScenario) -> ExpectedWindow {
                 stream_width: REEL_STREAM_WIDTHS[0],
             }
         }
+        FeedScenario::Edge(edge) => edges::expected_window(edge),
     }
 }
 
@@ -281,6 +294,8 @@ struct AfterHandOff {
     stay: Option<StayRecord>,
     /// Докачка страницы сверх памяти моста (`None` — строка её не просит или до неё не дошло).
     page_download: Option<Result<(), String>>,
+    /// Улики края ленты (`None` — строка не про края или до них не дошло).
+    edge: Option<EdgeRecord>,
 }
 
 fn drive(
@@ -296,15 +311,18 @@ fn drive(
     // Как человек: служебная страница экстеншена открыта фоновой вкладкой, вкладка ленты остаётся видимой
     // (лента в скрытой вкладке ставила бы ролик на паузу сама).
     hand.run().open_service_page()?;
+    // Окно плеера на шине сеанса: строки краёв проверяют, что оно закрылось или осталось на месте.
+    let control = PlayerControl::on_bus(environment.bus_address()?);
     let hand_off = hand_off_visible(hand.run()).map_err(|error| error.to_string());
     let after = if matches!(hand_off, Ok(HandOffOutcome::Started)) {
-        follow_the_feed(&mut hand, row)?
+        follow_the_feed(&mut hand, &control, row)?
     } else {
         AfterHandOff {
             first_reel_frames: Err("not awaited: reel 1 was not handed off".to_owned()),
             scrolls: Vec::new(),
             stay: None,
             page_download: None,
+            edge: None,
         }
     };
     let page_report = hand.run_ref().finish_page();
@@ -327,6 +345,7 @@ fn drive(
             scrolls: after.scrolls,
             stay: after.stay,
             page_download: after.page_download,
+            edge: after.edge,
             target_wait_lines,
             generations,
             shown_stream_widths,
@@ -347,6 +366,7 @@ fn hand_off_visible(run: &mut HandoffRun<'_>) -> Result<HandOffOutcome, BrowserE
 /// После передачи: пропуск посредника, кадры ролика 1 в окне, затем сценарий строки.
 fn follow_the_feed(
     hand: &mut ReturnHand<'_, '_>,
+    control: &PlayerControl,
     row: FeedRow,
 ) -> Result<AfterHandOff, ScenarioError> {
     let nothing_after = |reason: String| AfterHandOff {
@@ -354,6 +374,7 @@ fn follow_the_feed(
         scrolls: Vec::new(),
         stay: None,
         page_download: None,
+        edge: None,
     };
     if let Err(message) =
         wait_for_session_granted(&hand.run_ref().stderr_log, SESSION_GRANTED_TIMEOUT)?
@@ -373,6 +394,7 @@ fn follow_the_feed(
             scrolls: Vec::new(),
             stay: None,
             page_download: None,
+            edge: None,
         });
     }
     let mut after = AfterHandOff {
@@ -380,6 +402,7 @@ fn follow_the_feed(
         scrolls: Vec::new(),
         stay: None,
         page_download: None,
+        edge: None,
     };
     if let Some(page_load) = row.before_scrolling.page_load() {
         // Листаем в любом случае: если докачки не было, приговор назовёт это отдельной причиной.
@@ -395,6 +418,11 @@ fn follow_the_feed(
         }
         FeedScenario::HoverPreview => after.stay = Some(steps::hover_over_preview(hand)?),
         FeedScenario::ScrollToComments => after.stay = Some(steps::scroll_to_comments(hand)?),
+        FeedScenario::Edge(edge) => {
+            let run = edge_steps::run_edge(hand, control, edge)?;
+            after.scrolls = run.scrolls;
+            after.edge = Some(run.edge);
+        }
     }
     Ok(after)
 }
@@ -416,7 +444,7 @@ mod tests {
     #[test]
     fn steps_are_unique_and_pages_are_in_the_catalog_and_on_disk() {
         let mut steps = HashSet::new();
-        for row in FEED_ROWS {
+        for row in all_rows() {
             assert!(steps.insert(row.step_id), "duplicate step {}", row.step_id);
             assert!(
                 PAGE_SCENARIOS.iter().any(|page| page.id == row.page_id),
@@ -429,7 +457,7 @@ mod tests {
                 row.step_id
             );
         }
-        assert_eq!(page_ids(), ["feed", "feed-hover"]);
+        assert_eq!(page_ids(), ["feed", "feed-hover", "feed-edges"]);
     }
 
     #[test]

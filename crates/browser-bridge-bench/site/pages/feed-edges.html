@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>feed-edges</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html{scroll-snap-type:y mandatory}
+body{margin:0;background:#111;color:#ccc;font:14px system-ui,sans-serif}
+.reel{height:100vh;scroll-snap-align:start;position:relative;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #333;box-sizing:border-box}
+.reel-caption{position:absolute;top:8px;left:12px}
+.reel-video{height:70vh;max-width:90vw;background:#000}
+</style>
+</head>
+<body>
+<main id="feed"></main>
+
+<script type="module">
+import { runScenario } from '../lib/bench-report.js';
+import { loadCatalog } from '../lib/bench-player.js';
+import { installEntryProbe } from '../lib/entry-probe.js';
+import { ReelSource, logWheelEvents, serveRobotCommands } from '../lib/feed-kit.js';
+import { EdgeFeed, PAGINGS, PAGING_NATIVE, PAGING_WHEEL, TAILS, TAIL_COMMENTS, TAIL_NONE } from '../lib/feed-edge-feed.js';
+import { EDGE_SHAPES, QUIRKS, QUIRK_NONE, createEdgeShape } from '../lib/feed-edge-shapes.js';
+
+// Края ленты коротких видео (сессия 16b3): то, что настоящие сайты делают помимо спокойного листания
+// (наблюдение без моста, Firefox 160, 19 ноября 2026). Подробности каждой формы — lib/feed-edge-shapes.js,
+// лента без серийной очереди — lib/feed-edge-feed.js, превью другого раздела — lib/feed-edge-previews.js.
+// Параметры адреса:
+//  * `shape=many|pool|moved` — Instagram / TikTok / YouTube Shorts;
+//  * `reels=<число>` — сколько роликов в ленте (по умолчанию 3; быстрая серия берёт 5);
+//  * `tail=none|comments` — после последнего ролика раздел без видео (конец ленты);
+//  * `paging=native|wheel` — родная прокрутка с прилипанием или листание жестами колеса (быстрая серия);
+//  * `quirk=none|remove-old-during-move` — страница убирает прежний элемент прямо во время переезда окна.
+// Режим передачи: ролик 1 играет, страница ждёт робота. Робот отдаёт вкладку и листает НАСТОЯЩИМ колесом;
+// хуки `remove-current-reel`, `leave-section`, `leave-from-tail` запускают сценарии края. Судит Rust.
+await runScenario('feed-edges', async (ctx) => {
+  const raw = ctx.params.raw;
+  const shape = raw.get('shape') ?? 'many';
+  if (!EDGE_SHAPES.includes(shape)) throw new Error(`bad page query: shape=${shape}`);
+  const tail = raw.get('tail') ?? TAIL_NONE;
+  if (!TAILS.includes(tail)) throw new Error(`bad page query: tail=${tail}`);
+  const paging = raw.get('paging') ?? PAGING_NATIVE;
+  if (!PAGINGS.includes(paging)) throw new Error(`bad page query: paging=${paging}`);
+  const quirk = raw.get('quirk') ?? QUIRK_NONE;
+  if (!QUIRKS.includes(quirk)) throw new Error(`bad page query: quirk=${quirk}`);
+  const reels = Number(raw.get('reels') ?? 3);
+  if (!Number.isInteger(reels) || reels < 2 || reels > 5) throw new Error(`bad page query: reels=${raw.get('reels')}`);
+  if (tail === TAIL_COMMENTS && shape !== 'many') throw new Error('the tail section is modelled for shape=many only');
+
+  const catalog = await loadCatalog();
+  const source = new ReelSource(ctx, catalog);
+  const feed = new EdgeFeed(ctx, { reels, tail });
+  feed.mount(document.getElementById('feed'));
+  const behaviour = createEdgeShape(shape, ctx, source, feed, { reels, quirk });
+  feed.waitUntilOldIsGone = behaviour.waitUntilOldIsGone;
+  if (paging === PAGING_WHEEL) feed.enableWheelPaging();
+  const wheel = logWheelEvents(ctx);
+
+  ctx.check('reel-1-plays', await behaviour.start(), `shape=${shape}`);
+  feed.watch({
+    onStep: (from, to, kind) => behaviour.step(from, to, kind),
+    onTail: (from) => behaviour.tail(from),
+  });
+  if (!ctx.params.handoff) return;
+  installEntryProbe(ctx);
+  ctx.log('handoff-ready');
+  await serveRobotCommands(ctx, {
+    hooks: {
+      'remove-current-reel': () => behaviour.removeCurrent(),
+      'leave-section': () => behaviour.leaveSection(),
+      'leave-from-tail': () => behaviour.leaveFromTail(),
+    },
+    onFinish: async () => {
+      for (const [name, value] of Object.entries(EdgeFeed.metrics())) ctx.metric(name, value);
+      ctx.metric('wheel_events_trusted', wheel.trusted);
+    },
+  });
+});
+</script>
+</body>
+</html>

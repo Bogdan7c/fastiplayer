@@ -21,6 +21,7 @@
 
 use super::super::super::evidence::{host_failures, page_failures, unexpected_player_lines};
 use super::super::super::outcome::Verdict;
+use super::edge_judge::{self, EdgeRecord};
 use crate::browsers::HandOffOutcome;
 use crate::observe::{FrameGrowth, HostLogEvidence};
 use crate::site::{PageReport, SiteError};
@@ -37,6 +38,34 @@ pub(super) enum ExpectedWindow {
     FollowsFeed { reel_stream_widths: &'static [u64] },
     /// Окно остаётся на отданном ролике (ширина кадра его), новых загрузок нет.
     StaysOnFirstReel { stream_width: u64 },
+    /// Быстрая серия прокруток (16b3): после первой спокойной прокрутки страница пролистала ещё несколько
+    /// роликов подряд. Окно кончает на ПОСЛЕДНЕМ ролике (ширины кадра всех роликов по порядку).
+    EndsOnLastReel { reel_stream_widths: &'static [u64] },
+    /// Уход из ленты в другой раздел (16b3): честный конец «Source tab closed», превью нового раздела не
+    /// принято. `reel_stream_widths` — ролики, которые окно успело показать до ухода.
+    EndsHonestly { reel_stream_widths: &'static [u64] },
+    /// Конец ленты без ухода (решение 356): окно ждёт, не кончает сеанс и не берёт новых роликов.
+    /// `reel_stream_widths` — ролики, которые окно показало до конца ленты.
+    WaitsAtFeedEnd { reel_stream_widths: &'static [u64] },
+}
+
+/// Можно ли окну показывать сообщение о конце сеанса в этой строке.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EndNoticePolicy {
+    /// Нельзя: сеанс обязан пережить всю ленту.
+    Forbidden,
+    /// Нужно (проверяется отдельно, `edge_judge`): строка про честный конец.
+    Expected,
+}
+
+/// Судится ли рост кадров после переезда на ролик, к которому ведёт прокрутка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FrameGrowthCheck {
+    /// Да: после переезда окно обязано играть новый ролик (все спокойные строки).
+    Required,
+    /// Нет: страница убрала этот элемент сразу после переезда (находка F2), и от окна ждут лишь, что оно
+    /// дождётся следующего ролика; рост кадров судится на следующем ролике.
+    NotRequired,
 }
 
 /// Итог одной прокрутки колесом (по данным робота).
@@ -50,6 +79,8 @@ pub(super) struct ScrollRecord {
     pub player_loaded_new_generation: Result<(), String>,
     /// Рост показа кадров между двумя сводками ПОСЛЕ переезда.
     pub frame_growth: Result<FrameGrowth, String>,
+    /// Судится ли `frame_growth`.
+    pub frame_growth_check: FrameGrowthCheck,
 }
 
 /// Улики отрицательной строки: раздражитель был, а окно осталось.
@@ -79,6 +110,8 @@ pub(super) struct FeedEvidence {
     /// Докачка страницы сверх памяти моста перед прокруткой: состоялась или причина, почему нет (`None` —
     /// строка её не просит).
     pub page_download: Option<Result<(), String>>,
+    /// Улики края ленты (16b3): раздражитель страницы и что с ним стало (`None` — строка не про края).
+    pub edge: Option<EdgeRecord>,
     /// Строки журнала плеера «новое поколение не дождалось данных у цели» (их быть не должно).
     pub target_wait_lines: Vec<String>,
     /// Номера поколений из строк `Browser stream generation loaded` по порядку.
@@ -97,7 +130,7 @@ pub(super) struct FeedEvidence {
 
 /// Убирает подряд идущие повторы: плеер пишет строку качества дважды (вес потока «неизвестен», потом
 /// известен), а ролик при этом один.
-fn without_consecutive_repeats(values: &[u64]) -> Vec<u64> {
+pub(super) fn without_consecutive_repeats(values: &[u64]) -> Vec<u64> {
     let mut result: Vec<u64> = Vec::new();
     for value in values {
         if result.last() != Some(value) {
@@ -108,7 +141,7 @@ fn without_consecutive_repeats(values: &[u64]) -> Vec<u64> {
 }
 
 /// Метрика отчёта страницы; нет метрики — это провал, а не нуль.
-fn metric(report: &PageReport, name: &str, failures: &mut Vec<String>) -> Option<f64> {
+pub(super) fn metric(report: &PageReport, name: &str, failures: &mut Vec<String>) -> Option<f64> {
     let value = report.metrics.get(name).copied();
     if value.is_none() {
         failures.push(format!("the page report has no metric '{name}'"));
@@ -117,7 +150,7 @@ fn metric(report: &PageReport, name: &str, failures: &mut Vec<String>) -> Option
 }
 
 /// Проверка роста кадров: рост обязан быть и быть достаточным.
-fn growth_failure(what: &str, growth: &Result<FrameGrowth, String>) -> Option<String> {
+pub(super) fn growth_failure(what: &str, growth: &Result<FrameGrowth, String>) -> Option<String> {
     match growth {
         Ok(growth) if growth.frames_gained() >= MIN_FRAMES_GAINED => None,
         Ok(growth) => Some(format!(
@@ -131,7 +164,11 @@ fn growth_failure(what: &str, growth: &Result<FrameGrowth, String>) -> Option<St
 /// Чистое решение «окно плеера повело себя как надо за лентой».
 pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> Verdict {
     let mut failures: Vec<String> = Vec::new();
-    common_failures(evidence, &mut failures);
+    let end_notices = match expected {
+        ExpectedWindow::EndsHonestly { .. } => EndNoticePolicy::Expected,
+        _ => EndNoticePolicy::Forbidden,
+    };
+    common_failures(evidence, end_notices, &mut failures);
     match expected {
         ExpectedWindow::FollowsFeed { reel_stream_widths } => {
             follow_failures(reel_stream_widths, evidence, &mut failures);
@@ -139,12 +176,22 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
         ExpectedWindow::StaysOnFirstReel { stream_width } => {
             stay_failures(stream_width, evidence, &mut failures);
         }
+        ExpectedWindow::EndsOnLastReel { reel_stream_widths } => {
+            edge_judge::last_reel_failures(reel_stream_widths, evidence, &mut failures);
+        }
+        ExpectedWindow::EndsHonestly { reel_stream_widths } => {
+            edge_judge::honest_end_failures(reel_stream_widths, evidence, &mut failures);
+        }
+        ExpectedWindow::WaitsAtFeedEnd { reel_stream_widths } => {
+            edge_judge::waits_failures(reel_stream_widths, evidence, &mut failures);
+        }
     }
     failures.extend(page_failures(&evidence.page_report, evidence.page_id));
     let summary = format!(
-        "generations {:?}, stream widths shown {:?}",
+        "generations {:?}, stream widths shown {:?}{}",
         evidence.generations,
-        without_consecutive_repeats(&evidence.shown_stream_widths)
+        without_consecutive_repeats(&evidence.shown_stream_widths),
+        burst_gaps_note(evidence)
     );
     // Журнал страницы прикладывается только к провалу: в успехе он шум.
     let summary = if failures.is_empty() {
@@ -155,8 +202,26 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
     Verdict::from_failures(&failures, summary)
 }
 
+/// Промежутки между шагами быстрой серии, как их насчитала страница (для отчёта; пусто, если серии не было).
+fn burst_gaps_note(evidence: &FeedEvidence) -> String {
+    let Ok(report) = &evidence.page_report else {
+        return String::new();
+    };
+    match (
+        report.metrics.get("burst_gap_min_ms"),
+        report.metrics.get("burst_gap_max_ms"),
+    ) {
+        (Some(min), Some(max)) => format!(", burst step gaps {min}..{max} ms"),
+        _ => String::new(),
+    }
+}
+
 /// Общее для всех строк: передача, один пропуск, ни одного сообщения о конце, отданный ролик показан.
-fn common_failures(evidence: &FeedEvidence, failures: &mut Vec<String>) {
+fn common_failures(
+    evidence: &FeedEvidence,
+    end_notices: EndNoticePolicy,
+    failures: &mut Vec<String>,
+) {
     match &evidence.hand_off {
         Ok(HandOffOutcome::Started) => {}
         Ok(other) => failures.push(format!(
@@ -171,7 +236,7 @@ fn common_failures(evidence: &FeedEvidence, failures: &mut Vec<String>) {
             evidence.host.session_grants
         ));
     }
-    if !evidence.end_notice_lines.is_empty() {
+    if end_notices == EndNoticePolicy::Forbidden && !evidence.end_notice_lines.is_empty() {
         failures.push(format!(
             "the window showed a session end notice, the session did not survive the feed: {}",
             evidence.end_notice_lines.join(" | ")
@@ -179,6 +244,12 @@ fn common_failures(evidence: &FeedEvidence, failures: &mut Vec<String>) {
     }
     if let Err(message) = &evidence.first_reel_frames {
         failures.push(format!("reel 1 never reached the player window: {message}"));
+    }
+    // Раздражитель края обязан дойти до страницы, иначе строка прошла бы вхолостую.
+    if let Some(Err(message)) = evidence.edge.as_ref().map(|edge| &edge.stimulus) {
+        failures.push(format!(
+            "the page stimulus did not happen, so the row proves nothing: {message}"
+        ));
     }
     if let Some(Err(message)) = &evidence.page_download {
         failures.push(format!(
@@ -211,26 +282,7 @@ fn follow_failures(
         ));
     }
     for (index, scroll) in evidence.scrolls.iter().enumerate() {
-        let label = format!("scroll {} (reel {} -> {})", index + 1, index + 1, index + 2);
-        // Отдельная причина: колесо вообще не дошло до страницы (стенд, а не продукт, не крутит).
-        if scroll.trusted_wheel_events == 0 {
-            failures.push(format!(
-                "{label}: the real mouse wheel never reached the page (no 'wheel trusted=true' in the page log)"
-            ));
-            continue;
-        }
-        if let Err(message) = &scroll.page_started_next_reel {
-            failures.push(format!(
-                "{label}: the page did not start the next reel: {message}"
-            ));
-            continue;
-        }
-        if let Err(message) = &scroll.player_loaded_new_generation {
-            failures.push(format!(
-                "{label}: the window did not relocate to the next reel: {message}"
-            ));
-        }
-        failures.extend(growth_failure(&label, &scroll.frame_growth));
+        scroll_record_failures(index, scroll, failures);
     }
     let expected_generations: Vec<u64> = (1..=reel_stream_widths.len() as u64).collect();
     if evidence.generations != expected_generations {
@@ -246,6 +298,37 @@ fn follow_failures(
         ));
     }
     page_metric_failures(evidence, reel_stream_widths.len(), failures);
+}
+
+/// Нарушения одной прокрутки колесом (`index` с нуля): колесо дошло, страница запустила следующий ролик,
+/// окно переехало и кадры растут.
+pub(super) fn scroll_record_failures(
+    index: usize,
+    scroll: &ScrollRecord,
+    failures: &mut Vec<String>,
+) {
+    let label = format!("scroll {} (reel {} -> {})", index + 1, index + 1, index + 2);
+    // Отдельная причина: колесо вообще не дошло до страницы (стенд, а не продукт, не крутит).
+    if scroll.trusted_wheel_events == 0 {
+        failures.push(format!(
+            "{label}: the real mouse wheel never reached the page (no 'wheel trusted=true' in the page log)"
+        ));
+        return;
+    }
+    if let Err(message) = &scroll.page_started_next_reel {
+        failures.push(format!(
+            "{label}: the page did not start the next reel: {message}"
+        ));
+        return;
+    }
+    if let Err(message) = &scroll.player_loaded_new_generation {
+        failures.push(format!(
+            "{label}: the window did not relocate to the next reel: {message}"
+        ));
+    }
+    if scroll.frame_growth_check == FrameGrowthCheck::Required {
+        failures.extend(growth_failure(&label, &scroll.frame_growth));
+    }
 }
 
 /// Метрики страницы строк «окно идёт за лентой»: она сама запустила столько роликов, сколько надо.
