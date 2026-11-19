@@ -38,10 +38,27 @@ const FAR_CORNER_SHARE: f64 = 0.95;
 const POLL_STEP: Duration = Duration::from_millis(200);
 /// Метка журнала страницы: настоящее колесо дошло до страницы.
 const TRUSTED_WHEEL_MARK: &str = "wheel trusted=true";
-/// Команда странице: скачать больше, чем помнит мост (хук `download-past-bridge-memory` страницы `feed`).
-pub(super) const DOWNLOAD_PAST_BRIDGE_MEMORY_COMMAND: &str = "hook:download-past-bridge-memory";
-/// Отметка страницы: докачка сверх памяти моста закончена.
-pub(super) const EARLIER_REEL_DOWNLOADED_MARK: &str = "earlier-reel-downloaded";
+/// Нагрузка страницы перед прокруткой: команда-хук и отметка журнала страницы о том, что нагрузка была.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) struct PageLoad {
+    /// Команда странице (`hook:<имя>`).
+    pub command: &'static str,
+    /// Начало строки журнала страницы, которую она пишет в конце нагрузки.
+    pub finished_mark: &'static str,
+}
+
+/// Скачать больше, чем помнит мост (хук `download-past-bridge-memory` страницы `feed`).
+pub(in super::super) const DOWNLOAD_PAST_BRIDGE_MEMORY: PageLoad = PageLoad {
+    command: "hook:download-past-bridge-memory",
+    finished_mark: "earlier-reel-downloaded",
+};
+/// Сбросить пройденные ролики и скачать начала дальних сверх памяти моста (хук
+/// `detach-passed-reels-and-preload-far-ahead`). Отметка ждётся вместе с числами формы: все три пройденных
+/// ролика закрыты, все восемь дальних живы. Иная форма страницы строку не доказывает.
+pub(in super::super) const DETACH_PASSED_REELS_AND_PRELOAD_FAR_AHEAD: PageLoad = PageLoad {
+    command: "hook:detach-passed-reels-and-preload-far-ahead",
+    finished_mark: "far-reels-preloaded passed_closed=3 far_open=8 mib=",
+};
 /// Сколько ждём докачку: 80 МиБ кусками по мебибайту идут секунды, запас — на медленный браузер стенда.
 const PAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(90);
 /// Метки журнала `feed-hover`: главный ролик ушёл с экрана, не остановленный страницей / остановленный ею.
@@ -209,16 +226,14 @@ pub(super) fn scroll_to_reel(
     })
 }
 
-/// Страница качает больше, чем помнит мост (строка «долгая загрузка», `site/lib/feed-history.js`): робот
-/// запускает докачку хуком и ждёт отметку страницы. `Err` называет, чего не дождались.
-pub(super) fn download_past_bridge_memory(hand: &mut ReturnHand<'_, '_>) -> Result<(), String> {
-    hand.run().tell_page(DOWNLOAD_PAST_BRIDGE_MEMORY_COMMAND);
+/// Страница качает больше, чем помнит мост (`site/lib/feed-history.js`): робот запускает нагрузку хуком и
+/// ждёт отметку страницы. `Err` называет, чего не дождались.
+pub(super) fn run_page_load(hand: &mut ReturnHand<'_, '_>, load: PageLoad) -> Result<(), String> {
+    hand.run().tell_page(load.command);
     hand.run_ref()
-        .wait_page_log_line(EARLIER_REEL_DOWNLOADED_MARK, PAGE_DOWNLOAD_TIMEOUT)
+        .wait_page_log_line(load.finished_mark, PAGE_DOWNLOAD_TIMEOUT)
         .map(|_| ())
-        .map_err(|message| {
-            format!("the page never logged '{EARLIER_REEL_DOWNLOADED_MARK}': {message}")
-        })
+        .map_err(|message| format!("the page never logged '{}': {message}", load.finished_mark))
 }
 
 /// Ждёт в журнале страницы все `needles`; `Err` называет, чего не дождались.

@@ -14,6 +14,7 @@
 import { captureBinaryIntrinsics, type BinaryIntrinsics, type BinaryWindow } from "../page/binary-view.ts";
 import type { ChunkTap } from "../page/handoff-tap.ts";
 import { installCodecAnswerOverrides, type CodecAnswerWindow } from "../page/codec-policy/answer-overrides.ts";
+import { VIEWING_UNKNOWN } from "../page/journal/journal-viewing.ts";
 import { DocumentMemoryBudget, DOCUMENT_MEMORY_BUDGET_BYTES } from "../page/journal/memory-budget.ts";
 import { captureMediaSourceReaders, type MediaSourceWindow } from "../page/media-source-readers.ts";
 import { installMseHook, type MseWindow } from "../page/mse-hook.ts";
@@ -119,6 +120,8 @@ export function installWorkerHook(
     readyStateOf: (mediaSource) => mediaSources.readyStateOf(mediaSource),
     // Blob-адресов для MediaSource воркера нет: к элементу он подключается только через handle.
     objectUrlOf: () => null,
+    // Воркер элементов страницы не видит: о просмотре не знает ничего, память отдаёт старший MediaSource.
+    viewingOf: () => VIEWING_UNKNOWN,
     reportOddity,
   });
   extension = createExtension?.({ scope, link, binary, tracker, reportOddity }) ?? null;

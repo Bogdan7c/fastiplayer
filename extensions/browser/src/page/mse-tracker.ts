@@ -11,10 +11,14 @@
 //  - `endOfStream("network" | "decode")` — сбой, не конец потока: не пересказываем;
 //  - каждое событие и каждый кусок попадает в журнал MediaSource («память без копий») и
 //    слушателю (живой поток во время передачи) — в одном и том же порядке.
+//  - журнал каждого MediaSource получает пробу владельца: закрыт ли MediaSource и что известно о
+//    просмотре его видео (решение 364). Про элементы страницы трекер сам не знает — ответ о просмотре
+//    даёт окружение (`viewingOf`), а трекер только не выпускает его сбой в вызов страницы.
 
 import type { LocalMediaSourceKey, LocalMseEvent } from "../shared/handoff-contract.ts";
 import { MAX_SOURCE_BUFFERS_PER_GENERATION } from "../protocol/limits.ts";
 import type { MediaDuration } from "../protocol/time.ts";
+import { VIEWING_UNKNOWN, type JournalViewing } from "./journal/journal-viewing.ts";
 import type { DocumentMemoryBudget } from "./journal/memory-budget.ts";
 import type { MediaJournal, ReplayItem } from "./journal/media-journal.ts";
 import {
@@ -70,6 +74,11 @@ export interface MseTrackerEnvironment {
   readonly readyStateOf: (mediaSource: object) => string | null;
   /** Последний blob-адрес, созданный для этого MediaSource. */
   readonly objectUrlOf: (mediaSource: object) => string | null;
+  /**
+   * Что известно о просмотре видео этого MediaSource (решение 364): по ответу потолок памяти решает,
+   * чей журнал отдаёт память первым. Тот, кто элементов не видит (воркер), отвечает `VIEWING_UNKNOWN`.
+   */
+  readonly viewingOf: (record: MediaSourceRecord) => JournalViewing;
   /** Единичная отладочная запись о необычном (без спама). */
   readonly reportOddity: (what: string) => void;
 }
@@ -246,16 +255,52 @@ export class MseTracker implements MseObserver {
     this.#lastKeyNumber += 1;
     const key = `${MEDIA_SOURCE_KEY_PREFIX}${this.#lastKeyNumber}`;
     const reference = new WeakRef(mediaSource);
+    // Запись появляется после журнала (журнал — её часть), а проба владельца нужна журналу сразу.
+    let started: MediaSourceRecord | null = null;
     const journal = this.#environment.budget.createJournal(key, {
       isGone: () => {
         const alive = reference.deref();
         return alive === undefined || this.#environment.readyStateOf(alive) === "closed";
       },
+      viewing: () => (started === null ? VIEWING_UNKNOWN : this.#viewingOf(started)),
     });
     const record: MediaSourceRecord = { key, journal, objectUrl: this.#environment.objectUrlOf(mediaSource), mediaSource: reference };
+    started = record;
     this.#mediaSources.set(mediaSource, record);
     this.#listener?.onMediaSourceStarted(record);
     return record;
+  }
+
+  /**
+   * Ответ владельца потолку памяти. Проба идёт внутри `appendBuffer` страницы: сбой чтения страницы
+   * (чужой «бренд», бросающий геттер) не должен до неё долететь — тогда о просмотре просто ничего не известно.
+   */
+  #viewingOf(record: MediaSourceRecord): JournalViewing {
+    try {
+      return this.#withGuardedDistance(this.#environment.viewingOf(record));
+    } catch {
+      this.#environment.reportOddity("could not read how a media source is being watched");
+      return VIEWING_UNKNOWN;
+    }
+  }
+
+  /**
+   * Расстояние ещё не игравшего видео от окна потолок читает позже, когда до него доходит очередь, — тоже
+   * внутри `appendBuffer` страницы. Сбой этого чтения до страницы не долетает: такое видео считается самым
+   * далёким (оно отдаст память раньше тех, чьё место известно).
+   */
+  #withGuardedDistance(viewing: JournalViewing): JournalViewing {
+    if (viewing.kind !== "not_started" || viewing.place.kind !== "on_page") return viewing;
+    const measure = viewing.place.distanceFromView;
+    const distanceFromView = (): number => {
+      try {
+        return measure();
+      } catch {
+        this.#environment.reportOddity("could not measure where a video stands on the page");
+        return Number.POSITIVE_INFINITY;
+      }
+    };
+    return { kind: "not_started", place: { kind: "on_page", distanceFromView } };
   }
 
   #emitEvent(record: MediaSourceRecord, event: LocalMseEvent): void {

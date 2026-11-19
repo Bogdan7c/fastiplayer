@@ -16,6 +16,11 @@
 //! прокрутки нет мгновенного воспроизведения»): страница качает больше, чем мост помнит (64 МиБ на документ),
 //! а следующий ролик обязан уйти плееру с начала и без ожидания (`site/lib/feed-history.js`).
 //!
+//! Строка `feed-halfway-after-passed-reels-detached` — замер во вкладке владельца 19 ноября 2026 (находка 3,
+//! решение 364): Instagram держит живыми около 20 MediaSource, пройденные ролики сбрасывает пачками, и после
+//! сброса самый старый живой MediaSource — текущий ролик, за ним следующий. Память моста обязана отдавать
+//! начала дальних роликов, а не текущий и следующий.
+//!
 //! Форма `halfway` — живой Instagram 18 ноября 2026, без входа (находки живой проверки, решение 361): лента листается внутри
 //! блока, страница переключает ролик на полпути прокрутки (прежний ещё на экране), а колесо человек
 //! крутит прямо над роликом, то есть над нашей заглушкой «Playing in Fastiplayer».
@@ -58,6 +63,34 @@ enum BeforeScrolling {
     Nothing,
     /// Страница качает больше, чем помнит мост (параметр адреса `history=past-bridge-memory`).
     PageDownloadsPastBridgeMemory,
+    /// Страница сбрасывает пройденные ролики и качает начала дальних сверх памяти моста (параметр адреса
+    /// `history=passed-reels-detached`).
+    PageDetachesPassedReelsAndPreloadsFarAhead,
+}
+
+impl BeforeScrolling {
+    /// Нагрузка страницы, которую робот запускает после передачи (`None` — строка её не просит).
+    fn page_load(self) -> Option<steps::PageLoad> {
+        match self {
+            Self::Nothing => None,
+            Self::PageDownloadsPastBridgeMemory => Some(steps::DOWNLOAD_PAST_BRIDGE_MEMORY),
+            Self::PageDetachesPassedReelsAndPreloadsFarAhead => {
+                Some(steps::DETACH_PASSED_REELS_AND_PRELOAD_FAR_AHEAD)
+            }
+        }
+    }
+
+    /// Значение параметра адреса `history`, с которым страница умеет эту нагрузку (`None` — параметра нет).
+    #[cfg(test)]
+    fn history_query(self) -> Option<&'static str> {
+        match self {
+            Self::Nothing => None,
+            Self::PageDownloadsPastBridgeMemory => Some("history=past-bridge-memory"),
+            Self::PageDetachesPassedReelsAndPreloadsFarAhead => {
+                Some("history=passed-reels-detached")
+            }
+        }
+    }
 }
 
 /// Что делает строка с лентой.
@@ -154,6 +187,19 @@ const FEED_ROWS: &[FeedRow] = &[
             wheel: WheelPlace::OverReel,
         },
         before_scrolling: BeforeScrolling::PageDownloadsPastBridgeMemory,
+    },
+    // Замер во вкладке владельца (находка 3): пройденные ролики страница сбросила пачкой, начала дальних
+    // скачаны сверх памяти моста. Текущий и следующий ролики теперь самые старые в документе, а следующий
+    // всё равно обязан заиграть в окне сразу и с начала.
+    FeedRow {
+        step_id: "feed-halfway-after-passed-reels-detached",
+        page_id: "feed",
+        query_suffix: "&mode=handoff&shape=halfway&history=passed-reels-detached",
+        scenario: FeedScenario::Scroll {
+            scrolls: 1,
+            wheel: WheelPlace::OverReel,
+        },
+        before_scrolling: BeforeScrolling::PageDetachesPassedReelsAndPreloadsFarAhead,
     },
     // Превью по наведению рядом с главным видео: наш ролик на экране, переезда нет.
     FeedRow {
@@ -335,9 +381,9 @@ fn follow_the_feed(
         stay: None,
         page_download: None,
     };
-    if row.before_scrolling == BeforeScrolling::PageDownloadsPastBridgeMemory {
+    if let Some(page_load) = row.before_scrolling.page_load() {
         // Листаем в любом случае: если докачки не было, приговор назовёт это отдельной причиной.
-        after.page_download = Some(steps::download_past_bridge_memory(hand));
+        after.page_download = Some(steps::run_page_load(hand, page_load));
     }
     match row.scenario {
         FeedScenario::Scroll { scrolls, wheel } => {
@@ -471,9 +517,13 @@ mod tests {
     fn the_long_download_row_downloads_more_than_the_bridge_remembers() {
         // Параметр адреса и шаг робота ходят парой: страница без хука или робот без команды — строка вхолостую.
         for row in FEED_ROWS {
+            let history_in_query = row
+                .query_suffix
+                .split('&')
+                .find(|pair| pair.starts_with("history="));
             assert_eq!(
-                row.query_suffix.contains("history=past-bridge-memory"),
-                row.before_scrolling == BeforeScrolling::PageDownloadsPastBridgeMemory,
+                history_in_query,
+                row.before_scrolling.history_query(),
                 "{}: the page query and the robot step disagree",
                 row.step_id
             );
@@ -484,7 +534,8 @@ mod tests {
             .count();
         assert_eq!(long_download_rows, 1);
         let history = site_file("lib/feed-history.js");
-        let hook = steps::DOWNLOAD_PAST_BRIDGE_MEMORY_COMMAND
+        let hook = steps::DOWNLOAD_PAST_BRIDGE_MEMORY
+            .command
             .strip_prefix("hook:")
             .expect("a page hook command");
         assert!(
@@ -492,7 +543,10 @@ mod tests {
             "feed-history.js lost the hook '{hook}'"
         );
         assert!(
-            history.contains(&format!("`{} mib=", steps::EARLIER_REEL_DOWNLOADED_MARK)),
+            history.contains(&format!(
+                "`{} mib=",
+                steps::DOWNLOAD_PAST_BRIDGE_MEMORY.finished_mark
+            )),
             "feed-history.js lost the mark the robot waits for"
         );
         // Докачка обязана быть больше потолка памяти моста, иначе мосту нечего выкидывать и строка ничего
@@ -510,6 +564,52 @@ mod tests {
             history.contains("const DOWNLOAD_BYTES = 80 * MEBIBYTE"),
             "feed-history.js must download more than the 64 MiB bridge memory cap"
         );
+    }
+
+    #[test]
+    fn the_detached_passed_reels_row_reproduces_the_measured_instagram_shape() {
+        let rows: Vec<&FeedRow> = FEED_ROWS
+            .iter()
+            .filter(|row| {
+                row.before_scrolling == BeforeScrolling::PageDetachesPassedReelsAndPreloadsFarAhead
+            })
+            .collect();
+        assert_eq!(rows.len(), 1);
+        // Одна прокрутка: судится ролик, который в миг нехватки памяти был следующим по ленте.
+        assert!(matches!(
+            rows[0].scenario,
+            FeedScenario::Scroll { scrolls: 1, .. }
+        ));
+        let history = site_file("lib/feed-history.js");
+        let page_load = steps::DETACH_PASSED_REELS_AND_PRELOAD_FAR_AHEAD;
+        let hook = page_load
+            .command
+            .strip_prefix("hook:")
+            .expect("a page hook command");
+        assert!(
+            history.contains(&format!("CROWD_HOOK = '{hook}'")),
+            "feed-history.js lost the hook '{hook}'"
+        );
+        // Отметка страницы несёт доказательство формы: пройденные закрыты все, дальние все живы.
+        assert!(
+            history.contains(
+                "`far-reels-preloaded passed_closed=${passedClosed} far_open=${farOpen} mib=${Math.round(downloadedBytes / MEBIBYTE)}`"
+            ),
+            "feed-history.js lost the mark the robot waits for"
+        );
+        assert_eq!(
+            page_load.finished_mark,
+            "far-reels-preloaded passed_closed=3 far_open=8 mib="
+        );
+        // Числа отметки — те же, что страница берёт для нагрузки: сменили одно, меняйте и другое.
+        for needle in [
+            "const PASSED_REEL_COUNT = 3;",
+            "const FAR_REEL_COUNT = 8;",
+            "const FAR_REEL_BYTES = 10 * MEBIBYTE;",
+            "for (const reel of this.#passedReels) reel.detach();",
+        ] {
+            assert!(history.contains(needle), "feed-history.js lost '{needle}'");
+        }
     }
 
     #[test]

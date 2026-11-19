@@ -21,6 +21,12 @@ export interface DomReaders {
   elementsInDocument(): readonly Element[];
   /** Все элементы внутри shadow root (без вложенных shadow root). */
   elementsInShadowRoot(root: object): readonly Element[];
+  /**
+   * `<video>` самого документа, БЕЗ содержимого shadow root: один встроенный поиск по имени тега. Дёшев
+   * (сотые доли миллисекунды), поэтому годится там, где искать приходится часто; полный поиск с shadow
+   * root — `ElementRegistry.findVideoElements` (обход всех элементов документа, миллисекунды).
+   */
+  videoElementsInDocument(): readonly Element[];
   /** Элемент — `<video>` (проверка «бренда» геттером HTMLVideoElement, без `instanceof`). */
   isVideoElement(candidate: unknown): boolean;
   /** Элемент или shadow root всё ещё в документе. */
@@ -37,6 +43,11 @@ export interface DomReaders {
   isPaused(element: object): boolean;
   isEnded(element: object): boolean;
   currentTimeSeconds(element: object): number;
+  /**
+   * Настоящий элемент уже что-то сыграл с текущим источником (`played` не пуст). `false` и там, где
+   * геттера нет. Перемотка на паузе «сыгранного» не добавляет: это именно показ зрителю.
+   */
+  hasPlayed(element: object): boolean;
   /** `readyState` настоящего элемента (0 — метаданных ещё нет). */
   readyStateOf(element: object): number;
   /** Выбранный источник настоящего элемента (`currentSrc`; "" — не выбран). */
@@ -96,6 +107,8 @@ export interface DomWindow extends VisibilityWindow {
   readonly MediaError?: { readonly prototype: object };
   readonly MediaStream?: { readonly prototype: object };
   readonly Blob?: { readonly prototype: object };
+  /** Нет в фейковых окнах — тогда длина `played` читается обычным свойством. */
+  readonly TimeRanges?: { readonly prototype: object };
   readonly innerWidth: number;
   readonly innerHeight: number;
   /** Адрес документа; нет — имя хоста пустое, а происхождение неизвестно. */
@@ -108,6 +121,9 @@ export interface DomWindow extends VisibilityWindow {
  * делается только по команде фона (выбор видео), а не постоянно.
  */
 const ALL_ELEMENTS_SELECTOR = "*";
+
+/** Селектор `<video>` документа (проба «бренда» всё равно делается: имя тега страница может подделать). */
+const VIDEO_SELECTOR = "video";
 
 /** Селектор `<meta>`: имя сверяется уже оригинальным `getAttribute`, без учёта регистра. */
 const META_SELECTOR = "meta";
@@ -198,6 +214,9 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const ended = findGetter(mediaPrototype, "ended");
   const readyState = findGetter(mediaPrototype, "readyState");
   const currentTime = findGetter(mediaPrototype, "currentTime");
+  const played = findOptionalGetter(mediaPrototype, "played");
+  // Оригинальный геттер `TimeRanges.prototype.length`: страница не подменит ответ «сколько сыграно».
+  const timeRangesLength = findOptionalGetter(win.TimeRanges?.prototype, "length");
   const srcObject = findOptionalGetter(mediaPrototype, "srcObject");
   const duration = findGetter(mediaPrototype, "duration");
   const muted = findGetter(mediaPrototype, "muted");
@@ -220,17 +239,20 @@ export function captureDomReaders(win: DomWindow): DomReaders {
   const capturedOrigin = win.location?.origin;
   const documentOrigin = typeof capturedOrigin === "string" && capturedOrigin !== OPAQUE_ORIGIN ? capturedOrigin : null;
 
+  const isVideoElement = (candidate: unknown): boolean => {
+    try {
+      videoWidth(candidate);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     elementsInDocument: () => toElementArray(documentQuery(documentObject, ALL_ELEMENTS_SELECTOR)),
     elementsInShadowRoot: (root) => toElementArray(fragmentQuery(root, ALL_ELEMENTS_SELECTOR)),
-    isVideoElement: (candidate) => {
-      try {
-        videoWidth(candidate);
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    videoElementsInDocument: () => toElementArray(documentQuery(documentObject, VIDEO_SELECTOR)).filter(isVideoElement),
+    isVideoElement,
     isConnected: (node) => isConnected(node) === true,
     openShadowRootOf: (host) => {
       const root = shadowRoot(host);
@@ -251,6 +273,13 @@ export function captureDomReaders(win: DomWindow): DomReaders {
     currentTimeSeconds: (element) => {
       const seconds = currentTime(element);
       return typeof seconds === "number" ? seconds : Number.NaN;
+    },
+    hasPlayed: (element) => {
+      if (played === undefined) return false;
+      const ranges = played(element);
+      if (ranges == null) return false;
+      const length = timeRangesLength !== undefined ? timeRangesLength(ranges) : (ranges as { readonly length?: unknown }).length;
+      return typeof length === "number" && length > 0;
     },
     currentSrcOf: (element) => {
       const url = currentSrc(element);

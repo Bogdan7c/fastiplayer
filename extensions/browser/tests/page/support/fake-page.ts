@@ -267,6 +267,8 @@ export function createFakePage(pageOptions: FakePageOptions = {}) {
     #srcObject: unknown = null;
     #paused = true;
     #ended = false;
+    /** Элемент уже что-то показал с текущим источником (у настоящего — непустой `played`). */
+    #hasPlayed = false;
     #currentTime = 0;
     #playbackRate = 1;
     #muted = false;
@@ -321,6 +323,10 @@ export function createFakePage(pageOptions: FakePageOptions = {}) {
     }
     get ended(): boolean {
       return this.#ended;
+    }
+    /** Как `TimeRanges` настоящего элемента в той части, что читает мост: только число промежутков. */
+    get played(): { readonly length: number } {
+      return { length: this.#hasPlayed ? 1 : 0 };
     }
     get currentTime(): number {
       return this.#currentTime;
@@ -429,6 +435,7 @@ export function createFakePage(pageOptions: FakePageOptions = {}) {
       this.#error = null;
       if (this.#networkState !== NETWORK_STATE.EMPTY) queueMicrotask(() => this.dispatchEvent(trustedEvent("emptied")));
       this.#paused = true;
+      this.#hasPlayed = false;
       this.#currentTime = 0;
       this.#readyState = 0;
       const hasSource = this.#srcObject !== null || (this.#srcAttribute !== null && this.#srcAttribute !== "");
@@ -438,6 +445,8 @@ export function createFakePage(pageOptions: FakePageOptions = {}) {
     /** Тестовый помощник: настоящее состояние элемента. */
     testSetState(state: { paused?: boolean; ended?: boolean; currentTime?: number; readyState?: number }): void {
       if (state.paused !== undefined) this.#paused = state.paused;
+      // Играющий элемент копит «сыгранное», и пауза его не стирает (стирает только новый источник).
+      if (state.paused === false) this.#hasPlayed = true;
       if (state.ended !== undefined) this.#ended = state.ended;
       if (state.currentTime !== undefined) this.#currentTime = state.currentTime;
       if (state.readyState !== undefined) this.#readyState = state.readyState;

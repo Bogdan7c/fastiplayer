@@ -23,6 +23,7 @@ import { installViewerActivation } from "./auto-handoff/viewer-activation.ts";
 import { ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
+import { MediaSourceViewing } from "./media-source-viewing.ts";
 import { captureAnchorEventOriginals, HandedOffVideoAnchor } from "./handed-off-video-anchor.ts";
 import { ViewerOfferAnchor, type ViewerOfferSignals } from "./viewer-offer-anchor.ts";
 import { pagePlayerFailureWatchStarterFor } from "./page-player-failure-watch.ts";
@@ -113,10 +114,20 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
 
   const budget = new DocumentMemoryBudget(dependencies.memoryBudgetBytes ?? DOCUMENT_MEMORY_BUDGET_BYTES);
   const registry = new ElementRegistry(dom, (candidate) => mediaSources.isMediaSource(candidate));
+  // Свидетель просмотра (решение 364): по нему потолок памяти отдаёт сначала уже просмотренное. Опрос
+  // кандидатов и контроллер передачи собираются ниже; свидетель зовёт их только из `appendBuffer` страницы.
+  const viewing = new MediaSourceViewing({
+    dom,
+    visibleShareOf: (element) => candidates.visibleShareOf(element),
+    isHandedOff: (element) => controller.isHandingOffElement(element),
+    isUnderShadow: (element) => dependencies.playWatch.isShadowed(element),
+    now: dependencies.now,
+  });
   const tracker = new MseTracker({
     budget,
     readyStateOf: (mediaSource) => mediaSources.readyStateOf(mediaSource),
     objectUrlOf: (mediaSource) => registry.objectUrlOf(mediaSource),
+    viewingOf: (record) => viewing.viewingOf(record),
     reportOddity,
   });
   // Реестр воркеров — всегда (классификатор узнаёт по нему handle); обёртка — только в Chromium.
@@ -174,7 +185,15 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
   });
   // Защищённый MediaSource отпускает журнал (память), а передаваемый элемент при DRM отдаётся странице.
   const protectedRelease = new ProtectedMediaRelease(drmMarks, dom, candidates, reportOddity);
-  tracker.setListener(protectedRelease.wrapListener(controller));
+  const mseListener = protectedRelease.wrapListener(controller);
+  tracker.setListener({
+    onMediaSourceStarted: (record) => {
+      // Элемента нового MediaSource прошлый поиск по документу видеть не мог: свидетель поищет заново.
+      viewing.noteMediaSourceStarted();
+      mseListener.onMediaSourceStarted(record);
+    },
+    onItem: (record, item) => mseListener.onItem(record, item),
+  });
   workerMediaSources.setListener(controller);
   drmMarks.onProtected((element) => protectedRelease.releaseForElement(element));
   drmMarks.onProtected((element) => controller.onElementProtected(element));

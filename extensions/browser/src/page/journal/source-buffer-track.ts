@@ -6,7 +6,10 @@
 //  - init-сегментами, собранными из видов на куски страницы (без копий; init может быть разрезан
 //    на несколько кусков). Init-сегменты не выкидываются по потолку памяти: без последнего init
 //    повтор не начать. Старые init отпускаются, когда их сменил более новый, уже лежащий в снимке;
-//  - состоянием снимка: MIME, `timestampOffset` и выкинут ли сам `source_buffer_added`.
+//  - состоянием снимка: MIME, `timestampOffset` и выкинут ли сам `source_buffer_added`;
+//  - временем сегментов (решение 364): с какой секунды страницы начинается сегмент на данном
+//    смещении потока. Читается лениво, по просьбе журнала, из заголовков фрагмента и init-сегмента
+//    (segment-scanner/fmp4-segment-time.ts). Пока умеет только fMP4; у WebM время «неизвестно».
 //
 // Тонкость: заголовок бокса/элемента может начаться в одном куске, а дочитаться в следующих
 // (YouTube режет где угодно, бывает и по байту). Тогда сканер сообщает границу со смещением,
@@ -16,8 +19,9 @@
 
 import type { RetainedMemory } from "./retained-memory.ts";
 import { isViewIntact, recordView, type RecordedView } from "./view-integrity.ts";
+import { readFmp4FragmentDecodeTime, readFmp4TrackTimescales, type StreamByteReader } from "../segment-scanner/fmp4-segment-time.ts";
 import { MAX_HEADER_BYTES } from "../segment-scanner/header-walker.ts";
-import { createSegmentScanner, type SegmentScanner } from "../segment-scanner/scanner.ts";
+import { containerOfMimeType, createSegmentScanner, type ScannableContainer, type SegmentScanner } from "../segment-scanner/scanner.ts";
 
 /**
  * Предел одного init-сегмента. Настоящие init (ftyp+moov, EBML+Tracks) весят единицы-десятки КиБ;
@@ -59,10 +63,17 @@ interface OpenInit {
   bytes: number;
 }
 
+/** Шкалы дорожек init-сегмента: номер дорожки → единиц в секунде (`null` — init не разобран). */
+type TrackTimescales = ReadonlyMap<number, number> | null;
+
 export class SourceBufferTrack {
   readonly index: number;
   readonly #memory: RetainedMemory;
   #scanner: SegmentScanner | null;
+  /** Контейнер текущего формата потока (`null` — сканер его не понимает). */
+  #container: ScannableContainer | null;
+  /** Шкалы уже разобранных init-сегментов (разбор — один раз на init, запись живёт вместе с ним). */
+  readonly #timescalesOfInit = new WeakMap<InitSegment, { readonly timescales: TrackTimescales }>();
   /** Сколько байтов уже прошло через этот SourceBuffer (смещение следующего куска). */
   #streamOffset = 0;
   /**
@@ -83,6 +94,11 @@ export class SourceBufferTrack {
   /** Снимок: `timestampOffset` на момент среза, мкс. */
   snapshotOffsetUs = 0;
   /**
+   * `timestampOffset`, который страница выставила к этому моменту, мкс: новые куски ложатся на шкалу
+   * страницы с этим сдвигом (журнал запоминает его в записи куска — для времени сегмента).
+   */
+  pageOffsetUs = 0;
+  /**
    * Выкинутый кусок кончился посреди сегмента, а следующего куска в журнале ещё нет: новый кусок
    * пригоден для повтора только с первой границы сегмента в нём.
    */
@@ -93,6 +109,7 @@ export class SourceBufferTrack {
     this.snapshotMime = mimeType;
     this.#memory = memory;
     this.#scanner = createSegmentScanner(mimeType, 0);
+    this.#container = containerOfMimeType(mimeType);
   }
 
   /** Понимает ли сканер формат этого SourceBuffer. */
@@ -105,6 +122,7 @@ export class SourceBufferTrack {
     this.#dropOpenInit();
     this.#recentChunks = [];
     this.#scanner = createSegmentScanner(mimeType, this.#streamOffset);
+    this.#container = containerOfMimeType(mimeType);
   }
 
   /** `abort()`: браузер сбросил разборщик, недособранный init выброшен. */
@@ -187,6 +205,36 @@ export class SourceBufferTrack {
       if (init.start < replayStart) latest = init;
     }
     return latest;
+  }
+
+  /**
+   * С какой секунды потока (время декодирования, без `timestampOffset` страницы) начинается сегмент,
+   * чья граница лежит на смещении `segmentStart`. `readStream` достаёт байты потока из записей журнала.
+   * `null` — время неизвестно: формат не fMP4, заголовок ещё не пришёл или не разобран, нет init.
+   */
+  segmentStartSeconds(segmentStart: number, readStream: StreamByteReader): number | null {
+    if (this.#container !== "fmp4") return null;
+    const fragment = readFmp4FragmentDecodeTime(readStream, segmentStart);
+    if (fragment === null) return null;
+    // Шкала — из init-сегмента, который действует на этом месте потока (последний начатый не позже).
+    let init: InitSegment | null = null;
+    for (const candidate of this.#inits) {
+      if (candidate.start <= segmentStart) init = candidate;
+    }
+    const timescales = init === null ? null : this.#timescalesOf(init);
+    if (timescales === null) return null;
+    // Дорожка в SourceBuffer обычно одна: если номер из фрагмента не сошёлся, шкала единственной верна.
+    const timescale = timescales.get(fragment.trackId) ?? (timescales.size === 1 ? [...timescales.values()][0] : undefined);
+    return timescale === undefined ? null : fragment.decodeTime / timescale;
+  }
+
+  #timescalesOf(init: InitSegment): TrackTimescales {
+    const known = this.#timescalesOfInit.get(init);
+    if (known !== undefined) return known.timescales;
+    const initEnd = init.pieces.reduce((end, piece) => end + piece.length, init.start);
+    const timescales = readFmp4TrackTimescales((offset, length) => readInitBytes(init, offset, length), init.start, initEnd);
+    this.#timescalesOfInit.set(init, { timescales });
+    return timescales;
   }
 
   /** Есть ли среди init-сегментов такой, чей буфер страница уже отсоединила или урезала. */
@@ -294,4 +342,24 @@ export class SourceBufferTrack {
   #releasePieces(pieces: readonly RecordedView[]): void {
     for (const piece of pieces) this.#memory.release(piece.view);
   }
+}
+
+/** Байты init-сегмента по смещению потока (копия нескольких байт; `null` — их нет или буфер отсоединён). */
+function readInitBytes(init: InitSegment, offset: number, length: number): Uint8Array | null {
+  const bytes = new Uint8Array(length);
+  let filled = 0;
+  let pieceStart = init.start;
+  for (const piece of init.pieces) {
+    const pieceEnd = pieceStart + piece.length;
+    const from = offset + filled;
+    if (from >= pieceStart && from < pieceEnd) {
+      if (!isViewIntact(piece)) return null;
+      const part = piece.view.subarray(from - pieceStart, Math.min(pieceEnd, offset + length) - pieceStart);
+      bytes.set(part, filled);
+      filled += part.length;
+      if (filled === length) return bytes;
+    }
+    pieceStart = pieceEnd;
+  }
+  return null;
 }

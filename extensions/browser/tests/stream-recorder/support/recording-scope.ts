@@ -3,6 +3,7 @@
 // классы: хуки меняют прототипы, и тесты не должны делить их между собой.
 
 import { captureBinaryIntrinsics } from "../../../src/page/binary-view.ts";
+import { VIEWING_UNKNOWN } from "../../../src/page/journal/journal-viewing.ts";
 import { DocumentMemoryBudget, DOCUMENT_MEMORY_BUDGET_BYTES } from "../../../src/page/journal/memory-budget.ts";
 import { captureMediaSourceReaders } from "../../../src/page/media-source-readers.ts";
 import { installMseHook } from "../../../src/page/mse-hook.ts";
@@ -144,6 +145,7 @@ export function startMseRecordingRig(overrides: Partial<RecorderOptions> = {}) {
     budget: new DocumentMemoryBudget(DOCUMENT_MEMORY_BUDGET_BYTES),
     readyStateOf: (mediaSource) => mediaSources.readyStateOf(mediaSource),
     objectUrlOf: () => null,
+    viewingOf: () => VIEWING_UNKNOWN,
     reportOddity,
   });
   installMseHook(rig.scope, { observer: tracker, binary, reportOddity });

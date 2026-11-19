@@ -15,6 +15,10 @@
 //    отпускаются, а повтор начнётся с границы (подмассив куска);
 //  - формат, который сканер не понимает, или сбой разбора → журнал «неполный»: всё свёрнуто в
 //    снимок, байты отпущены, дальше записи не копятся. Повтор такого журнала — только снимок;
+//  - «уже просмотренное» (решение 364): потолок памяти сначала просит выкинуть то, что лежит позади
+//    текущей секунды страницы. Журнал отвечает за свою половину: запись выкидывается, только если
+//    после этого повтор её SourceBuffer начнётся с границы сегмента не позже названной секунды
+//    (`evictOldestIfWatchedBefore`). Время границы читается лениво из заголовков fMP4;
 //  - потолок числа записей `MAX_JOURNAL_ENTRIES`: память считает буферы, а не записи, и без него
 //    события без байтов (сеттер `timestampOffset` в цикле) копились бы вечно, а у повтора не было
 //    бы верхней границы (на неё опирается запас бюджета событий, content/page-event-budget.ts).
@@ -50,6 +54,8 @@ interface BytesEntry {
   readonly recorded: RecordedView;
   /** Смещение первого байта куска в потоке SourceBuffer. */
   readonly streamStart: number;
+  /** `timestampOffset` страницы в момент записи куска, мкс: сдвиг времени его сегментов на шкале страницы. */
+  readonly pageOffsetUs: number;
   /**
    * Смещения внутри куска, с которых поток можно начать (границы сегментов, init), по возрастанию.
    * Может пополниться позже: заголовок, начатый в конце куска, дочитывается в следующем.
@@ -73,6 +79,22 @@ export type JournalCompleteness =
 /** Когда стоит уплотнить массив записей (выкинутое начало — больше половины и не меньше этого). */
 const COMPACT_AFTER_EVICTED_ENTRIES = 1024;
 
+/** Микросекунд в секунде (времена договора — в микросекундах, позиция страницы — в секундах). */
+const MICROS_PER_SECOND = 1_000_000;
+
+/**
+ * Что журнал помнит о самой старой записи с байтами: с какой секунды страницы начнётся повтор её
+ * SourceBuffer, если её выкинуть. Потолок памяти спрашивает об одной и той же записи на каждый
+ * `appendBuffer` страницы, пока зритель до неё не досмотрел: ответ считается один раз.
+ */
+interface ResumeTimeMemo {
+  readonly entry: BytesEntry;
+  /** `null` — неизвестно (границы ещё нет или её время не прочитано). */
+  readonly resumeSeconds: number | null;
+  /** Сколько записей было в журнале: «неизвестно» перепроверяется, когда страница дала новые куски. */
+  readonly entryCount: number;
+}
+
 /** Окружение журнала: общая память документа. */
 export interface JournalEnvironment {
   readonly memory: RetainedMemory;
@@ -90,6 +112,8 @@ export class MediaJournal {
   #snapshotDuration: MediaDuration | null = null;
   /** Снимок: `endOfStream()` выкинут и после него ни байтов, ни `remove` не выкидывалось. */
   #snapshotEnded = false;
+  #resumeTimeMemo: ResumeTimeMemo | null = null;
+  #replayed = false;
 
   constructor(key: LocalMediaSourceKey, environment: JournalEnvironment) {
     this.key = key;
@@ -98,6 +122,14 @@ export class MediaJournal {
 
   get completeness(): JournalCompleteness {
     return this.#completeness;
+  }
+
+  /**
+   * Повтор этого журнала уже запрашивали: видео его MediaSource уходило в плеер. Настоящий элемент при
+   * этом стоит на паузе и «сыгранного» не копит, так что о просмотре в плеере знает только журнал.
+   */
+  get hasBeenReplayed(): boolean {
+    return this.#replayed;
   }
 
   /** Записать событие MSE (уже успешный вызов страницы). */
@@ -146,6 +178,7 @@ export class MediaJournal {
       track,
       recorded: recordView(view),
       streamStart: scan.streamStart,
+      pageOffsetUs: track.pageOffsetUs,
       cutPoints,
       replayFrom,
       dead: false,
@@ -171,6 +204,8 @@ export class MediaJournal {
     const entry = this.#entries[this.#head];
     if (entry === undefined) return;
     this.#head += 1;
+    // Памятка держит запись (а та — вид на буфер страницы): выкинутую запись помнить нельзя.
+    if (this.#resumeTimeMemo?.entry === entry) this.#resumeTimeMemo = null;
     if (entry.kind === "mse") {
       this.#foldEvent(entry.event);
     } else {
@@ -179,6 +214,91 @@ export class MediaJournal {
       this.#realignAfterEvicted(entry);
     }
     this.#compactIfWorthIt();
+  }
+
+  /**
+   * Выкинуть самую старую запись с байтами (и события перед ней), но только если зритель её уже
+   * посмотрел: после выкидывания повтор её SourceBuffer начнётся с границы сегмента, которая на шкале
+   * страницы стоит не позже `watchedUntilSeconds`. Тогда передача с текущей секунды страницы всё ещё
+   * найдёт данные под собой.
+   *
+   * `false` — ничего не выкинуто: записей нет, следующей границы у этого SourceBuffer ещё нет (повтор
+   * остался бы без начала) или её время неизвестно либо позже названной секунды.
+   */
+  evictOldestIfWatchedBefore(watchedUntilSeconds: number): boolean {
+    const oldest = this.#oldestBytesEntry();
+    if (oldest === null) return false;
+    const resumeSeconds = this.#resumeSecondsAfterEvicting(oldest.entry, oldest.position);
+    if (resumeSeconds === null || resumeSeconds > watchedUntilSeconds) return false;
+    // События перед записью сворачиваются в снимок вместе с ней: порядок журнала не нарушается.
+    for (;;) {
+      this.#skipDeadHead();
+      const head = this.#entries[this.#head];
+      if (head === undefined) return true;
+      this.evictOldest();
+      if (head === oldest.entry) return true;
+    }
+  }
+
+  /** Самая старая живая запись с байтами и её место в массиве записей. */
+  #oldestBytesEntry(): { readonly entry: BytesEntry; readonly position: number } | null {
+    for (let position = this.#head; position < this.#entries.length; position += 1) {
+      const entry = this.#entries[position];
+      if (entry !== undefined && entry.kind === "bytes" && !entry.dead) return { entry, position };
+    }
+    return null;
+  }
+
+  /**
+   * С какой секунды страницы начнётся повтор SourceBuffer записи `evicted`, если её выкинуть: время
+   * первой границы сегмента в следующих кусках того же SourceBuffer (тем же правилом, что
+   * `#realignAfterEvicted`). `null` — границы ещё нет или её время неизвестно.
+   */
+  #resumeSecondsAfterEvicting(evicted: BytesEntry, evictedPosition: number): number | null {
+    const memo = this.#resumeTimeMemo;
+    if (memo !== null && memo.entry === evicted && (memo.resumeSeconds !== null || memo.entryCount === this.#entries.length)) {
+      return memo.resumeSeconds;
+    }
+    const resumeSeconds = this.#readResumeSeconds(evicted, evictedPosition);
+    this.#resumeTimeMemo = { entry: evicted, resumeSeconds, entryCount: this.#entries.length };
+    return resumeSeconds;
+  }
+
+  #readResumeSeconds(evicted: BytesEntry, evictedPosition: number): number | null {
+    const track = evicted.track;
+    for (let position = evictedPosition + 1; position < this.#entries.length; position += 1) {
+      const entry = this.#entries[position];
+      if (entry === undefined || entry.kind !== "bytes" || entry.track !== track || entry.dead) continue;
+      const boundary = entry.replayFrom > 0 ? entry.replayFrom : entry.cutPoints[0];
+      // Кусок без границы — продолжение выкидываемого сегмента: он уйдёт вместе с ним.
+      if (boundary === undefined) continue;
+      const decodeSeconds = track.segmentStartSeconds(entry.streamStart + boundary, (offset, length) => this.#readTrackBytes(track, position, offset, length));
+      return decodeSeconds === null ? null : decodeSeconds + entry.pageOffsetUs / MICROS_PER_SECOND;
+    }
+    return null;
+  }
+
+  /**
+   * Байты потока SourceBuffer из записей журнала, начиная с записи `fromPosition` (копия нескольких
+   * байт заголовка). `null` — этих байт в журнале нет или буфер страницы отсоединён.
+   */
+  #readTrackBytes(track: SourceBufferTrack, fromPosition: number, offset: number, length: number): Uint8Array | null {
+    const bytes = new Uint8Array(length);
+    let filled = 0;
+    for (let position = fromPosition; position < this.#entries.length; position += 1) {
+      const entry = this.#entries[position];
+      if (entry === undefined || entry.kind !== "bytes" || entry.track !== track) continue;
+      const from = offset + filled;
+      const entryEnd = entry.streamStart + entry.recorded.length;
+      if (from < entry.streamStart) return null; // нужное место раньше этой записи: его в журнале нет
+      if (from >= entryEnd) continue;
+      if (entry.dead || !isViewIntact(entry.recorded)) return null;
+      const part = entry.recorded.view.subarray(from - entry.streamStart, Math.min(entryEnd, offset + length) - entry.streamStart);
+      bytes.set(part, filled);
+      filled += part.length;
+      if (filled === length) return bytes;
+    }
+    return null;
   }
 
   /** Сделать журнал «неполным»: всё свернуть в снимок, байты отпустить. */
@@ -196,6 +316,7 @@ export class MediaJournal {
     }
     this.#entries = [];
     this.#head = 0;
+    this.#resumeTimeMemo = null;
     this.#completeness = "incomplete";
     for (const track of this.#tracks.values()) track.keepOnlyLatestInit();
   }
@@ -212,6 +333,7 @@ export class MediaJournal {
    * «неполным» (повтор = снимок, дальше живое) — без тихой пропажи куска посреди потока.
    */
   replay(): ReplayItem[] {
+    this.#replayed = true;
     this.#skipDeadHead();
     if (!this.#everyReplayedViewIntact()) {
       this.markIncomplete();
@@ -264,6 +386,11 @@ export class MediaJournal {
       case "source_buffer_aborted":
         this.#tracks.get(event.source_buffer)?.restartAtNextAppend();
         break;
+      case "timestamp_offset_changed": {
+        const track = this.#tracks.get(event.source_buffer);
+        if (track !== undefined) track.pageOffsetUs = event.offset_us;
+        break;
+      }
       default:
         break;
     }

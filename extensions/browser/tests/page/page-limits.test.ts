@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import { createContentRelay } from "../../src/content/relay.ts";
 import { captureBinaryIntrinsics } from "../../src/page/binary-view.ts";
 import { createForwardByteMeter, MAX_FORWARDED_BYTES_PER_SECOND } from "../../src/page/forward-byte-meter.ts";
+import { VIEWING_UNKNOWN } from "../../src/page/journal/journal-viewing.ts";
 import { DocumentMemoryBudget, DOCUMENT_MEMORY_BUDGET_BYTES } from "../../src/page/journal/memory-budget.ts";
 import { sendStreamItem, type StreamMessage } from "../../src/page/stream-sender.ts";
 import { MAX_FORWARDED_APPEND_BYTES, MAX_JOURNAL_ENTRIES, MAX_PAGE_BYTES_EVENT_BYTES, parsePageEvent } from "../../src/shared/page-message-validation.ts";
@@ -191,7 +192,7 @@ describe("часы счётчика байтов", () => {
 describe("потолок записей журнала", () => {
   function setupJournal() {
     const budget = new DocumentMemoryBudget(1024);
-    const journal = budget.createJournal("ms-1", { isGone: () => false });
+    const journal = budget.createJournal("ms-1", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
     journal.recordEvent({ kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: VIDEO_MIME });
     return journal;
   }
@@ -245,7 +246,7 @@ describe("потолок записей журнала", () => {
 
   it("записи байтов считаются тоже: виды на один буфер не обходят потолок памяти", () => {
     const budget = new DocumentMemoryBudget(1024 * MIB);
-    const journal = budget.createJournal("ms-1", { isGone: () => false });
+    const journal = budget.createJournal("ms-1", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
     journal.recordEvent({ kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: VIDEO_MIME });
     const init = VIDEO_MP4.bytes().slice(0, 733);
     journal.recordBytes(0, init);

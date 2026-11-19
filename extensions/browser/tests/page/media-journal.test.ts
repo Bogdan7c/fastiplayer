@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { LocalMseEvent } from "../../src/shared/handoff-contract.ts";
+import { VIEWING_UNKNOWN } from "../../src/page/journal/journal-viewing.ts";
 import { DocumentMemoryBudget } from "../../src/page/journal/memory-budget.ts";
 import type { MediaJournal, ReplayItem } from "../../src/page/journal/media-journal.ts";
 import { createSegmentScanner } from "../../src/page/segment-scanner/scanner.ts";
@@ -34,7 +35,7 @@ function detachPageBuffer(view: Uint8Array | undefined): void {
 
 function newJournal(capBytes: number, isGone: () => boolean = () => false): { budget: DocumentMemoryBudget; journal: MediaJournal } {
   const budget = new DocumentMemoryBudget(capBytes);
-  return { budget, journal: budget.createJournal(KEY, { isGone }) };
+  return { budget, journal: budget.createJournal(KEY, { isGone, viewing: () => VIEWING_UNKNOWN }) };
 }
 
 function appendAll(budget: DocumentMemoryBudget, journal: MediaJournal, sourceBuffer: number, chunks: readonly Uint8Array[]): void {
@@ -216,10 +217,13 @@ test("evicted chunk ended mid-segment: later chunks without a boundary are dropp
   assert.ok(budget.memory.totalBytes <= 9_000);
 });
 
-test("cap is shared by the document: the oldest media source gives its media first", () => {
+// Кто из журналов документа отдаёт память первым, решает просмотр (решение 364): tests/page/memory-budget-viewing.test.ts.
+// Здесь закреплено общее: потолок один на документ, а когда о просмотре ничего не известно (воркер элементов
+// не видит), память отдаёт самый старый MediaSource — как было по решению 363.
+test("cap is shared by the document; with nothing known about viewing the oldest media source gives its media first", () => {
   const budget = new DocumentMemoryBudget(7_000);
-  const older = budget.createJournal("ms-1", { isGone: () => false });
-  const newer = budget.createJournal("ms-2", { isGone: () => false });
+  const older = budget.createJournal("ms-1", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
+  const newer = budget.createJournal("ms-2", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
   const file = VIDEO_MP4.bytes();
   older.recordEvent({ kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: VIDEO_MIME });
   newer.recordEvent({ kind: "source_buffer_added", media_source: "ms-2", source_buffer: 0, mime_type: VIDEO_MIME });
@@ -230,47 +234,13 @@ test("cap is shared by the document: the oldest media source gives its media fir
   assert.deepEqual(replayedBytes(newer.replay(), 0), file.subarray(0, 5714));
 });
 
-// Лента коротких видео (живой Instagram, 16b2): при открытии страница качает начало текущего и следующих
-// роликов по кругу, потом докачивает текущий. Потолок обязан брать у текущего (старшего) MediaSource, а не
-// самые старые записи документа: иначе следующий ролик остаётся без начала, которое страница не пришлёт.
-test("feed: the playing reel downloads past the cap, the preloaded next reels keep their beginning", () => {
-  const file = VIDEO_64_6S_MP4.bytes();
-  const [initEnd, secondSegment, thirdSegment] = [VIDEO_64_6S_MP4.initEnd, VIDEO_64_6S_MP4.mediaStarts[1], VIDEO_64_6S_MP4.mediaStarts[2]];
-  // Влезают все три init, начало каждого ролика и один сегмент сверху, а докачка текущего — нет.
-  const budget = new DocumentMemoryBudget(3 * secondSegment + (thirdSegment - secondSegment) + 1_000);
-  const reels = ["ms-1", "ms-2", "ms-3"].map((key) => {
-    const journal = budget.createJournal(key, { isGone: () => false });
-    journal.recordEvent({ kind: "source_buffer_added", media_source: key, source_buffer: 0, mime_type: VIDEO_MIME });
-    return journal;
-  });
-  const [playing, next, afterNext] = reels;
-  assert.ok(playing !== undefined && next !== undefined && afterNext !== undefined);
-  // Открытие страницы: init и первый сегмент каждого ролика, по кругу.
-  for (const journal of reels) appendAll(budget, journal, 0, ownBuffers([file.subarray(0, initEnd)]));
-  for (const journal of reels) appendAll(budget, journal, 0, ownBuffers([file.subarray(initEnd, secondSegment)]));
-  // Текущий ролик играет и докачивается сегмент за сегментом: документ переходит потолок.
-  appendAll(budget, playing, 0, ownBuffers(splitAt(file.subarray(secondSegment), VIDEO_64_6S_MP4.mediaStarts.slice(2).map((start) => start - secondSegment))));
-
-  assert.ok(budget.memory.totalBytes <= 3 * secondSegment + (thirdSegment - secondSegment) + 1_000, "the document is back under the cap");
-  // Следующие ролики отдадут плееру всё с самого начала.
-  assert.deepEqual(replayedBytes(next.replay(), 0), file.subarray(0, secondSegment));
-  assert.deepEqual(replayedBytes(afterNext.replay(), 0), file.subarray(0, secondSegment));
-  // Память отдал текущий ролик: его повтор — init и хвост с границы сегмента (плеер и так стоит дальше начала).
-  const playingBytes = replayedBytes(playing.replay(), 0);
-  assert.deepEqual(playingBytes.subarray(0, initEnd), file.subarray(0, initEnd));
-  const tailStart = file.length - (playingBytes.length - initEnd);
-  assert.ok(tailStart > initEnd, "the playing reel gave up its beginning");
-  assert.ok((VIDEO_64_6S_MP4.mediaStarts as readonly number[]).includes(tailStart), `tail starts at a segment boundary (${tailStart})`);
-  assert.deepEqual(playingBytes.subarray(initEnd), file.subarray(tailStart));
-});
-
-test("the next media source gives memory only when the oldest one has nothing left but its init", () => {
+test("with nothing known about viewing the next media source gives memory only when the oldest one has nothing left but its init", () => {
   const file = VIDEO_MP4.bytes();
   const firstSegmentEnd = VIDEO_MP4.mediaStarts[1];
   // Влезает ровно один ролик с одним медиасегментом (и init второго).
   const budget = new DocumentMemoryBudget(firstSegmentEnd + VIDEO_MP4.initEnd);
-  const older = budget.createJournal("ms-1", { isGone: () => false });
-  const newer = budget.createJournal("ms-2", { isGone: () => false });
+  const older = budget.createJournal("ms-1", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
+  const newer = budget.createJournal("ms-2", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
   older.recordEvent({ kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: VIDEO_MIME });
   newer.recordEvent({ kind: "source_buffer_added", media_source: "ms-2", source_buffer: 0, mime_type: VIDEO_MIME });
   appendAll(budget, newer, 0, ownBuffers([file.subarray(0, VIDEO_MP4.initEnd), file.subarray(VIDEO_MP4.initEnd, firstSegmentEnd)]));
@@ -288,12 +258,12 @@ test("the next media source gives memory only when the oldest one has nothing le
 test("journals of gone media sources are discarded when a new one starts", () => {
   let gone = false;
   const budget = new DocumentMemoryBudget(64 * 1024 * 1024);
-  const first = budget.createJournal("ms-1", { isGone: () => gone });
+  const first = budget.createJournal("ms-1", { isGone: () => gone, viewing: () => VIEWING_UNKNOWN });
   first.recordEvent({ kind: "source_buffer_added", media_source: "ms-1", source_buffer: 0, mime_type: VIDEO_MIME });
   appendAll(budget, first, 0, ownBuffers([VIDEO_MP4.bytes()]));
   assert.equal(budget.memory.totalBytes, VIDEO_MP4.bytes().length);
   gone = true;
-  budget.createJournal("ms-2", { isGone: () => false });
+  budget.createJournal("ms-2", { isGone: () => false, viewing: () => VIEWING_UNKNOWN });
   assert.equal(budget.memory.totalBytes, 0, "everything of the gone media source is released");
 });
 
