@@ -265,7 +265,7 @@ describe("сообщения сторожа следующего видео (с�
   const candidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1 };
 
   it("`next_video_held`: строгая форма, кандидаты проверяются как при опросе", () => {
-    const held = { kind: "next_video_held", element: 4, candidates: [candidate], trigger: "next_video" };
+    const held = { kind: "next_video_held", element: 4, candidates: [candidate], trigger: "next_video", start_data: "available" };
     assert.ok(parsePageEvent(held) !== undefined);
     assert.equal(parsePageEvent({ ...held, extra: 1 }), undefined);
     assert.equal(parsePageEvent({ ...held, element: -1 }), undefined);
@@ -273,19 +273,33 @@ describe("сообщения сторожа следующего видео (с�
   });
 
   it("`next_video_held` и донесение фону: `trigger` обязателен и только из договора (сессия 12a)", () => {
-    const held = { kind: "next_video_held", element: 4, candidates: [candidate] };
+    const held = { kind: "next_video_held", element: 4, candidates: [candidate], start_data: "available" };
     for (const trigger of ["next_video", "viewer_play"]) {
       assert.deepEqual(parsePageEvent({ ...held, trigger }), { ...held, trigger });
-      const report = { kind: "held_video_report", element: 4, candidates: [candidate], trigger };
+      const report = { kind: "held_video_report", element: 4, candidates: [candidate], trigger, start_data: "available" };
       assert.deepEqual(parseHeldVideoReport(report), report);
     }
     assert.equal(parsePageEvent(held), undefined, "без trigger");
     assert.equal(parsePageEvent({ ...held, trigger: "autoplay" }), undefined);
     assert.equal(parsePageEvent({ ...held, trigger: 1 }), undefined);
-    const report = { kind: "held_video_report", element: 4, candidates: [candidate] };
+    const report = { kind: "held_video_report", element: 4, candidates: [candidate], start_data: "available" };
     assert.equal(parseHeldVideoReport(report), undefined, "без trigger");
     assert.equal(parseHeldVideoReport({ ...report, trigger: "viewer_play", extra: true }), undefined);
     assert.equal(parseHeldVideoReport({ ...report, trigger: "other" }), undefined);
+  });
+
+  it("`next_video_held` и донесение фону: `start_data` обязателен и только из договора (решение 378)", () => {
+    const held = { kind: "next_video_held", element: 4, candidates: [candidate], trigger: "next_video" };
+    const report = { kind: "held_video_report", element: 4, candidates: [candidate], trigger: "next_video" };
+    for (const startData of ["available", "lost", "unknown"]) {
+      assert.deepEqual(parsePageEvent({ ...held, start_data: startData }), { ...held, start_data: startData });
+      assert.deepEqual(parseHeldVideoReport({ ...report, start_data: startData }), { ...report, start_data: startData });
+    }
+    assert.equal(parsePageEvent(held), undefined, "без start_data");
+    assert.equal(parsePageEvent({ ...held, start_data: "maybe" }), undefined);
+    assert.equal(parsePageEvent({ ...held, start_data: true }), undefined);
+    assert.equal(parseHeldVideoReport(report), undefined, "без start_data");
+    assert.equal(parseHeldVideoReport({ ...report, start_data: "covered" }), undefined, "слово журнала — не слово договора");
   });
 
   it("ответ фона: ровно `adopt`, `adopt_new_session` или `release`", () => {

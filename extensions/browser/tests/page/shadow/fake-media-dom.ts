@@ -306,6 +306,8 @@ export function createFakeMediaDom() {
     #documentChannelUrl: string | null = null;
     /** Настоящие обещания `play()`, ждущие данных: их отвергает `pause()`. */
     readonly #playsAwaitingData: ((reason: unknown) => void)[] = [];
+    /** Как исполнить те же обещания, когда данные пришли (`testDataArrived`). */
+    readonly #playsAwaitingDataResolve: (() => void)[] = [];
     readonly frameCallbacks = new Map<number, unknown>();
     nextFrameHandle = 1;
 
@@ -434,16 +436,33 @@ export function createFakeMediaDom() {
         this.fireTrusted("playing");
       }
       // Метаданных нет: как у браузера, обещание ждёт данных, а `pause()` отвергнет его.
-      if (this.real.readyState === 0) return new Promise((_resolve, reject) => void this.#playsAwaitingData.push(reject));
+      if (this.real.readyState === 0) {
+        return new Promise((resolve, reject) => {
+          this.#playsAwaitingData.push(reject);
+          this.#playsAwaitingDataResolve.push(() => resolve());
+        });
+      }
       return Promise.resolve();
     }
     pause(): void {
       this.realCalls.push({ kind: "pause" });
+      this.#playsAwaitingDataResolve.splice(0);
       for (const reject of this.#playsAwaitingData.splice(0)) reject(new DOMException("The play() request was interrupted.", "AbortError"));
       if (this.real.paused) return;
       this.real.paused = true;
       this.fireTrusted("timeupdate");
       this.fireTrusted("pause");
+    }
+    /**
+     * Данные пришли (HAVE_ENOUGH_DATA), элемент не на паузе: как у браузера, ждущие обещания `play()` браузер
+     * забирает на исполнение («notify about playing») и шлёт `playing` — `pause()` после этого их уже не отвергнет.
+     */
+    testDataArrived(): void {
+      this.real.readyState = 4;
+      this.#playsAwaitingData.splice(0);
+      for (const resolve of this.#playsAwaitingDataResolve.splice(0)) resolve();
+      this.fireTrusted("canplay");
+      if (!this.real.paused) this.fireTrusted("playing");
     }
     fastSeek(seconds: number): void {
       this.currentTime = seconds;

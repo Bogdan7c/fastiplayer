@@ -34,6 +34,7 @@ const report = (candidate: VideoCandidate, others: readonly VideoCandidate[] = [
   element: candidate.element,
   candidates: [candidate, ...others],
   trigger: "next_video",
+  start_data: "available",
 });
 
 function feedWorld(): World {

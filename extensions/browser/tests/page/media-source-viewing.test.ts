@@ -113,6 +113,15 @@ function play(video: FakeVideo, currentTime: number): void {
   Object.assign(video, { paused: false, hasPlayed: true, currentTime });
 }
 
+/**
+ * Где пройденный ролик (решение 377): в документе — расстояние от окна, вне документа — `off_page`; не пройден —
+ * вид просмотра. Расстояние потолку нужно, чтобы беречь ближайший пролистанный ролик позади.
+ */
+function passedPlaceOf(viewing: JournalViewing): number | "off_page" | JournalViewing["kind"] {
+  if (viewing.kind !== "passed") return viewing.kind;
+  return viewing.place.kind === "off_page" ? "off_page" : viewing.place.distanceFromView();
+}
+
 function distanceOf(viewing: JournalViewing): number | "off_page" | JournalViewing["kind"] {
   if (viewing.kind !== "not_started") return viewing.kind;
   return viewing.place.kind === "off_page" ? "off_page" : viewing.place.distanceFromView();
@@ -158,12 +167,13 @@ test("a reel that played and then left the screen paused is passed, and stays pa
   page.viewing.viewingOf(reel.record);
   // Лента ушла дальше: страница остановила ролик, он за экраном. Позицию страница сбросила на ноль.
   Object.assign(reel.video, { paused: true, currentTime: 0, rect: ONE_SCREEN_BELOW });
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), 800);
 
-  // Пройденный ролик больше не меряем: ни один следующий вопрос раскладку страницы не читает.
+  // Долю пройденного ролика на экране больше не меряем. Расстояние от окна (решение 377) читается лениво — только
+  // когда потолок его спросит, сравнивая пройденные ролики в документе.
   const readsWhenPassed = page.visibleShareReads;
   reel.video.rect = ON_SCREEN;
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), 0);
   assert.equal(page.visibleShareReads, readsWhenPassed);
   // Зритель вернулся и ролик заиграл: его снова смотрят.
   play(reel.video, 3);
@@ -177,7 +187,7 @@ test("a paused reel of which only a strip is left on screen is passed: a strip i
   page.viewing.viewingOf(reel.record);
   // Лента переключилась на полпути: прежний ролик остановлен и выглядывает полоской до следующей прокрутки.
   Object.assign(reel.video, { paused: true, rect: STRIP_AT_THE_TOP });
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), 520);
 });
 
 test("a played reel the page removed from the document is passed; one that never played is not", () => {
@@ -191,7 +201,7 @@ test("a played reel the page removed from the document is passed; one that never
   Object.assign(played.video, { paused: true, inDocument: false });
   preloaded.video.inDocument = false;
 
-  assert.deepEqual(page.viewing.viewingOf(played.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(played.record)), "off_page");
   assert.equal(distanceOf(page.viewing.viewingOf(preloaded.record)), "off_page", "no evidence of watching, so not passed");
 });
 
@@ -221,7 +231,7 @@ test("a reel that was in the player before and is held again is not 'in the play
   const reel = addReel(page, "blob:reel");
   handOff(reel);
   leaveForTheNextReel(reel.video);
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), 800);
   // Зритель листнул назад: страница снова запускает ролик, сторож задержал его для плеера. Повтор журнала
   // ещё впереди, и отдавать его память сейчас — значит оставить плеер без начала.
   Object.assign(reel.video, { shadowed: true, rect: ON_SCREEN });
@@ -236,7 +246,7 @@ test("a reel watched only in the player is passed once the feed moved on, althou
   // Окно переехало на следующий ролик: тень снята, настоящий элемент стоит на нуле и ушёл с экрана.
   leaveForTheNextReel(reel.video);
   assert.equal(reel.video.hasPlayed, false, "the real element has no played ranges");
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), 800);
 });
 
 test("a replayed reel is passed even if nobody asked about it while it was in the player", () => {
@@ -245,7 +255,7 @@ test("a replayed reel is passed even if nobody asked about it while it was in th
   reel.record.journal.replay();
   // Пока ролик шёл в плеере, документ был под потолком: свидетеля не спрашивали ни разу.
   Object.assign(reel.video, { paused: true, currentTime: 0, rect: ONE_SCREEN_BELOW });
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), 800);
 });
 
 test("the element is remembered: its state is read after it left the document, and a new source on it is not ours", () => {
@@ -259,7 +269,7 @@ test("the element is remembered: its state is read after it left the document, a
   assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "watching_on_page", playheadSeconds: 4, playback: "playing" });
   // Страница остановила его: вне документа и на паузе — пройден.
   reel.video.paused = true;
-  assert.deepEqual(page.viewing.viewingOf(reel.record), { kind: "passed" });
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(reel.record)), "off_page");
   assert.equal(page.documentSearches, searchesToFind, "the remembered element needs no document search");
 
   // Один `<video>` на всю ленту: страница дала ему новый MediaSource, прежний с ним больше не связан.
@@ -268,7 +278,7 @@ test("the element is remembered: its state is read after it left the document, a
   assert.equal(page.viewing.viewingOf(shared.record).kind, "watching_on_page");
   shared.video.src = "blob:second";
   page.nowMs += ELEMENT_SEARCH_INTERVAL_MS;
-  assert.deepEqual(page.viewing.viewingOf(shared.record), { kind: "passed" }, "it was watched and its element is gone");
+  assert.equal(passedPlaceOf(page.viewing.viewingOf(shared.record)), "off_page", "it was watched and its element is gone");
 });
 
 test("the document is searched at once for a new media source, and at most once per interval for one that is not found", () => {

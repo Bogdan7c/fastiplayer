@@ -24,6 +24,7 @@ import { ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import { ElementRegistry, type RegistryWindow } from "./element-registry.ts";
 import { HandoffController } from "./handoff-controller.ts";
 import { MediaSourceViewing } from "./media-source-viewing.ts";
+import { heldVideoStartDataOf } from "./held-video-start-data.ts";
 import { captureAnchorEventOriginals, HandedOffVideoAnchor } from "./handed-off-video-anchor.ts";
 import { ViewerOfferAnchor, type ViewerOfferSignals } from "./viewer-offer-anchor.ts";
 import { pagePlayerFailureWatchStarterFor } from "./page-player-failure-watch.ts";
@@ -156,6 +157,7 @@ export function startPageBridge(win: PageBridgeWindow, dependencies: PageBridgeD
     seam: dependencies.playWatch,
     isProtected: (element) => drmMarks.isProtected(element),
     viewerOffer: viewerOffer ?? NO_VIEWER_OFFER_SIGNALS,
+    startDataOf: (element) => heldVideoStartDataOf(element as Element, { sourceOf: (video) => candidates.sourceOf(video), currentTimeSeconds: (video) => dom.currentTimeSeconds(video), reportOddity }),
     send: (event) => controller.sendToBackground(event),
     now: dependencies.now,
     reportOddity,

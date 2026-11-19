@@ -33,7 +33,9 @@
 //  - найденный элемент запоминается; ненайденные ищутся заново не чаще раза в
 //    `ELEMENT_SEARCH_INTERVAL_MS` и сразу после появления нового MediaSource (его элемента прошлый
 //    поиск видеть не мог);
-//  - раскладка страницы меряется только для видео на паузе и только пока оно не признано пройденным.
+//  - раскладка страницы меряется только для видео на паузе и только пока оно не признано пройденным;
+//    у пройденного ролика в документе расстояние от окна отдаётся лениво (решение 377: потолок бережёт
+//    ближайший пролистанный ролик и мерит его, только когда пройденных в документе больше одного).
 
 import type { JournalViewing } from "./journal/journal-viewing.ts";
 import { VIEWING_UNKNOWN } from "./journal/journal-viewing.ts";
@@ -81,7 +83,8 @@ interface DocumentSearch {
   readonly elementByUrl: ReadonlyMap<string, WeakRef<Element>>;
 }
 
-const PASSED: JournalViewing = { kind: "passed" };
+/** Пройдено, и элемента в документе нет: прокруткой назад к нему не вернуться. */
+const PASSED_OFF_PAGE: JournalViewing = { kind: "passed", place: { kind: "off_page" } };
 const IN_PLAYER: JournalViewing = { kind: "in_player" };
 /**
  * Элемент под тенью, а передача ещё не началась: видео задержано для плеера и уйдёт ему через мгновение,
@@ -117,7 +120,7 @@ export class MediaSourceViewing {
     if (record.journal.hasBeenReplayed) sighting.watched = true;
     const element = this.#elementOf(record.objectUrl, sighting);
     // Элемент не найден: смотрели — значит, пройдено; иначе честное «не знаю» (почему — в шапке файла).
-    if (element === null) return sighting.watched ? PASSED : VIEWING_UNKNOWN;
+    if (element === null) return sighting.watched ? PASSED_OFF_PAGE : VIEWING_UNKNOWN;
     if (this.#environment.isHandedOff(element)) {
       sighting.watched = true;
       sighting.leftScreen = false;
@@ -145,14 +148,20 @@ export class MediaSourceViewing {
       return { kind: "watching_on_page", playheadSeconds: this.#playheadSecondsOf(element), playback: "playing" };
     }
     // Стоит. Вне документа или уже уходил с экрана — пройдено (и останется пройденным, пока не заиграет:
-    // раскладку страницы ради него больше не меряем).
-    if (!inDocument || sighting.leftScreen) return PASSED;
+    // долю на экране ради него больше не меряем).
+    if (!inDocument) return PASSED_OFF_PAGE;
+    if (sighting.leftScreen) return this.#passedOnPage(element);
     if (this.#environment.visibleShareOf(element) >= REEL_ON_SCREEN_SHARE) {
       // На паузе, но на экране: зритель вернётся к этой секунде.
       return { kind: "watching_on_page", playheadSeconds: this.#playheadSecondsOf(element), playback: "paused" };
     }
     sighting.leftScreen = true;
-    return PASSED;
+    return this.#passedOnPage(element);
+  }
+
+  /** Пройдено, элемент в документе: где он от окна, потолок спросит лениво (решение 377). */
+  #passedOnPage(element: Element): JournalViewing {
+    return { kind: "passed", place: { kind: "on_page", distanceFromView: () => this.#distanceFromView(element) } };
   }
 
   /** Позиция страницы, секунды (у элемента без метаданных — 0). */

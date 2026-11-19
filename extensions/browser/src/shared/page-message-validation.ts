@@ -22,6 +22,7 @@ import {
   ARM_NEXT_VIDEO_KIND,
   HELD_VIDEO_REPLIES,
   HELD_VIDEO_REPORT_KIND,
+  HELD_VIDEO_START_DATA,
   HELD_VIDEO_TRIGGERS,
   PAGE_FLOOD_NOTICE_KIND,
   VIEWER_RETURN_REQUEST_KIND,
@@ -358,8 +359,13 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       const element = value["element"];
       const candidates = parseVideoCandidates(value["candidates"]);
       const trigger = value["trigger"];
-      return hasExactKeys(value, ["kind", "element", "candidates", "trigger"]) && isMediaTime(element) && candidates !== undefined && isOneOf(trigger, HELD_VIDEO_TRIGGERS)
-        ? { kind: "next_video_held", element, candidates, trigger }
+      const startData = value["start_data"];
+      return hasExactKeys(value, ["kind", "element", "candidates", "trigger", "start_data"]) &&
+        isMediaTime(element) &&
+        candidates !== undefined &&
+        isOneOf(trigger, HELD_VIDEO_TRIGGERS) &&
+        isOneOf(startData, HELD_VIDEO_START_DATA)
+        ? { kind: "next_video_held", element, candidates, trigger, start_data: startData }
         : undefined;
     }
     case "subtitle_document":
@@ -380,10 +386,17 @@ export function parseHeldVideoReport(value: unknown): HeldVideoReport | undefine
   const element = value["element"];
   const candidates = parseVideoCandidates(value["candidates"]);
   const trigger = value["trigger"];
-  if (!hasExactKeys(value, ["kind", "element", "candidates", "trigger"]) || !isMediaTime(element) || candidates === undefined || !isOneOf(trigger, HELD_VIDEO_TRIGGERS)) {
+  const startData = value["start_data"];
+  if (
+    !hasExactKeys(value, ["kind", "element", "candidates", "trigger", "start_data"]) ||
+    !isMediaTime(element) ||
+    candidates === undefined ||
+    !isOneOf(trigger, HELD_VIDEO_TRIGGERS) ||
+    !isOneOf(startData, HELD_VIDEO_START_DATA)
+  ) {
     return undefined;
   }
-  return { kind: HELD_VIDEO_REPORT_KIND, element, candidates, trigger };
+  return { kind: HELD_VIDEO_REPORT_KIND, element, candidates, trigger, start_data: startData };
 }
 
 /**

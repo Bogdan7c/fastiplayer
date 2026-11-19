@@ -30,7 +30,11 @@ const START_BYTES = SEGMENT_EDGES[1] ?? 0;
 const START = FILE.subarray(0, START_BYTES);
 const INIT = FILE.subarray(0, INIT_END);
 
-const PASSED: JournalViewing = { kind: "passed" };
+/**
+ * Пройденный ролик, элемента которого в документе нет. До решения 377 у пройденного места не было; ролик вне
+ * документа и сейчас отдаёт первым (ступень 1), поэтому прежние тесты ступени 1 смотрят именно на такой.
+ */
+const PASSED: JournalViewing = { kind: "passed", place: { kind: "off_page" } };
 const IN_PLAYER: JournalViewing = { kind: "in_player" };
 const OFF_PAGE: JournalViewing = { kind: "not_started", place: { kind: "off_page" } };
 
@@ -396,4 +400,75 @@ test("the owner is asked about viewing once per enforce, however many entries ha
 
   assertOnlyInitLeft(passed, "the passed reel");
   assert.ok(passed.viewingReads === 1 && next.viewingReads <= 1, `viewing was read ${passed.viewingReads} and ${next.viewingReads} time(s)`);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Ближайший пролистанный ролик позади (16b3b, решение 377): бережётся до ступени 7, как начало следующего.
+// ---------------------------------------------------------------------------------------------------
+
+/** Пройденный ролик в документе на расстоянии `distance` от окна; `measured` считает, сколько раз мерили. */
+function passedOnPage(distance: number, measured: { count: number } = { count: 0 }): JournalViewing {
+  return {
+    kind: "passed",
+    place: {
+      kind: "on_page",
+      distanceFromView: () => {
+        measured.count += 1;
+        return distance;
+      },
+    },
+  };
+}
+
+test("the reel just scrolled past (in the document) gives after the far not-started reels, not first (377)", () => {
+  // Влезают пролистанный ролик целиком, начало следующего и init дальнего.
+  const cap = FILE.length + START_BYTES + INIT_END + 500;
+  const budget = new DocumentMemoryBudget(cap);
+  const measured = { count: 0 };
+  const behind = openReel(budget, "ms-1", passedOnPage(740, measured));
+  const next = openReel(budget, "ms-2", notStartedAt(740));
+  const far = openReel(budget, "ms-3", notStartedAt(2_220));
+  downloadWholeFile(budget, behind);
+  downloadStart(budget, next);
+  downloadWholeFile(budget, far);
+
+  assert.ok(budget.memory.totalBytes <= cap);
+  assert.deepEqual(replayedBytes(behind.journal), FILE, "the reel one scroll back is whole: going back finds its data");
+  assert.deepEqual(replayedBytes(next.journal), START, "the next reel keeps its start");
+  assertOnlyInitLeft(far, "the far reel ahead");
+  assert.equal(measured.count, 0, "a single passed reel on the page is the nearest one without measuring the layout");
+});
+
+test("two passed reels on the page: the farther one gives first, whatever the creation order (377)", () => {
+  for (const nearIsOlder of [true, false]) {
+    const cap = FILE.length + START_BYTES + INIT_END + 500;
+    const budget = new DocumentMemoryBudget(cap);
+    const first = openReel(budget, "ms-1", passedOnPage(nearIsOlder ? 740 : 1_480));
+    const second = openReel(budget, "ms-2", passedOnPage(nearIsOlder ? 1_480 : 740));
+    const [near, farBehind] = nearIsOlder ? [first, second] : [second, first];
+    const next = openReel(budget, "ms-3", notStartedAt(740));
+    downloadWholeFile(budget, near);
+    downloadWholeFile(budget, farBehind);
+    downloadStart(budget, next);
+
+    assert.ok(budget.memory.totalBytes <= cap);
+    assertOnlyInitLeft(farBehind, `the reel two scrolls back (near is older: ${nearIsOlder})`);
+    assert.deepEqual(replayedBytes(near.journal), FILE, `the reel one scroll back is whole (near is older: ${nearIsOlder})`);
+    assert.deepEqual(replayedBytes(next.journal), START);
+  }
+});
+
+test("only one reel behind is kept: when the nearest one has nothing left, the next passed reel still gives first (377)", () => {
+  const cap = START_BYTES + 3 * INIT_END + 500;
+  const budget = new DocumentMemoryBudget(cap);
+  // Ближайший позади уже отдал всё (страница качала его одним init); бережётся он, а не следующий за ним.
+  const near = openReel(budget, "ms-1", passedOnPage(740));
+  const farBehind = openReel(budget, "ms-2", passedOnPage(1_480));
+  const next = openReel(budget, "ms-3", notStartedAt(740));
+  download(budget, near, 0, INIT_END);
+  downloadWholeFile(budget, farBehind);
+  downloadStart(budget, next);
+
+  assertOnlyInitLeft(farBehind, "the reel two scrolls back");
+  assert.deepEqual(replayedBytes(next.journal), START, "the next reel keeps its start: the protection did not move to the older reel");
 });

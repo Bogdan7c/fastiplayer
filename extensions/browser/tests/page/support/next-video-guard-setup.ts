@@ -8,7 +8,7 @@ import { ViewerPlayWatch } from "../../../src/page/auto-handoff/viewer-play-watc
 import { NextVideoGuard } from "../../../src/page/next-video-guard.ts";
 import { heldShadowStarterFor, playWatchSeamFor } from "../../../src/page/shadow-assembly.ts";
 import type { VideoCandidates } from "../../../src/page/video-candidates.ts";
-import type { PageEvent, VideoCandidate } from "../../../src/shared/handoff-contract.ts";
+import type { HeldVideoStartData, PageEvent, VideoCandidate } from "../../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../../support/video-candidate-defaults.ts";
 import type { FakeVideo } from "../shadow/fake-media-dom.ts";
 import { createCountingGuard, createShadowHarness, type ShadowHarness } from "../shadow/shadow-harness.ts";
@@ -90,6 +90,8 @@ export function setupGuard(options: { readonly collectOddities?: boolean } = {})
   const videos: FakeVideo[] = [];
   const protectedVideos = new Set<object>();
   const sources = new Map<object, ElementSource>();
+  /** Что сторож донесёт о данных под секундой старта (решение 378); по умолчанию — «есть». */
+  const startData = new Map<object, HeldVideoStartData>();
   const mediaSession = createCountingGuard();
   const environment = {
     win: harness.dom.window as unknown as Window,
@@ -140,6 +142,7 @@ export function setupGuard(options: { readonly collectOddities?: boolean } = {})
     seam: playWatchSeamFor(environment),
     isProtected: (element) => protectedVideos.has(element),
     viewerOffer,
+    startDataOf: (element) => startData.get(element) ?? "available",
     send: (event) => void sent.push(event),
     now: () => harness.clock.nowMs,
     reportOddity: (line) => (options.collectOddities === true ? void oddities.push(line) : assert.fail(`oddity: ${line}`)),
@@ -151,7 +154,7 @@ export function setupGuard(options: { readonly collectOddities?: boolean } = {})
     videos.push(video);
     return video;
   };
-  return { harness, guard, sent, addVideo, sources, protectedVideos, keyOf, activation, viewerPlay, viewerOffer, oddities, mediaSessionCalls: mediaSession.calls };
+  return { harness, guard, sent, addVideo, sources, startData, protectedVideos, keyOf, activation, viewerPlay, viewerOffer, oddities, mediaSessionCalls: mediaSession.calls };
 }
 
 /** Страница зовёт `play()` как обычно: через прототип с нашими переопределениями. */

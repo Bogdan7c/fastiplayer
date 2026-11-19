@@ -80,7 +80,7 @@ import {
 import { referrerOf, startCheckedPulledSource, type PulledSourceEvent } from "./pulled-source-start.ts";
 import { createSessionSourceFeeds, networkForSource } from "./session-source-feeds.ts";
 import { createPageSubtitleRelay } from "./page-subtitles/page-subtitle-relay.ts";
-import { judgeHeldVideo } from "./held-video-choice.ts";
+import { judgeHeldVideo, startDataLostForMove } from "./held-video-choice.ts";
 import { createShadowSilenceWatch } from "./shadow-silence-watch.ts";
 import { createStreamNumbering, type StreamNumbering } from "./stream-numbering.ts";
 import { createCurrentVideoGeneration } from "./current-video-generation.ts";
@@ -486,6 +486,7 @@ export function startHandoffSession(
     if (phase === "page_reloading") return pageReload.heldVideo(frameId, report);
     if ((phase !== "active" && phase !== "between_videos") || !relocation.adoptionOpen()) return "release";
     if (feed.heldVideoPlace() === "other_section") return "release"; // F5: ролик другого раздела окно не уводит
+    if (startDataLostForMove(report)) return "release"; // решение 378: данных нет — ролик играет в браузере, окно ждёт
     const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol), relocation.silentClipAdoption());
     if (decision.kind === "release") return "release";
     feed.moveToHeldVideoBegan();

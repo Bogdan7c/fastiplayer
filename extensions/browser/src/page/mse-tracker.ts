@@ -285,12 +285,13 @@ export class MseTracker implements MseObserver {
   }
 
   /**
-   * Расстояние ещё не игравшего видео от окна потолок читает позже, когда до него доходит очередь, — тоже
-   * внутри `appendBuffer` страницы. Сбой этого чтения до страницы не долетает: такое видео считается самым
-   * далёким (оно отдаст память раньше тех, чьё место известно).
+   * Расстояние от окна у ещё не игравшего и у пройденного видео потолок читает позже, когда до него доходит
+   * очередь, — тоже внутри `appendBuffer` страницы. Сбой этого чтения до страницы не долетает: такое видео
+   * считается самым далёким (ещё не игравшее отдаст память раньше тех, чьё место известно, а пройденное не
+   * будет считаться ближайшим позади, решение 377).
    */
   #withGuardedDistance(viewing: JournalViewing): JournalViewing {
-    if (viewing.kind !== "not_started" || viewing.place.kind !== "on_page") return viewing;
+    if ((viewing.kind !== "not_started" && viewing.kind !== "passed") || viewing.place.kind !== "on_page") return viewing;
     const measure = viewing.place.distanceFromView;
     const distanceFromView = (): number => {
       try {
@@ -300,7 +301,7 @@ export class MseTracker implements MseObserver {
         return Number.POSITIVE_INFINITY;
       }
     };
-    return { kind: "not_started", place: { kind: "on_page", distanceFromView } };
+    return { kind: viewing.kind, place: { kind: "on_page", distanceFromView } };
   }
 
   #emitEvent(record: MediaSourceRecord, event: LocalMseEvent): void {

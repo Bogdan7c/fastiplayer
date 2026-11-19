@@ -29,7 +29,7 @@ const ON: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: tru
 /** Режим включён, фильтры как по умолчанию — все выключены (решение 261). */
 const ON_DEFAULT_FILTERS: AutoHandoffSettings = { ...DEFAULT_AUTO_HANDOFF_SETTINGS, enabled: true };
 
-const report = (candidate: VideoCandidate, trigger: HeldVideoTrigger = "viewer_play"): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger });
+const report = (candidate: VideoCandidate, trigger: HeldVideoTrigger = "viewer_play"): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger, start_data: "available" });
 const ref = (candidate: VideoCandidate): VideoRef => ({ frame_id: FRAME, document: candidate.document, element: candidate.element });
 
 interface WorldOptions {

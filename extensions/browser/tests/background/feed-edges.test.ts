@@ -42,7 +42,7 @@ function reel(element: number, overrides: Partial<VideoCandidate> = {}): VideoCa
 /** Тихое превью нового раздела (Instagram «Интересное», TikTok «Смотреть»): виден, играет, без звука. */
 const SILENT_PREVIEW: VideoCandidate = reel(50, { media: { kind: "file" }, file_host: "www.instagram.com", muted: true, duration_s: 8 });
 
-const report = (candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video" });
+const report = (candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video", start_data: "available" });
 
 type BeginCommand = Extract<PageCommand, { kind: "begin_handoff" }>;
 

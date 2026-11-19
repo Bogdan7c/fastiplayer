@@ -450,7 +450,7 @@ describe("документ говорит о себе сам", () => {
 });
 
 describe("сторож следующего видео: граница с фоном (сессия 09c2)", () => {
-  const heldEvent = { kind: "next_video_held", element: 4, candidates: [{ ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1, frame_host: "forged.example" }], trigger: "next_video" };
+  const heldEvent = { kind: "next_video_held", element: 4, candidates: [{ ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1, frame_host: "forged.example" }], trigger: "next_video", start_data: "lost" };
   const release = { kind: "release_held_video", element: 4 };
 
   it("взвод доходит до MAIN-мира; донесение идёт к фону с хостом, прочитанным здесь, а не страницей", async () => {
@@ -461,6 +461,8 @@ describe("сторож следующего видео: граница с фон
     await Promise.resolve();
     assert.equal(heldReports.length, 1);
     assert.equal(heldReports[0]?.candidates[0]?.frame_host, ownDocument.hostname);
+    // Решение 378: признак данных под секундой старта доходит до фона как есть.
+    assert.equal(heldReports[0]?.start_data, "lost");
   });
 
   it("без взвода страница не может разбудить фон: донесения нет, видео отпускается", () => {

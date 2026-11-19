@@ -49,7 +49,7 @@ function secondGeneration(world: World): void {
   world.framePorts.last().deliver({ kind: "mse", event: { kind: "source_buffer_added", media_source: "ms-2", source_buffer: 0, mime_type: MP4 } });
 }
 
-const heldNextFile = (): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: NEXT_EPISODE_FILE.element, candidates: [NEXT_EPISODE_FILE], trigger: "next_video" });
+const heldNextFile = (): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: NEXT_EPISODE_FILE.element, candidates: [NEXT_EPISODE_FILE], trigger: "next_video", start_data: "available" });
 
 describe("ждём следующую серию на том же элементе (YouTube)", () => {
   it("конец серии у плеера и донесение тени — `awaiting_next_episode{60000}` ровно один раз", async () => {
@@ -276,7 +276,7 @@ describe("заголовок вкладки → page_title_changed", () => {
     world.clock.advance(PAGE_TITLE_SETTLE_MS);
     assert.deepEqual(sent(world, "page_title_changed"), []);
     const returnedFilm: VideoCandidate = { ...PLAYING_VIDEO, document: "doc-new", element: 9 };
-    assert.equal(world.handoffs.heldVideo(REOPENED_TAB, 0, { kind: HELD_VIDEO_REPORT_KIND, element: 9, candidates: [returnedFilm], trigger: "next_video" }), "adopt");
+    assert.equal(world.handoffs.heldVideo(REOPENED_TAB, 0, { kind: HELD_VIDEO_REPORT_KIND, element: 9, candidates: [returnedFilm], trigger: "next_video", start_data: "available" }), "adopt");
     // Сеанс уже переезжает (`moving`), но `page_returned` ещё не ушло: для плеера страница всё ещё ушла.
     world.updateTab({ tabId: REOPENED_TAB, title: "Тень ещё встаёт" });
     world.clock.advance(PAGE_TITLE_SETTLE_MS);

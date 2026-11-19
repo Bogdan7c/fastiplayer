@@ -23,7 +23,7 @@ const AD: VideoCandidate = {
 const FILM: VideoCandidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-ad", element: 1, media: { kind: "media_source", in_worker: false }, playing: false, visible_area_px: AREA, duration_s: 6381 };
 const HLS_FILM: VideoCandidate = { ...DEFAULT_CANDIDATE_FACTS, document: "doc-hls", element: 4, media: { kind: "hls" }, playing: true, visible_area_px: AREA, file_host: "cdn.example" };
 
-const heldVideo = (element: number, candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element, candidates: [{ ...candidate, playing: true }], trigger: "next_video" });
+const heldVideo = (element: number, candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element, candidates: [{ ...candidate, playing: true }], trigger: "next_video", start_data: "available" });
 
 function adWorld(agreed?: ProtocolVersion): World {
   const world = setup([{ frameId: 0, result: [FILM, AD] }]);

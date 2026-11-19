@@ -97,7 +97,7 @@ export type HeldShadowStarter = (element: HTMLMediaElement, emit: (event: PageEv
 export type PlayWatchAnswer = { readonly kind: "not_mine" } | { readonly kind: "now_shadowed" } | { readonly kind: "answered"; readonly promise: unknown };
 
 /** События настоящего элемента, которые слушает шов. */
-export type RealMediaEventType = "play" | "loadedmetadata" | "seeked";
+export type RealMediaEventType = "play" | "loadedmetadata" | "seeked" | "playing";
 
 /** Наблюдатель за `play()` страницы. Ошибка наблюдателя не должна долететь до страницы. */
 export type PlayWatcher = (element: object, realPlay: () => unknown) => PlayWatchAnswer;
@@ -109,7 +109,7 @@ export interface PlayWatchSeam {
   /** Стоит ли тень на элементе. */
   isShadowed(element: object): boolean;
   /**
-   * Доверенные `play`, `loadedmetadata` и `seeked` настоящих элементов (захватом на `target`): окно видит
+   * Доверенные `play`, `loadedmetadata`, `seeked` и `playing` настоящих элементов (захватом на `target`): окно видит
    * всё, кроме теневого DOM, поэтому `play()` такого элемента подписывает и его самого. Вторым аргументом
    * слушатель получает вид события: режиму 2 (12a) `seeked` ничего не начинает, а `play` и `loadedmetadata`
    * судятся по-разному.

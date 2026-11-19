@@ -65,7 +65,7 @@
 //   на `seeked`: плеер сайта видит обычную перемотку и сам качает данные с этой секунды.
 
 import type { AutoHandoffWatch } from "../shared/auto-handoff-contract.ts";
-import type { ElementKey, HeldVideoTrigger, PageEvent, PageReturnTarget, VideoCandidate } from "../shared/handoff-contract.ts";
+import type { ElementKey, HeldVideoStartData, HeldVideoTrigger, PageEvent, PageReturnTarget, VideoCandidate } from "../shared/handoff-contract.ts";
 import type { ElementAudibility, ViewerPlayVerdict, ViewerPlayWatch } from "./auto-handoff/viewer-play-watch.ts";
 import type { DomReaders } from "./dom-readers.ts";
 import { hlsStreamOfDuration, shadowSourceOfHls } from "./hls-stream-kind.ts";
@@ -88,6 +88,12 @@ import type { ViewerOfferSignals } from "./viewer-offer-anchor.ts";
 
 /** `HTMLMediaElement.HAVE_METADATA`: длительность и размер кадра известны. */
 const HAVE_METADATA = 1;
+/**
+ * `HTMLMediaElement.HAVE_FUTURE_DATA`: данных хватает, чтобы играть. Элемент не на паузе дошёл до неё — браузер
+ * уже забрал ждущие обещания `play()` на исполнение («notify about playing» стандарта HTML), и `pause()` их больше
+ * не отвергнет.
+ */
+const HAVE_FUTURE_DATA = 3;
 
 /**
  * Сколько видео документа можно держать одновременно. Обычно одно; потолок нужен против страницы,
@@ -108,6 +114,11 @@ export interface NextVideoGuardEnvironment {
   readonly isProtected: (element: object) => boolean;
   /** Сигнал «предложение «Ask» встало/ушло» для изолированного мира (12b). */
   readonly viewerOffer: ViewerOfferSignals;
+  /**
+   * Есть ли у моста данные под секундой, с которой видео пошло бы в окне (решение 378, held-video-start-data.ts).
+   * Уходит фону в донесении; не бросает.
+   */
+  readonly startDataOf: (element: object) => HeldVideoStartData;
   /** Отправка фону через изолированный мир. */
   readonly send: (event: PageEvent) => void;
   /** Монотонные часы, мс. */
@@ -159,6 +170,13 @@ export class NextVideoGuard {
   readonly #deferredRealPlays = new WeakMap<object, () => unknown>();
   /** Сколько раз сторож сам перематывал элемент на секунду плеера (возврат страницы). */
   readonly #returnSeeks = new WeakMap<object, number>();
+  /**
+   * Элементы, чей `play()` страницы ушёл браузеру мимо сторожа (сторож не взведён, видео ему не подошло): обещание
+   * у страницы НАСТОЯЩЕЕ, и пока у элемента нет данных, оно ждёт. Тень поставила бы элемент на паузу, и браузер
+   * отверг бы его `AbortError` (стенд 16b3b `feed-back-recreated-pool`, см. `#pagePlayMayBePending`). Слабое
+   * множество: страница этого не видит, `play()` остаётся прозрачным.
+   */
+  readonly #pagePlaysPastGuard = new WeakSet<object>();
   /** Шаг ленты: сколько раз переданный ролик этого документа уходил с экрана (см. шапку). */
   #feedStep = 0;
   /** Переданный ролик ушёл с экрана, а новой передачи с тех пор не было: фон мог отказать, не зная об уходе (F6). */
@@ -287,7 +305,8 @@ export class NextVideoGuard {
     this.#reaskedAtStep.set(element, this.#feedStep);
     entry.feedStepWhenHeld = this.#feedStep;
     const candidates = withHeldPlaying(this.#environment.candidates.describe(), entry.key);
-    this.#environment.send({ kind: "next_video_held", element: entry.key, candidates, trigger: entry.trigger });
+    const startData = this.#environment.startDataOf(element);
+    this.#environment.send({ kind: "next_video_held", element: entry.key, candidates, trigger: entry.trigger, start_data: startData });
   }
 
   /**
@@ -314,8 +333,38 @@ export class NextVideoGuard {
     return this.#environment.now() < this.#armedUntilMs;
   }
 
-  /** `play()` страницы у элемента не в тени. Всё под try/catch: наш сбой не долетает до страницы. */
+  /** `play()` страницы у элемента не в тени. Ушёл браузеру мимо сторожа — запоминается (`#pagePlaysPastGuard`). */
   #interceptPlay(element: object, realPlay: () => unknown): PlayWatchAnswer {
+    const answer = this.#answerPlay(element, realPlay);
+    if (answer.kind === "not_mine") this.#notePagePlayPastGuard(element);
+    return answer;
+  }
+
+  /** Запомнить `play()`, ушедший браузеру мимо сторожа. Чужой объект (`play.call(1)`) и наш сбой до страницы не долетают. */
+  #notePagePlayPastGuard(element: object): void {
+    try {
+      if (this.#environment.dom.isVideoElement(element)) this.#pagePlaysPastGuard.add(element);
+    } catch {
+      this.#environment.reportOddity("next video guard could not note a page play() call");
+    }
+  }
+
+  /**
+   * Может ли у элемента ждать обещание `play()`, которое страница получила от браузера (не от нас): `play()` ушёл
+   * мимо сторожа, а данных для игры ещё нет. Задерживать такой элемент сейчас нельзя: тень ставит настоящий элемент
+   * на паузу, и браузер отверг бы обещание страницы `AbortError`, которого она не вызывала (как правило F6 / решение
+   * 371, только путь другой: `play()` сказан до взвода, тень встала бы позже — на метаданных или обходом при взводе).
+   * Задержание приходит, когда элемент дошёл до HAVE_FUTURE_DATA: доверенное `playing` — ровно тот миг, когда
+   * браузер уже забрал обещание на исполнение. Плата — до первого кадра ролик успевает начать играть в браузере.
+   * Пауза страницы или новый источник отвергают такое обещание сами; метка тогда лишь откладывает задержание до
+   * `playing`.
+   */
+  #pagePlayMayBePending(element: object): boolean {
+    return this.#pagePlaysPastGuard.has(element) && this.#environment.dom.readyStateOf(element) < HAVE_FUTURE_DATA;
+  }
+
+  /** Ответ сторожа на `play()` страницы. Всё под try/catch: наш сбой не долетает до страницы. */
+  #answerPlay(element: object, realPlay: () => unknown): PlayWatchAnswer {
     try {
       if (!this.#environment.dom.isVideoElement(element)) return NOT_MINE;
       if (!this.#armed()) {
@@ -507,7 +556,8 @@ export class NextVideoGuard {
    */
   #considerViewerStartedVideo(element: object, eventType: RealMediaEventType): void {
     const { viewerPlay, dom } = this.#environment;
-    if (eventType === "seeked" || !viewerPlay.isWatchOn() || this.#environment.isProtected(element)) return;
+    // `seeked` зрителя и `playing` (данные пришли) ничего не начинают: запуск судится по `play` и `loadedmetadata`.
+    if (eventType === "seeked" || eventType === "playing" || !viewerPlay.isWatchOn() || this.#environment.isProtected(element)) return;
     if (dom.isPaused(element) || dom.readyStateOf(element) < HAVE_METADATA) return;
     const audibility = this.#audibilityOf(element);
     const verdict: ViewerPlayVerdict =
@@ -545,6 +595,9 @@ export class NextVideoGuard {
     const { seam, registry } = environment;
     if (seam.isShadowed(element) || this.#held.has(element) || this.#held.size >= MAX_HELD_VIDEOS) return false;
     if (environment.isProtected(element) || this.#loopKeepsAway(element, trigger)) return false;
+    // Переезд: обещание play() страницы ещё ждёт данных — тень встанет на `playing` (см. `#pagePlayMayBePending`).
+    // Режим 2 судит запуск по своим событиям (`play`, `loadedmetadata`) и сюда не относится.
+    if (trigger === "next_video" && initialPlayback === "as_real_element" && this.#pagePlayMayBePending(element)) return false;
     const kind = this.#kindOf(element);
     if (kind === null) return false;
     const video = element as HTMLMediaElement;
@@ -553,6 +606,7 @@ export class NextVideoGuard {
     const key = registry.keyOf(video);
     // Описание — до тени: она заглушит настоящий элемент, а фону нужно, как его видела страница.
     const candidates = withHeldPlaying(environment.candidates.describe(), key);
+    const startData = environment.startDataOf(element);
     let forward: (event: PageEvent) => void = (event) => {
       // До решения фона наружу не идёт ничего; тень могла сняться сама: страница сменила источник.
       if (event.kind !== "handoff_ended") return;
@@ -581,7 +635,7 @@ export class NextVideoGuard {
     // Отложенный `play()` больше не нужен: обещания страницы исполняет тень.
     this.#deferredRealPlays.delete(element);
     session.takeOverPendingPlays(this.#awaitingMetadata.get(element)?.splice(0) ?? []);
-    environment.send({ kind: "next_video_held", element: key, candidates, trigger });
+    environment.send({ kind: "next_video_held", element: key, candidates, trigger, start_data: startData });
     return true;
   }
 

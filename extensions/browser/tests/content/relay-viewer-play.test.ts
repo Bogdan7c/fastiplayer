@@ -14,6 +14,7 @@ const viewerHeld = {
   element: 4,
   candidates: [{ ...DEFAULT_CANDIDATE_FACTS, document: "doc-a", element: 4, media: { kind: "none" }, playing: true, visible_area_px: 1, frame_host: "forged.example" }],
   trigger: "viewer_play",
+  start_data: "available",
 };
 const release = { kind: "release_held_video", element: 4 };
 

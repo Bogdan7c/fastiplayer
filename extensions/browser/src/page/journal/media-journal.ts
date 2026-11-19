@@ -23,6 +23,11 @@
 //    события без байтов (сеттер `timestampOffset` в цикле) копились бы вечно, а у повтора не было
 //    бы верхней границы (на неё опирается запас бюджета событий, content/page-event-budget.ts).
 //
+//  - «есть ли данные под секундой, с которой видео пойдёт» (решение 378, `startCoverageAt`): журнал
+//    выкидывает только голову, поэтому всё, что страница положила после первой оставшейся границы
+//    сегмента, в повторе есть. Потеря возможна, только если журнал уже выкидывал медиаданные этого
+//    SourceBuffer, и тогда решает время первого оставшегося медиасегмента.
+//
 // Повтор (`replay`) = снимок (source_buffer_added, duration_changed, timestamp_offset_changed,
 // init-байты) + оставшиеся записи по порядку. Журнал ведётся всегда, в том числе во время и после
 // передачи: повторная передача после возврата должна работать.
@@ -75,6 +80,27 @@ export type JournalCompleteness =
   | "complete"
   /** Формат не понят или разбор сбился: повтор = только снимок. */
   | "incomplete";
+
+/**
+ * Есть ли в повторе журнала данные под секундой страницы, с которой видео пойдёт в окне (решение 378):
+ * - `covered` — есть: журнал медиаданных не выкидывал, или первый оставшийся медиасегмент каждого
+ *   SourceBuffer начинается не позже этой секунды (после него журнал держит всё, что положила страница);
+ * - `lost` — журнал выкинул данные под этой секундой: у SourceBuffer, который уже отдавал медиаданные, в
+ *   повторе медиасегментов нет вовсе или первый начинается позже. Страница их второй раз не пришлёт;
+ * - `unknown` — время первого оставшегося сегмента не прочитано (WebM, заголовок не разобран) или журнал
+ *   «неполный»: сказать нечего.
+ */
+export type JournalStartCoverage = "covered" | "lost" | "unknown";
+
+/** Первый медиасегмент SourceBuffer в повторе: его секунда на шкале страницы, «нет ни одного» или «время неизвестно». */
+type FirstReplayedSegment = { readonly kind: "at"; readonly pageSeconds: number } | { readonly kind: "none" } | { readonly kind: "unknown" };
+
+/**
+ * Допуск сравнения «сегмент начинается не позже секунды страницы»: 1 мс. Время сегмента — деление единиц
+ * шкалы fMP4 на шкалу, позиция страницы — двоичная дробь; без допуска граница ровно на позиции страницы
+ * могла бы оказаться «позже» на долю микросекунды.
+ */
+const START_COVERAGE_TOLERANCE_SECONDS = 0.001;
 
 /** Когда стоит уплотнить массив записей (выкинутое начало — больше половины и не меньше этого). */
 const COMPACT_AFTER_EVICTED_ENTRIES = 1024;
@@ -209,6 +235,9 @@ export class MediaJournal {
     if (entry.kind === "mse") {
       this.#foldEvent(entry.event);
     } else {
+      // Кусок, лежащий целиком в init, медиаданных не уносит: init остаётся в снимке (решение 378).
+      const evictedFrom = entry.streamStart + entry.replayFrom;
+      if (!entry.track.isInsideInitSegments(evictedFrom, entry.streamStart + entry.recorded.length)) entry.track.mediaEvicted = true;
       this.#environment.memory.release(entry.recorded.view);
       this.#snapshotEnded = false;
       this.#realignAfterEvicted(entry);
@@ -238,6 +267,47 @@ export class MediaJournal {
       this.evictOldest();
       if (head === oldest.entry) return true;
     }
+  }
+
+  /**
+   * Есть ли в повторе данные под секундой страницы `pageSeconds` (решение 378, смысл ответов — у
+   * `JournalStartCoverage`). Потеря у одного SourceBuffer решает за всё видео: без звука или без картинки
+   * окно всё равно встанет. Чтения ленивые и только по просьбе (донесение сторожа о задержанном видео).
+   */
+  startCoverageAt(pageSeconds: number): JournalStartCoverage {
+    if (this.#completeness === "incomplete") return "unknown";
+    let coverage: JournalStartCoverage = "covered";
+    for (const track of this.#tracks.values()) {
+      // Журнал ничего не выкидывал у этого SourceBuffer: всё, что есть у страницы, есть и у нас. Init без
+      // медиасегментов здесь значит «страница ещё не качала» — данные придут живым потоком.
+      if (!track.mediaEvicted) continue;
+      const first = this.#firstReplayedSegment(track);
+      if (first.kind === "none") return "lost";
+      if (first.kind === "unknown") {
+        coverage = "unknown";
+        continue;
+      }
+      if (first.pageSeconds > pageSeconds + START_COVERAGE_TOLERANCE_SECONDS) return "lost";
+    }
+    return coverage;
+  }
+
+  /** Первый медиасегмент SourceBuffer, который отдаст повтор (init-сегменты пропускаются). */
+  #firstReplayedSegment(track: SourceBufferTrack): FirstReplayedSegment {
+    for (let position = this.#head; position < this.#entries.length; position += 1) {
+      const entry = this.#entries[position];
+      if (entry === undefined || entry.kind !== "bytes" || entry.track !== track || entry.dead) continue;
+      for (const cut of entry.cutPoints) {
+        if (cut < entry.replayFrom) continue;
+        const segmentStart = entry.streamStart + cut;
+        if (track.startsInitSegment(segmentStart)) continue;
+        const decodeSeconds = track.segmentStartSeconds(segmentStart, (offset, length) => this.#readTrackBytes(track, position, offset, length));
+        if (decodeSeconds === null) return { kind: "unknown" };
+        // `timestampOffset` страницы на момент куска сдвигает его сегменты на её шкале.
+        return { kind: "at", pageSeconds: decodeSeconds + entry.pageOffsetUs / MICROS_PER_SECOND };
+      }
+    }
+    return { kind: "none" };
   }
 
   /** Самая старая живая запись с байтами и её место в массиве записей. */

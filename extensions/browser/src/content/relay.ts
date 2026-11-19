@@ -494,7 +494,13 @@ export function createContentRelay(dependencies: RelayDependencies): ContentRela
     const replyTimeoutMs = event.trigger === "viewer_play" ? VIEWER_PLAY_REPLY_TIMEOUT_MS : HELD_VIDEO_REPLY_TIMEOUT_MS;
     const timer = timers.setTimeout(() => settle("release"), replyTimeoutMs);
     dependencies
-      .reportHeldVideo({ kind: HELD_VIDEO_REPORT_KIND, element: event.element, candidates: event.candidates.map(withOwnHostName), trigger: event.trigger })
+      .reportHeldVideo({
+        kind: HELD_VIDEO_REPORT_KIND,
+        element: event.element,
+        candidates: event.candidates.map(withOwnHostName),
+        trigger: event.trigger,
+        start_data: event.start_data,
+      })
       .then((reply) => settle(parseHeldVideoReply(reply)), () => settle("release"));
   }
 

@@ -117,7 +117,7 @@ describe("номера дорожек на сеанс", () => {
     const adPort = world.framePorts.last();
     adPort.deliver(documentEvent({ key: 1 }));
     adPort.deliver({ kind: "handoff_ended", cause: "element_released" });
-    assert.equal(world.handoffs.heldVideo(TAB, filmFrame, { kind: HELD_VIDEO_REPORT_KIND, element: film.element, candidates: [{ ...film, playing: true }], trigger: "next_video" }), "adopt");
+    assert.equal(world.handoffs.heldVideo(TAB, filmFrame, { kind: HELD_VIDEO_REPORT_KIND, element: film.element, candidates: [{ ...film, playing: true }], trigger: "next_video", start_data: "available" }), "adopt");
     const filmPort = world.framePorts.last();
     assert.equal(filmPort === adPort, filmFrame === 0, "тот же фрейм — тот же порт, другой — новый");
     const begin = filmPort.posted.filter((command) => command.kind === "begin_handoff").at(-1);

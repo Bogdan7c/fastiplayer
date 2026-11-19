@@ -12,7 +12,7 @@ import { PLAYING_VIDEO, TAB } from "./handoff-world.ts";
 import { createFakeClock, flushPromises } from "./support.ts";
 
 const SESSION_URL = "https://www.example.com/watch?v=1";
-const HELD: HeldVideoReport = { kind: HELD_VIDEO_REPORT_KIND, element: PLAYING_VIDEO.element, candidates: [PLAYING_VIDEO], trigger: "next_video" };
+const HELD: HeldVideoReport = { kind: HELD_VIDEO_REPORT_KIND, element: PLAYING_VIDEO.element, candidates: [PLAYING_VIDEO], trigger: "next_video", start_data: "available" };
 
 function reloadWorld(tab: () => Promise<TabDescription | undefined>) {
   const clock = createFakeClock();

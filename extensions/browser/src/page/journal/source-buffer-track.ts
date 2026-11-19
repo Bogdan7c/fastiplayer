@@ -103,6 +103,11 @@ export class SourceBufferTrack {
    * пригоден для повтора только с первой границы сегмента в нём.
    */
   resyncPending = false;
+  /**
+   * Журнал уже выкидывал медиаданные этого SourceBuffer (не только init). Пока нет — повтор несёт всё, что
+   * страница сюда положила, и данных «у страницы есть, а у нас нет» быть не может (решение 378).
+   */
+  mediaEvicted = false;
 
   constructor(index: number, mimeType: string, memory: RetainedMemory) {
     this.index = index;
@@ -208,6 +213,22 @@ export class SourceBufferTrack {
   }
 
   /**
+   * Лежит ли участок потока `[start, end)` целиком внутри init-сегментов (медиаданных в нём нет). Считается и
+   * init, который ещё собирается: у WebM конец init виден, только когда придёт первый кластер, а потолок памяти
+   * может выкинуть init-кусок дальнего ролика раньше (решение 378 не должно принять это за потерю медиаданных).
+   */
+  isInsideInitSegments(start: number, end: number): boolean {
+    const openInit = this.#openInit;
+    if (openInit !== null && openInit.start <= start && end <= openInit.filledTo) return true;
+    return this.#inits.some((init) => init.start <= start && end <= initEndOf(init));
+  }
+
+  /** Начинается ли на смещении `offset` законченный init-сегмент (а не медиасегмент). */
+  startsInitSegment(offset: number): boolean {
+    return this.#inits.some((init) => init.start === offset);
+  }
+
+  /**
    * С какой секунды потока (время декодирования, без `timestampOffset` страницы) начинается сегмент,
    * чья граница лежит на смещении `segmentStart`. `readStream` достаёт байты потока из записей журнала.
    * `null` — время неизвестно: формат не fMP4, заголовок ещё не пришёл или не разобран, нет init.
@@ -231,7 +252,7 @@ export class SourceBufferTrack {
   #timescalesOf(init: InitSegment): TrackTimescales {
     const known = this.#timescalesOfInit.get(init);
     if (known !== undefined) return known.timescales;
-    const initEnd = init.pieces.reduce((end, piece) => end + piece.length, init.start);
+    const initEnd = initEndOf(init);
     const timescales = readFmp4TrackTimescales((offset, length) => readInitBytes(init, offset, length), init.start, initEnd);
     this.#timescalesOfInit.set(init, { timescales });
     return timescales;
@@ -362,4 +383,9 @@ function readInitBytes(init: InitSegment, offset: number, length: number): Uint8
     pieceStart = pieceEnd;
   }
   return null;
+}
+
+/** Смещение потока сразу за init-сегментом. */
+function initEndOf(init: InitSegment): number {
+  return init.pieces.reduce((end, piece) => end + piece.length, init.start);
 }

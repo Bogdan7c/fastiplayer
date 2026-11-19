@@ -22,7 +22,7 @@ const OTHER_SITE_URL = "https://other-site.test/";
 /** Фильм нового документа после перезагрузки. */
 const RELOADED_FILM: VideoCandidate = { ...PLAYING_VIDEO, document: "doc-reloaded", element: 3 };
 
-const heldReport = (candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video" });
+const heldReport = (candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video", start_data: "available" });
 
 function clock(socket: FakeWebSocket, seq: number, state: "playing" | "ended"): void {
   socket.receive({ type: "clock", seq, position_us: seq * 1_000_000, state, rate: 1000 });

@@ -135,7 +135,7 @@ describe("show_page: чужие фазы и переезд страницы", ()
     socket.receive({ type: "reopen_page", position_us: 61_000_000 });
     await flushPromises();
     const returnedFilm: VideoCandidate = { ...PLAYING_VIDEO, document: "doc-new", element: 9 };
-    const report: HeldVideoReport = { kind: HELD_VIDEO_REPORT_KIND, element: returnedFilm.element, candidates: [returnedFilm], trigger: "next_video" };
+    const report: HeldVideoReport = { kind: HELD_VIDEO_REPORT_KIND, element: returnedFilm.element, candidates: [returnedFilm], trigger: "next_video", start_data: "available" };
     assert.equal(world.handoffs.heldVideo(REOPENED_TAB, 0, report), "adopt");
     const port = world.framePorts.last();
     const begin = port.posted.find((command) => command.kind === "begin_handoff");

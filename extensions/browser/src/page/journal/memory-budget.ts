@@ -7,7 +7,8 @@
 // память берётся по очереди, и следующая ступень трогается, только когда предыдущей нечего отдать:
 //
 //  0. закрытые MediaSource (страница сняла их с элементов): их журналы забываются целиком;
-//  1. пройденные видео — их уже смотрели, и зритель с них ушёл (ролик ленты, пролистанный дальше).
+//  1. пройденные видео — их уже смотрели, и зритель с них ушёл (ролик ленты, пролистанный дальше),
+//     КРОМЕ ближайшего к окну пролистанного ролика в документе (он — на ступени 7, решение 377).
 //     Отдают всё, от начала к концу, самый старый MediaSource первым;
 //  2. видео, которое уже идёт в окне плеера: повтор журнала плеер получил, дальше берёт живой поток.
 //     Журнал пригодится, только если зритель вернёт видео странице и отдаст его снова;
@@ -23,13 +24,23 @@
 //     видео отдаёт память, пока у него есть что отдать: начало у него уже потеряно, и портить второе незачем;
 //  6. место вокруг текущей секунды видео, которое идёт на странице (с начала журнала к концу):
 //     сначала у играющего, потом у стоящего на паузе на экране;
-//  7. начало ближайшего ещё не игравшего видео — следующего ролика. Самое последнее.
+//  7. начало ближайшего ещё не игравшего видео — следующего ролика — и ближайший пролистанный ролик позади,
+//     пока его элемент в документе (решение 377). Самое последнее; между ними — самый старый MediaSource первым.
 //
 // Почему в конце именно такой порядок. Потеря вокруг текущей секунды играющего видео проходит сама:
 // страница играет дальше, и через сегмент-другой под её позицией снова лежат данные. У видео на паузе
 // (фильм под рекламой) она останется до возврата зрителя. А потерянное начало следующего ролика не
 // вернётся вовсе: страница держит его у себя в SourceBuffer и второй раз не пришлёт, окно после
 // прокрутки будет ждать.
+//
+// Почему бережётся один пролистанный ролик позади (решение 377). Живой элемент, к которому вернулись прокруткой
+// назад, окно берёт новым поколением с той секунды, где страница его держит (решение 372). Страница свои данные
+// второй раз не пришлёт: если журнал успел их отдать, повтор — один init, и окно ждало без предела (строка стенда
+// `feed-back-live-many-pressure`). «Ближайший» — по месту в документе, а не по времени ухода: свидетель
+// просмотра спрашивается лениво, только когда документ выше потолка, и миг ухода с экрана он видит не всегда;
+// а ролик, к которому возвращаются одной прокруткой, — это ближайший к окну из пройденных. Остальные пройденные
+// отдают первыми, как раньше: беречь все (у Instagram их в документе ~3) вернуло бы задержку после прокрутки
+// вперёд (16b2, находка 3). Плата — на один ролик меньше места для дальних роликов впереди.
 //
 // Внутри журнала память всегда уходит с начала и по границе сегмента, init не выкидывается никогда:
 // повтор остаётся цельным потоком с границы. Поэтому «начало ролика» и «место вокруг текущей секунды»
@@ -94,6 +105,12 @@ export interface JournalOwnerProbe {
 /** Просмотр журналов на время одного наведения порядка: владельца спрашиваем один раз на журнал. */
 type ViewingReader = (journal: MediaJournal) => JournalViewing;
 
+/**
+ * Ближайший пролистанный ролик позади (решение 377) на время одного наведения порядка: ищется лениво, только
+ * когда очередь дошла до пройденных. `null` — пройденных роликов в документе нет.
+ */
+type NearestBehindReader = () => MediaJournal | null;
+
 export class DocumentMemoryBudget {
   readonly memory = new RetainedMemory();
   readonly #capBytes: number;
@@ -134,9 +151,16 @@ export class DocumentMemoryBudget {
       viewings.set(journal, viewing);
       return viewing;
     };
+    // Ближайший ролик позади ищется среди ВСЕХ журналов, а не только тех, кому есть что отдать: если он уже
+    // отдал всё, беречь вместо него следующий пролистанный ролик правило не велит (бережётся один ролик позади).
+    let nearestBehind: MediaJournal | null | undefined;
+    const nearestBehindOf: NearestBehindReader = () => {
+      if (nearestBehind === undefined) nearestBehind = nearestPassedOnPage([...this.#journals.keys()], viewingOf);
+      return nearestBehind;
+    };
     while (this.#isOverCap()) {
       // Нечего отдавать: держат только init-сегменты (их не выкидываем — без них нет повтора).
-      if (!this.#evictLeastNeeded(viewingOf)) return;
+      if (!this.#evictLeastNeeded(viewingOf, nearestBehindOf)) return;
     }
   }
 
@@ -145,7 +169,7 @@ export class DocumentMemoryBudget {
   }
 
   /** Выкинуть одну запись у того, кому она нужна меньше всех. `false` — отдавать больше нечего. */
-  #evictLeastNeeded(viewingOf: ViewingReader): boolean {
+  #evictLeastNeeded(viewingOf: ViewingReader, nearestBehindOf: NearestBehindReader): boolean {
     const givers = [...this.#journals.keys()].filter((journal) => journal.hasEntriesToEvict());
     const [first, ...others] = givers;
     if (first === undefined) return false;
@@ -154,21 +178,22 @@ export class DocumentMemoryBudget {
       first.evictOldest();
       return true;
     }
-    const evictFromEldest = (isNext: (viewing: JournalViewing) => boolean): boolean => {
-      const eldest = givers.find((journal) => isNext(viewingOf(journal)));
+    const evictFromEldest = (isNext: (viewing: JournalViewing, journal: MediaJournal) => boolean): boolean => {
+      const eldest = givers.find((journal) => isNext(viewingOf(journal), journal));
       eldest?.evictOldest();
       return eldest !== undefined;
     };
     return (
-      evictFromEldest((viewing) => viewing.kind === "passed") ||
+      // Ступень 1: пройденные, кроме ближайшего ролика позади (он ждёт ступени 7).
+      evictFromEldest((viewing, journal) => viewing.kind === "passed" && journal !== nearestBehindOf()) ||
       evictFromEldest((viewing) => viewing.kind === "in_player") ||
       this.#evictWatchedPart(givers, viewingOf) ||
       evictFromEldest((viewing) => viewing.kind === "unknown") ||
       this.#evictFromFarNotStarted(givers, viewingOf) ||
       evictFromEldest((viewing) => viewing.kind === "watching_on_page" && viewing.playback === "playing") ||
       evictFromEldest((viewing) => viewing.kind === "watching_on_page") ||
-      // Сюда доходит только ближайшее ещё не игравшее видео: остальных забрала ступень 5.
-      evictFromEldest((viewing) => viewing.kind === "not_started")
+      // Сюда доходит только ближайшее ещё не игравшее видео (остальных забрала ступень 5) и ближайший ролик позади.
+      evictFromEldest((viewing, journal) => viewing.kind === "not_started" || journal === nearestBehindOf())
     );
   }
 
@@ -205,6 +230,30 @@ export class DocumentMemoryBudget {
       if (this.#notStartedGiver === journal) this.#notStartedGiver = null;
     }
   }
+}
+
+/**
+ * Ближайший к окну пройденный ролик в документе (решение 377); `journals` — в порядке создания MediaSource.
+ * Один такой — он и есть, раскладку не мерим. Равенство расстояний (например, один ролик выше окна и один ниже
+ * после прокрутки туда-обратно — оба в одной прокрутке) — самый новый MediaSource. `null` — таких нет.
+ */
+function nearestPassedOnPage(journals: readonly MediaJournal[], viewingOf: ViewingReader): MediaJournal | null {
+  const onPage = journals.flatMap((journal) => {
+    const viewing = viewingOf(journal);
+    return viewing.kind === "passed" && viewing.place.kind === "on_page" ? [{ journal, distanceFromView: viewing.place.distanceFromView }] : [];
+  });
+  const [only, ...others] = onPage;
+  if (only === undefined) return null;
+  if (others.length === 0) return only.journal;
+  let nearest: { readonly journal: MediaJournal; readonly distance: number } | null = null;
+  for (const candidate of onPage) {
+    const measured = candidate.distanceFromView();
+    // Неизмеримое (скрытый элемент без прямоугольника) — бесконечно далеко.
+    const distance = Number.isNaN(measured) ? Number.POSITIVE_INFINITY : measured;
+    // `<=`: при равенстве побеждает более поздний в списке, то есть более новый MediaSource.
+    if (nearest === null || distance <= nearest.distance) nearest = { journal: candidate.journal, distance };
+  }
+  return nearest?.journal ?? null;
 }
 
 /** Место ещё не игравшего видео (`null` — журнал не из таких). */

@@ -79,9 +79,10 @@ export function heldShadowStarterFor(environment: ShadowEnvironmentBase | null):
 
 /**
  * События настоящего элемента, по которым видно, что он уже хочет играть. `seeked` нужен взводу возврата
- * страницы (11b2): тень встаёт, когда страница честно перемоталась на секунду плеера.
+ * страницы (11b2): тень встаёт, когда страница честно перемоталась на секунду плеера. `playing` — переезду (16b3b):
+ * `play()` страницы, ушедший браузеру до взвода, задерживается только теперь, когда браузер забрал его обещание.
  */
-const WANTS_TO_PLAY_EVENT_TYPES: readonly RealMediaEventType[] = ["play", "loadedmetadata", "seeked"];
+const WANTS_TO_PLAY_EVENT_TYPES: readonly RealMediaEventType[] = ["play", "loadedmetadata", "seeked", "playing"];
 
 /**
  * Шов сторожа следующего видео с прототипами и событиями. Без окружения тени сторож работать не может:

@@ -346,9 +346,16 @@ export type PageEvent =
    * Сторож следующего видео (сессия 09c2) поставил тень на видео, которое страница запустила, пока
    * сторож взведён. Фон ещё ничего не решил: `candidates` — все видео документа, включая задержанное
    * `element`. Событие проходит только пока сторож взведён, поэтому страница не может будить фон сама.
-   * `trigger` — почему сторож задержал видео (см. `HeldVideoTrigger`).
+   * `trigger` — почему сторож задержал видео (см. `HeldVideoTrigger`). `start_data` — есть ли у моста данные
+   * под секундой, с которой видео пошло бы в окне (см. `HeldVideoStartData`, решение 378).
    */
-  | { readonly kind: "next_video_held"; readonly element: ElementKey; readonly candidates: readonly VideoCandidate[]; readonly trigger: HeldVideoTrigger }
+  | {
+      readonly kind: "next_video_held";
+      readonly element: ElementKey;
+      readonly candidates: readonly VideoCandidate[];
+      readonly trigger: HeldVideoTrigger;
+      readonly start_data: HeldVideoStartData;
+    }
   /**
    * Субтитры страницы (сессия 13b2): готовый документ или `<track src>`, который качает фон.
    * Договор и смысл полей — `page-subtitle-contract.ts`. Идут только после `handoff_began{started}`.
@@ -363,6 +370,18 @@ export type PageEvent =
  */
 export const HELD_VIDEO_TRIGGERS = ["next_video", "viewer_play"] as const;
 export type HeldVideoTrigger = (typeof HELD_VIDEO_TRIGGERS)[number];
+
+/**
+ * Есть ли у моста данные под секундой, с которой задержанное видео пошло бы в окне (16b3b, решение 378). Это
+ * внутренний договор страница ↔ фон: плееру не уходит.
+ * - `available` — есть: журнал MediaSource ничего не терял под этой секундой (или ещё ничего не выкидывал —
+ *   тогда недостающее страница докачает живым потоком), либо видео — файл или HLS, их фон качает сам;
+ * - `lost` — журнал MediaSource уже выкинул данные под этой секундой (потолок «памяти без копий»), а страница
+ *   то, что лежит в её SourceBuffer, второй раз не пришлёт: окно ждало бы без предела;
+ * - `unknown` — сказать нечего: время сегментов не читается (WebM), журнал «неполный», MediaSource в воркере.
+ */
+export const HELD_VIDEO_START_DATA = ["available", "lost", "unknown"] as const;
+export type HeldVideoStartData = (typeof HELD_VIDEO_START_DATA)[number];
 
 /**
  * Как часто тень подаёт пульс. Часы плеера приходят раз в ~250 мс и идут и на паузе (09a),
@@ -550,6 +569,8 @@ export interface HeldVideoReport {
   readonly element: ElementKey;
   readonly candidates: readonly VideoCandidate[];
   readonly trigger: HeldVideoTrigger;
+  /** Данные под секундой старта (решение 378): переезд не берёт видео, данные которого журнал потерял. */
+  readonly start_data: HeldVideoStartData;
 }
 
 /**

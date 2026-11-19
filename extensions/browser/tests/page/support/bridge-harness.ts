@@ -49,7 +49,7 @@ export interface RealShadowHarness {
   readonly debugLines: string[];
 }
 
-export function startRealShadowHarness(): RealShadowHarness {
+export function startRealShadowHarness(options: { memoryBudgetBytes?: number } = {}): RealShadowHarness {
   const page = createFakePage();
   const debugLines: string[] = [];
   const shadowEnvironment = captureShadowEnvironment(page.win as unknown as ShadowWindow);
@@ -61,6 +61,7 @@ export function startRealShadowHarness(): RealShadowHarness {
     now: shadowEnvironment.now,
     debugSink: (line) => debugLines.push(line),
     scriptArrival: "at_document_start",
+    ...(options.memoryBudgetBytes === undefined ? {} : { memoryBudgetBytes: options.memoryBudgetBytes }),
   });
   return { page, bridge, debugLines };
 }

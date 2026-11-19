@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { FEED_SECTION_LEARN_MS } from "../../src/background/handoff/feed/session-feed.ts";
-import { HELD_VIDEO_REPORT_KIND, type HeldVideoReport, type PageCommand, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
+import { startDataLostForMove } from "../../src/background/handoff/held-video-choice.ts";
+import { HELD_VIDEO_REPORT_KIND, type HeldVideoReport, type HeldVideoStartData, type PageCommand, type VideoCandidate } from "../../src/shared/handoff-contract.ts";
 import { DEFAULT_CANDIDATE_FACTS } from "../support/video-candidate-defaults.ts";
 import { MP4, setup, startHandoff, TAB, type World } from "./handoff-world.ts";
 
@@ -32,7 +33,7 @@ function reel(element: number, overrides: Partial<VideoCandidate> = {}): VideoCa
   };
 }
 
-const report = (candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video" });
+const report = (candidate: VideoCandidate): HeldVideoReport => ({ kind: HELD_VIDEO_REPORT_KIND, element: candidate.element, candidates: [candidate], trigger: "next_video", start_data: "available" });
 
 type BeginCommand = Extract<PageCommand, { kind: "begin_handoff" }>;
 type EndCommand = Extract<PageCommand, { kind: "end_handoff" }>;
@@ -190,5 +191,71 @@ describe("шаг ленты: прежний ролик остаётся стра
     scrolledAway(world);
     assert.equal(world.handoffs.heldVideo(TAB, 0, report(reel(3))), "adopt");
     assert.deepEqual(leaveBefore(world, 3), AT_START_PAUSED);
+  });
+});
+
+// Решение 378: вернулись к ролику, данных которого под его секундой у журнала страницы уже нет (потолок памяти
+// их отдал, страница второй раз не пришлёт). Окно его не берёт: страница играет ролик сама, окно стоит на паузе
+// на прежнем ролике и ждёт следующий шаг ленты. До решения окно висело без предела, а ролик держала тень.
+describe("назад к ролику без данных под его секундой: ролик играет в браузере, окно ждёт", () => {
+  const heldWith = (candidate: VideoCandidate, startData: HeldVideoStartData): HeldVideoReport => ({ ...report(candidate), start_data: startData });
+
+  /** Команды странице после индекса `from` (что сеанс сделал после возврата). */
+  const postedSince = (world: World, from: number): PageCommand[] => posted(world).slice(from);
+
+  it("журнал потерял данные: ролик отпущен, окно не закрыто, нового поколения нет, тень текущего ролика стоит", async () => {
+    const world = await feedSession();
+    feedStepTo(world, 2);
+    // Назад к ролику 1: страница остановила ролик 2 (он ушёл с экрана), сторож задержал живой ролик 1.
+    scrolledAway(world);
+    const before = posted(world).length;
+    assert.equal(world.handoffs.heldVideo(TAB, 0, heldWith(reel(1), "lost")), "release", "окно ролик не берёт: сторож отпустит его, и он заиграет в браузере");
+    liveFor(world, 5_000);
+
+    assert.deepEqual(postedSince(world, before), [], "ни begin_handoff ролику 1, ни end_handoff ролику 2: тень ролика 2 стоит, как стояла");
+    assert.equal(world.sockets.last().closedWithCode, undefined, "окно не закрыто");
+    assert.deepEqual(world.ended, []);
+    assert.deepEqual(announcedOnWire(world), ["generation 1", "buffer 1:0", "generation 2", "buffer 2:0"], "нового поколения нет");
+    const lastPlayback = world.sockets.last().sentMessages().findLast((message) => message.type === "page_playback");
+    assert.ok(lastPlayback?.type === "page_playback" && lastPlayback.request.kind === "pause", "окно стоит на паузе");
+    assert.equal(await videoInPlayer(world), 2, "в окне по-прежнему ролик 2");
+  });
+
+  it("после такого отказа следующий шаг ленты снова ведёт окно: ролик 3 — поколение 3", async () => {
+    const world = await feedSession();
+    feedStepTo(world, 2);
+    scrolledAway(world);
+    assert.equal(world.handoffs.heldVideo(TAB, 0, heldWith(reel(1), "lost")), "release");
+    // Человек листает вперёд мимо ролика 2 к ролику 3: сторож задержал его, данные у журнала есть.
+    assert.equal(world.handoffs.heldVideo(TAB, 0, heldWith(reel(3), "available")), "adopt");
+    assert.deepEqual(leaveBefore(world, 3), AT_ITS_SECOND_PAUSED, "тень ролика 2 снимается только теперь");
+    shadowStood(world, 3);
+    streamOf(world, 3);
+    assert.equal(world.sockets.last().closedWithCode, undefined);
+    assert.deepEqual(announcedOnWire(world).filter((line) => line.startsWith("generation")), ["generation 1", "generation 2", "generation 3"]);
+    assert.equal(await videoInPlayer(world), 3);
+  });
+
+  for (const startData of ["available", "unknown"] as const) {
+    it(`данные есть или неизвестны (${startData}): возврат к живому ролику — новое поколение, как раньше`, async () => {
+      const world = await feedSession();
+      feedStepTo(world, 2);
+      scrolledAway(world);
+      assert.equal(world.handoffs.heldVideo(TAB, 0, heldWith(reel(1), startData)), "adopt");
+      shadowStood(world, 1);
+      streamOf(world, 1);
+      assert.equal(world.sockets.last().closedWithCode, undefined);
+      assert.deepEqual(announcedOnWire(world).filter((line) => line.startsWith("generation")), ["generation 1", "generation 2", "generation 3"]);
+      assert.equal(await videoInPlayer(world), 1);
+    });
+  }
+});
+
+describe("правило 378 — только для переезда", () => {
+  it("`lost` отказывает переезду (`next_video`), но не нажатию play человеком (`viewer_play`, первая передача)", () => {
+    const lost = (trigger: HeldVideoReport["trigger"]): HeldVideoReport => ({ ...report(reel(1)), trigger, start_data: "lost" });
+    assert.equal(startDataLostForMove(lost("next_video")), true);
+    assert.equal(startDataLostForMove(lost("viewer_play")), false);
+    assert.equal(startDataLostForMove({ ...report(reel(1)), start_data: "unknown" }), false, "«не знаю» — не отказ");
   });
 });
