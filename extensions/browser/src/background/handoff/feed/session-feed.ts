@@ -109,6 +109,16 @@ export type HeldVideoPlace =
   /** Вкладка уже в другом разделе (F5) или уход из ленты уже доказан: переезд не берёт. */
   | "other_section";
 
+/**
+ * Откуда сеанс ушёл из ленты (16b3b, решение 375): туда «Назад» вернёт ролик в то же окно.
+ * - `not_left` — сеанс не кончался уходом из ленты (или раздел неизвестен: браузер не назвал адрес);
+ * - `left` — кончился, `section` — раздел ленты: выученный на шаге, а до первого шага — раздел адреса, на котором
+ *   встал текущий ролик.
+ */
+export type FeedLeftPlace = { readonly kind: "not_left" } | { readonly kind: "left"; readonly section: FeedSection };
+
+const NOT_LEFT: FeedLeftPlace = { kind: "not_left" };
+
 /** Ответ сеанса на просьбу кончиться уходом из ленты. */
 export type LeaveFeedAnswer =
   /** Сеанс кончен (или уже кончался). */
@@ -153,6 +163,10 @@ export interface SessionFeed {
    * нужно.
    */
   windowPausedByPage(): boolean;
+  /** Сеанс кончается уходом из ленты (`tab_gone{navigated_away}` уже уходит): запомнить, из какого раздела. */
+  sessionLeftFeed(): void;
+  /** Откуда сеанс ушёл из ленты (`FeedLeftPlace`). */
+  feedLeftPlace(): FeedLeftPlace;
   /** Сеанс кончился: снять отсрочку; новости после этого ничего не делают. */
   stop(): void;
 }
@@ -188,6 +202,8 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
   let removedBeforeLearningAtMs: number | undefined;
   // Последнее слово страницы об игре, ушедшее плееру (`undefined` — не было: окно играет, как после передачи).
   let lastPagePlayback: "play" | "pause" | undefined;
+  // Откуда сеанс ушёл из ленты (решение 375); до ухода — `not_left`.
+  let leftPlace: FeedLeftPlace = NOT_LEFT;
 
   const now = (): number => ports.scheduler.now();
 
@@ -302,6 +318,12 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       if (request !== "set_rate") lastPagePlayback = request;
     },
     windowPausedByPage: () => lastPagePlayback === "pause",
+    sessionLeftFeed() {
+      // До первого шага раздел не выучен: лента — раздел адреса, на котором встал ушедший ролик.
+      const section = feedSection ?? (urlAtVideoStart === undefined ? undefined : feedSectionOf(urlAtVideoStart));
+      leftPlace = section === undefined ? NOT_LEFT : { kind: "left", section };
+    },
+    feedLeftPlace: () => leftPlace,
     stop() {
       stopped = true;
       leaveTimer.cancel();

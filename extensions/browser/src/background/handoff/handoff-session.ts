@@ -450,7 +450,10 @@ export function startHandoffSession(
     if (phase === "active") tryPostToPage(END_WITHOUT_PLAYER);
     // Решение 370: окно встаёт на паузу с «Source tab closed», скачанное само не доигрывается (play зрителя — доиграет).
     if (!feed.windowPausedByPage()) forwardStreamEvent({ kind: "page_playback", request: { kind: "pause" } });
-    if (phase === "active" || phase === "between_videos") endByPageSideStep({ kind: "page_navigated_away" });
+    if (phase === "active" || phase === "between_videos") {
+      feed.sessionLeftFeed(); // откуда ушли: «Назад» в этот раздел вернёт ролик в то же окно (решение 375)
+      endByPageSideStep({ kind: "page_navigated_away" });
+    }
     return "ended";
   }
 
@@ -785,5 +788,5 @@ export function startHandoffSession(
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
-  return { outcome, notifyTabRemoved, heldVideo, pageReloadHandoverRefused: () => pageReload.handoverRefused(), adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
+  return { outcome, notifyTabRemoved, heldVideo, pageReloadHandoverRefused: () => pageReload.handoverRefused(), adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), feedLeftPlace: () => feed.feedLeftPlace(), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
 }

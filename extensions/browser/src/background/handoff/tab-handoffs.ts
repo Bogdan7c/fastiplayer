@@ -22,6 +22,11 @@
 // заменой из попапа (`ReplacementTerms`): только замена — старого сеанса уже нет (зритель закрыл окно, пока
 // готовились), значит, новое окно НЕ открывается, видео остаётся в браузере; и роль видео — та, что дал суд
 // сторожа (реклама на новой странице — реклама, как в 09c2), а не «фильм» явного выбора человека.
+//
+// «Назад» в ленту после ухода из неё (16b3b, решения 375–376): сеанс, кончившийся уходом из ленты, оставляет
+// короткую запись `feed-return-watch.ts` (срок — тот же «Page reload»). Задержанное видео вкладки без сеанса
+// сначала спрашивает её: вкладка снова в разделе ленты — обычная передача вкладки с этим видео, и новый сеанс
+// встаёт в том же, ещё открытом окне.
 
 import type { VariantWatchReport } from "../../shared/variant-watch-contract.ts";
 import type { ReloadReason, HandOffTabOutcome, HeldVideoReply, HeldVideoReport, VideoRef } from "../../shared/handoff-contract.ts";
@@ -42,6 +47,7 @@ import type { PageReloadHandover } from "./session-contract.ts";
 import { returnablePageOf } from "./handoff-session-dependencies.ts";
 import { pageIdentityOf } from "./page-identity.ts";
 import { chooseRequestedVideo, chooseVideo, type ChosenVideo, type RequestedVideoChoice } from "./video-choice.ts";
+import { createFeedReturnWatch } from "./feed/feed-return-watch.ts";
 
 /** Наибольший номер запроса `begin_handoff` (u32 договора); после него счёт идёт с 1. */
 const MAX_BEGIN_REQUEST_ID = 0xffff_ffff;
@@ -161,6 +167,14 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
   const sessionStartedListeners: SessionStartedListener[] = [];
   let nextBeginRequestId = 1;
   let attempt = 0;
+  const feedReturn = createFeedReturnWatch({
+    scheduler: dependencies.scheduler,
+    watchTabUpdates: dependencies.watchTabUpdates,
+    armNextVideo: dependencies.armNextVideo,
+    handOffReturnedVideo: async (tabId, video) => ((await handOffTab(tabId, NO_LOCAL_ADDRESS_CONSENT, video)).kind === "started" ? "started" : "not_started"),
+    releaseHeldVideo: dependencies.releaseHeldVideo,
+    noteForDeveloper: dependencies.noteForDeveloper,
+  });
 
   function takeBeginRequestId(): number {
     const requestId = nextBeginRequestId;
@@ -294,6 +308,9 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
         if (entries.get(endedTabId) === entry) entries.delete(endedTabId);
         replaced.delete(entry);
         entry.markEnded();
+        // Ушли из ленты в другой раздел: «Назад» в этот срок вернёт ролик в то же окно (решения 375–376).
+        const feedLeft = entry.session?.feedLeftPlace();
+        if (feedLeft?.kind === "left" && !entry.removed) feedReturn.feedLeft(endedTabId, feedLeft.section, reloadWaitMs);
         // Сеанс кончился по вине страницы: причина — в модель, попап покажет её честно.
         const refusal = refusalOfSessionEnd(end);
         if (refusal !== undefined && !entry.removed) void dependencies.tabModel.noteHandoffRefused(endedTabId, refusal);
@@ -305,6 +322,8 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     const outcome = await session.outcome;
     if (outcome.kind === "started") {
       entry.started = true;
+      // Новый сеанс вкладки (кнопка, автозапуск или сам подхват): прежняя запись «ушли из ленты» не нужна.
+      feedReturn.forgetTab(tabId);
       for (const listener of sessionStartedListeners) {
         try {
           listener(tabId);
@@ -448,8 +467,10 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
   /** Задержанное видео: решает сеанс вкладки; его передачу сеансу-замене ведёт `handOverReloadedPage`. */
   function heldVideo(tabId: number, frameId: number, report: HeldVideoReport): HeldVideoReply {
     const entry = entries.get(tabId);
-    const answer = entry?.session?.heldVideo(frameId, report);
-    if (entry === undefined || answer === undefined) return "release";
+    // Сеанса у вкладки нет: может быть, это ролик ленты, в которую вернулись «Назад» (решение 375).
+    if (entry === undefined) return feedReturn.heldVideo(tabId, frameId, report) ?? "release";
+    const answer = entry.session?.heldVideo(frameId, report);
+    if (answer === undefined) return "release";
     if (typeof answer === "string") return answer;
     handOverReloadedPage(tabId, entry, answer);
     return "adopt_new_session";
@@ -513,6 +534,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
 
   /** Закрытие вкладки доходит и до текущей записи, и до заменённых, чей сеанс ещё не кончился. */
   function tabRemoved(tabId: number): void {
+    feedReturn.forgetTab(tabId);
     const affected = [entries.get(tabId), ...replaced].filter((entry): entry is TabEntry => entry !== undefined && entry.tabId === tabId);
     for (const entry of affected) {
       entry.removed = true;

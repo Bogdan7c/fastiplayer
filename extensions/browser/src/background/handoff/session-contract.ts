@@ -8,6 +8,7 @@ import type { PageStreamProblem } from "./page-event-translator.ts";
 import type { SocketEndCause } from "./session-socket.ts";
 import type { LocalAddressConsent } from "./file-address-guard.ts";
 import type { ChosenVideo } from "./video-choice.ts";
+import type { FeedLeftPlace } from "./feed/session-feed.ts";
 
 /** Чем закончилась передача (для владельца и тестов; журнала в продукте нет). */
 export type HandoffSessionEnd =
@@ -92,6 +93,11 @@ export interface HandoffSession {
    * стоит ни на одном элементе. Нужен попапу (10b): видео вкладки уже в плеере или нет.
    */
   videoInPlayer(): VideoRef | null;
+  /**
+   * Кончился ли сеанс уходом из ленты и из какого раздела (16b3b, решение 375): владелец сеансов держит по нему
+   * короткую запись, чтобы «Назад» в этот раздел вернул ролик в то же окно.
+   */
+  feedLeftPlace(): FeedLeftPlace;
   /** Донесение фрейма о рекламе (сессия 09d); строгая форма проверена приёмником, вкладка — владельцем. */
   adWatchReport(frameId: number, ad: PageAdState): void;
   /** Донесение фрейма о меню вариантов страницы (14b); форма проверена приёмником, вкладка — владельцем. */
