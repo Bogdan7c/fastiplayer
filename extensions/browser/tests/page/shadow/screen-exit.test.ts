@@ -6,7 +6,7 @@ import type { PageEvent } from "../../../src/shared/handoff-contract.ts";
 import { REEL_ON_SCREEN_SHARE, ScreenExitWatch } from "../../../src/page/shadow/screen-exit-watch.ts";
 import { createShadowHarness, emittedWithoutPulse, playingVideo, WHOLE_ON_SCREEN } from "./shadow-harness.ts";
 
-const LEFT_SCREEN: PageEvent = { kind: "video_left_screen" };
+const LEFT_SCREEN: PageEvent = { kind: "video_left_screen", exit: "scrolled_off_screen" };
 
 function screenExits(events: readonly PageEvent[]): number {
   return events.filter((event) => event.kind === "video_left_screen").length;
@@ -16,6 +16,56 @@ function screenExits(events: readonly PageEvent[]): number {
 const INSTAGRAM_SHARES_AT_PAUSE = [0.12, 0.37, 0.41, 0.53] as const;
 /** Полоска прежнего ролика, которая остаётся на экране после прилипания прокрутки (замер: ~15 px из 860). */
 const PEEKING_STRIP_SHARE = 0.02;
+
+describe("как ролик ушёл: прокруткой или вынут из документа (16b3, F4)", () => {
+  it("пауза элемента в документе за краем окна — `scrolled_off_screen`: доказательство шага ленты", () => {
+    const harness = createShadowHarness();
+    const video = playingVideo(harness.dom);
+    const session = harness.start(video);
+    harness.tick(session, 10, "playing");
+    harness.visibleShares.set(video, 0);
+    video.pause();
+    assert.deepEqual(emittedWithoutPulse(harness).at(-1), { kind: "video_left_screen", exit: "scrolled_off_screen" });
+  });
+
+  it("страница вынула элемент, потом пауза (уход Instagram и TikTok, шаг TikTok) — `removed_from_document`", () => {
+    const harness = createShadowHarness();
+    const video = playingVideo(harness.dom);
+    const session = harness.start(video);
+    harness.tick(session, 10, "playing");
+    video.remove();
+    harness.visibleShares.set(video, 0);
+    video.pause();
+    assert.deepEqual(emittedWithoutPulse(harness).at(-1), { kind: "video_left_screen", exit: "removed_from_document" });
+    assert.equal(screenExits(harness.emitted), 1, "донесение по-прежнему одно на уход");
+  });
+
+  it("сначала пауза в документе, потом элемент вынут — уход уже донесён прокруткой, тик второго не шлёт", () => {
+    const harness = createShadowHarness();
+    const video = playingVideo(harness.dom);
+    const session = harness.start(video);
+    harness.tick(session, 10, "playing");
+    harness.visibleShares.set(video, 0.3);
+    video.pause();
+    video.remove();
+    harness.visibleShares.set(video, 0);
+    harness.tick(session, 10, "paused");
+    const exits = harness.emitted.filter((event) => event.kind === "video_left_screen");
+    assert.deepEqual(exits, [{ kind: "video_left_screen", exit: "scrolled_off_screen" }]);
+  });
+
+  it("вынутый элемент, остановленный до удаления, на тике — тоже `removed_from_document`", () => {
+    const harness = createShadowHarness();
+    const video = playingVideo(harness.dom);
+    const session = harness.start(video);
+    harness.tick(session, 10, "playing");
+    video.pause();
+    video.remove();
+    harness.visibleShares.set(video, 0);
+    harness.tick(session, 10, "paused");
+    assert.deepEqual(harness.emitted.filter((event) => event.kind === "video_left_screen"), [{ kind: "video_left_screen", exit: "removed_from_document" }]);
+  });
+});
 
 describe("тень: ролик ленты ушёл с экрана", () => {
   for (const share of INSTAGRAM_SHARES_AT_PAUSE) {

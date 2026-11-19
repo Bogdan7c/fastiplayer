@@ -57,27 +57,27 @@ describe("закрытие сокета после подтверждённог�
 describe("страница сама сняла активную тень (вынесено из сеанса в 11b2)", () => {
   it("переезд открыт — ждать следующее видео, и при ошибке рекламы перед фильмом тоже", () => {
     for (const cause of ["element_released", "page_player_failed"] as const) {
-      assert.deepEqual(stepAfterPageEndedShadow(cause, { nextVideoExpected: true, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_3 }), { kind: "wait_for_next_video" }, cause);
+      assert.deepEqual(stepAfterPageEndedShadow(cause, { nextVideoExpected: true, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_3 }), { kind: "wait_for_next_video" }, cause);
     }
   });
 
   it("плеер сайта сломался — уход страницы с причиной по версии плеера (решение 237)", () => {
-    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_3 }), { kind: "leave_page", reason: "page_player_failed" });
-    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_2 }), { kind: "leave_page", reason: "navigated_away" });
+    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_3 }), { kind: "leave_page", reason: "page_player_failed" });
+    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_2 }), { kind: "leave_page", reason: "navigated_away" });
   });
 
   it("страница забрала видео — 4009; флуд и сбой внутри страницы — 4003 с разной причиной", () => {
-    assert.deepEqual(stepAfterPageEndedShadow("element_released", { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_3 }), {
+    assert.deepEqual(stepAfterPageEndedShadow("element_released", { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_3 }), {
       kind: "end_on_page_side",
       closeReason: "page_took_video_back",
       end: { kind: "page_took_video_back" },
     });
-    assert.deepEqual(stepAfterPageEndedShadow("page_flood", { nextVideoExpected: true, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_3 }), {
+    assert.deepEqual(stepAfterPageEndedShadow("page_flood", { nextVideoExpected: true, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_3 }), {
       kind: "end_on_page_side",
       closeReason: "protocol_violation",
       end: { kind: "page_flood", overBudget: "forwarded_bytes" },
     });
-    assert.deepEqual(stepAfterPageEndedShadow("returned", { nextVideoExpected: true, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_3 }), {
+    assert.deepEqual(stepAfterPageEndedShadow("returned", { nextVideoExpected: true, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_3 }), {
       kind: "end_on_page_side",
       closeReason: "protocol_violation",
       end: { kind: "page_side_failure" },
@@ -86,7 +86,7 @@ describe("страница сама сняла активную тень (вын
 });
 
 describe("потеря источника после конца серии и уход одностраничника (16a, решения 307, 42)", () => {
-  const sameAddress = { nextVideoExpected: true, episodeEnded: true, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
+  const sameAddress = { nextVideoExpected: true, episodeEnded: true, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
 
   it("тень не дождалась следующей серии: конец сразу (второго ожидания нет), 4011 плееру 1.9", () => {
     assert.deepEqual(stepAfterPageEndedShadow("next_episode_not_started", sameAddress), {
@@ -106,19 +106,19 @@ describe("потеря источника после конца серии и у
   });
 
   it("адрес вкладки сменился с начала видео — уход одностраничника, и после конца серии, и посреди", () => {
-    const moved = { nextVideoExpected: false, episodeEnded: true, pageAddress: "changed", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
+    const moved = { nextVideoExpected: false, episodeEnded: true, pageAddress: "changed", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
     assert.deepEqual(stepAfterPageEndedShadow("next_episode_not_started", moved), { kind: "page_navigated_away" });
     assert.deepEqual(stepAfterPageEndedShadow("element_released", moved), { kind: "page_navigated_away" });
   });
 
   it("адрес сменился, но переезд открыт — сначала ждём следующее видео; сломанный плеер сайта — прежний уход", () => {
-    const movedButExpected = { nextVideoExpected: true, episodeEnded: true, pageAddress: "changed", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
+    const movedButExpected = { nextVideoExpected: true, episodeEnded: true, pageAddress: "changed", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
     assert.deepEqual(stepAfterPageEndedShadow("element_released", movedButExpected), { kind: "wait_for_next_video" });
     assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", { ...movedButExpected, nextVideoExpected: false }), { kind: "leave_page", reason: "page_player_failed" });
   });
 
   it("доиграла не серия (реклама или ролик «может быть рекламой»): «не дождалась» — обычная потеря источника, не 4011", () => {
-    const afterAd = { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
+    const afterAd = { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", feedLoss: "not_feed", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
     assert.deepEqual(stepAfterPageEndedShadow("next_episode_not_started", afterAd), {
       kind: "end_on_page_side",
       closeReason: "page_took_video_back",
@@ -143,5 +143,39 @@ describe("шаг после конца сокета плеера по фазам
       finished: "nothing",
     } as const;
     for (const [phase, step] of Object.entries(table)) assert.equal(stepAfterPlayerSocketEnded(phase as keyof typeof table), step, phase);
+  });
+});
+
+describe("страница забрала ролик сеанса-ленты (16b3, F2, F3)", () => {
+  const facts = { nextVideoExpected: false, episodeEnded: false, pageAddress: "unchanged", agreedProtocol: PROTOCOL_VERSION_1_9 } as const;
+
+  it("уход из ленты — `tab_gone{navigated_away}`, даже если адрес с начала видео «не сменился»", () => {
+    assert.deepEqual(stepAfterPageEndedShadow("element_released", { ...facts, feedLoss: "left_feed" }), { kind: "page_navigated_away" });
+  });
+
+  it("лента продолжается — ждать ролик ленты, а не 4009, и даже когда переезд «не ждал»", () => {
+    assert.deepEqual(stepAfterPageEndedShadow("element_released", { ...facts, feedLoss: "feed_continues" }), { kind: "wait_for_next_in_feed" });
+  });
+
+  it("не лента — прежнее 4009", () => {
+    assert.deepEqual(stepAfterPageEndedShadow("element_released", { ...facts, feedLoss: "not_feed" }), {
+      kind: "end_on_page_side",
+      closeReason: "page_took_video_back",
+      end: { kind: "page_took_video_back" },
+    });
+  });
+
+  it("признак ленты не меняет концов по другим причинам: сломанный плеер, флуд, серия", () => {
+    assert.deepEqual(stepAfterPageEndedShadow("page_player_failed", { ...facts, feedLoss: "left_feed" }), { kind: "leave_page", reason: "page_player_failed" });
+    assert.deepEqual(stepAfterPageEndedShadow("page_flood", { ...facts, feedLoss: "feed_continues" }), {
+      kind: "end_on_page_side",
+      closeReason: "protocol_violation",
+      end: { kind: "page_flood", overBudget: "forwarded_bytes" },
+    });
+    assert.deepEqual(stepAfterPageEndedShadow("next_episode_not_started", { ...facts, episodeEnded: true, feedLoss: "feed_continues" }), {
+      kind: "end_on_page_side",
+      closeReason: "next_episode_not_started",
+      end: { kind: "next_episode_not_started" },
+    });
   });
 });

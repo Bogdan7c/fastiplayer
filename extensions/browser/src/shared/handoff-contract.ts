@@ -257,6 +257,13 @@ export type HandoffEndCause =
  */
 export type HlsStreamKind = "vod" | "live";
 
+/**
+ * Как переданный ролик ушёл с экрана (16b3, F4): прокруткой ленты — элемент в документе, но вне окна или почти
+ * вне; или страница вынула элемент из документа, и пауза пришла уже после этого. «Ушёл прокруткой» доказывает
+ * шаг ленты; «вынут» бывает и у шага TikTok, и у ухода сайта в другой раздел.
+ */
+export type ScreenExitKind = "scrolled_off_screen" | "removed_from_document";
+
 export type PageEvent =
   | { readonly kind: "handoff_began"; readonly request_id: number; readonly outcome: HandoffStartOutcome }
   | { readonly kind: "mse"; readonly event: LocalMseEvent }
@@ -328,8 +335,11 @@ export type PageEvent =
    * или вне документа, а страница поставила его на паузу. Так листает лента (Instagram, TikTok). Шлёт
    * тень один раз на уход; снова — только после того, как ролик вернулся на экран или страница его
    * запустила. Фон по нему открывает переезд ленты; плееру событие не пересылается.
+   * `exit` (16b3, F4) — как ролик ушёл: прокруткой (`scrolled_off_screen`, элемент ещё в документе) или
+   * страница сначала вынула элемент из документа (`removed_from_document`). Второе — и шаг ленты TikTok, и уход
+   * сайта в другой раздел (Instagram, TikTok): фон решает по адресу вкладки, тень этого не знает.
    */
-  | { readonly kind: "video_left_screen" }
+  | { readonly kind: "video_left_screen"; readonly exit: ScreenExitKind }
   /** Тень снята (после этого MAIN-мир больше ничего не шлёт по этой передаче). */
   | { readonly kind: "handoff_ended"; readonly cause: HandoffEndCause }
   /**

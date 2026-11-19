@@ -41,6 +41,11 @@ export interface SessionEpisodeChangePorts {
   /** Слушает ли плеер сейчас слова страницы (связь принята, страница на месте и не возвращается). */
   readonly playerHearsPage: () => boolean;
   readonly send: (message: PageSessionMessage) => void;
+  /**
+   * Та же новость об адресе вкладки сеанса — второму владельцу знаний об адресе, краям ленты (16b3,
+   * feed/session-feed.ts). Подписка на вкладки у сеанса одна: так её и снимает один `stop()`.
+   */
+  readonly addressSeen: (url: string) => void;
 }
 
 export interface SessionEpisodeChange {
@@ -66,7 +71,10 @@ export function createSessionEpisodeChange(ports: SessionEpisodeChangePorts): Se
   });
   let unsubscribe: (() => void) | undefined = ports.watchTabUpdates((update) => {
     if (update.tabId !== ports.currentTabId()) return;
-    if (update.url !== undefined) address.addressSeen(update.url);
+    if (update.url !== undefined) {
+      address.addressSeen(update.url);
+      ports.addressSeen(update.url);
+    }
     if (update.title !== undefined) titleGate.titleSeen(update.title);
   });
 

@@ -33,6 +33,10 @@
 // задержать его раньше, чем фон узнает, что наш ролик ушёл с экрана: фон отвечает «не сейчас», и без поправки
 // этот ролик остался бы отпущенным навсегда — играл бы в браузере со звуком, без заглушки. Поэтому, когда
 // переданный ролик уходит с экрана (`noteHandedOffVideoLeftScreen`), прежние отказы переезда больше не в счёт.
+// Обратный порядок (16b3, правило F6): уход донесён раньше, чем видео задержано, но донесение сторожа обогнало
+// `video_left_screen` в пути к фону (разные каналы), и фон ответил «не сейчас» на ТОМ ЖЕ шаге. Пока после ухода
+// не началась новая передача (фон ещё ничего не принял), такой отказ мог быть сказан без знания об уходе: сторож
+// спрашивает фон о том же видео ещё раз — один раз на видео и шаг, второй отказ уже окончательный.
 //
 // Режим 2 «автозапуск» (сессия 12a): вне взвода фона сторож тоже задерживает видео, но только если охрана
 // включена настройкой, а запустил видео со звуком САМ человек (`ViewerPlayWatch`: свежий жест или кредит
@@ -128,7 +132,7 @@ interface HeldEntry extends HeldVideo {
   /** Видео держится под предложением «Ask» (12b); `null` — обычное удержание до решения фона. */
   offer: ViewerOfferHold | null;
   /** На каком шаге ленты видео задержали: отказ фона говорит о том шаге, а не о нынешнем (см. шапку). */
-  readonly feedStepWhenHeld: number;
+  feedStepWhenHeld: number;
 }
 
 /** Удержание под предложением: какую игру страница видела до него (её модель вернёт при любом исходе, кроме «снято»). */
@@ -157,6 +161,10 @@ export class NextVideoGuard {
   readonly #returnSeeks = new WeakMap<object, number>();
   /** Шаг ленты: сколько раз переданный ролик этого документа уходил с экрана (см. шапку). */
   #feedStep = 0;
+  /** Переданный ролик ушёл с экрана, а новой передачи с тех пор не было: фон мог отказать, не зная об уходе (F6). */
+  #screenExitUnanswered = false;
+  /** На каком шаге ленты видео уже спрашивали повторно (F6): второй раз на том же шаге не спрашиваем. */
+  readonly #reaskedAtStep = new WeakMap<object, number>();
   #armedUntilMs = Number.NEGATIVE_INFINITY;
   /** Цель взвода возврата страницы; `undefined` — обычный взвод переезда (09c2). */
   #pageReturn: PageReturnTarget | undefined;
@@ -202,6 +210,7 @@ export class NextVideoGuard {
    */
   noteHandedOffVideoLeftScreen(): void {
     this.#feedStep += 1;
+    this.#screenExitUnanswered = true;
   }
 
   /** Забрать задержанное видео для передачи (`null` — такого нет). */
@@ -209,6 +218,8 @@ export class NextVideoGuard {
     const entry = this.#held.get(element);
     if (entry === undefined) return null;
     this.#held.delete(element);
+    // Началась новая передача: фон ответил на уход переданного ролика, отказы дальше — уже с этим знанием (F6).
+    this.#screenExitUnanswered = false;
     // Человек выбрал «в плеер»: плеер начинает с той игры, что страница видела до предложения.
     this.#finishOffer(entry);
     return entry;
@@ -250,6 +261,11 @@ export class NextVideoGuard {
   releaseElement(element: object): void {
     const entry = this.#held.get(element);
     if (entry === undefined) return;
+    // Фон отказал, не зная, что лента уже листнулась: его ответ и донесение тени разминулись в пути (в любом порядке).
+    if (this.#refusalMayPredateScreenExit(element, entry)) {
+      this.#reaskWhileHeld(element, entry);
+      return;
+    }
     this.#held.delete(element);
     this.#remember(element, entry);
     // «Play here»: страница снова видит игру, и снятая тень запускает настоящий элемент (`as_shadow`).
@@ -259,9 +275,32 @@ export class NextVideoGuard {
     } catch {
       this.#environment.reportOddity("could not release a held video");
     }
-    // Фон отказал, не зная, что лента уже листнулась (его ответ и донесение тени разминулись в пути): видео
-    // только что заиграло само — спросить фон о нём снова сразу, а не ждать продления взвода целую секунду.
-    if (entry.trigger === "next_video" && entry.feedStepWhenHeld !== this.#feedStep) this.#considerRunningVideo(element);
+  }
+
+  /**
+   * Спросить фон о задержанном видео ещё раз, НЕ снимая тень. Снять и тут же задержать снова нельзя: настоящий
+   * `play()` после снятия ещё не исполнился, а новая тень ставит элемент на паузу — обещание страницы отверглось бы
+   * `AbortError`, которого страница не вызывала (стенд 16b3: пул TikTok в быстрой серии, превью при уходе из ленты).
+   * Под тенью страница по-прежнему видит игру; донесение — с нынешним описанием видео и на нынешнем шаге ленты.
+   */
+  #reaskWhileHeld(element: object, entry: HeldEntry): void {
+    this.#reaskedAtStep.set(element, this.#feedStep);
+    entry.feedStepWhenHeld = this.#feedStep;
+    const candidates = withHeldPlaying(this.#environment.candidates.describe(), entry.key);
+    this.#environment.send({ kind: "next_video_held", element: entry.key, candidates, trigger: entry.trigger });
+  }
+
+  /**
+   * Мог ли фон отказать в переезде, ещё не зная об уходе переданного ролика с экрана (шапка). Два порядка:
+   * - видео задержано на прежнем шаге, а уход донесён после (16b2): отказ устарел;
+   * - уход донесён раньше задержания, но новой передачи с тех пор не было (16b3, F6): ответ фона мог обогнать
+   *   `video_left_screen` в пути.
+   * Повтор один на видео и шаг: второй отказ на том же шаге окончательный. Отказы режима 2 сюда не относятся.
+   */
+  #refusalMayPredateScreenExit(element: object, entry: HeldEntry): boolean {
+    if (entry.trigger !== "next_video" || this.#reaskedAtStep.get(element) === this.#feedStep) return false;
+    if (entry.feedStepWhenHeld !== this.#feedStep) return true;
+    return this.#screenExitUnanswered;
   }
 
   /** Доверенные события окна: один слушатель на документ, ставится при первом взводе или включении охраны. */

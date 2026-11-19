@@ -35,7 +35,7 @@ import type { ShadowTimeSource } from "./shadow-time-source.ts";
 import { ShadowTimeline, READY_STATE, type ReadyStateValue, type TimelineSignal } from "./shadow-timeline.ts";
 import { returnRealElement, type RealReturnPorts } from "./real-element-return.ts";
 import type { FileStopMoment, ShadowEnvironment } from "./shadow-environment.ts";
-import { ScreenExitWatch } from "./screen-exit-watch.ts";
+import { type ElementPlacement, ScreenExitWatch, screenExitKindOf } from "./screen-exit-watch.ts";
 import { endCauseOfRelease, SourceTransitionWatch } from "./source-transitions.ts";
 import { deliverViewerMediaKey, type ViewerMediaKeyPorts } from "./viewer-media-key.ts";
 
@@ -394,8 +394,14 @@ export class ShadowController implements ShadowBehavior {
       }
       const visibleShare = this.#env.visibleShareOf(this.#element);
       const step = moment === "page_pause_call" ? this.#screenExit.notePausedByPage(visibleShare) : this.#screenExit.noteStoppedOnTick(visibleShare);
-      if (step === "report_left_screen") this.#emit({ kind: "video_left_screen" });
+      if (step === "report_left_screen") this.#emit({ kind: "video_left_screen", exit: screenExitKindOf(this.#placement()) });
     });
+  }
+
+  /** Где переданный элемент сейчас (оригинальный `isConnected`; в старом браузере без него — «в документе»). */
+  #placement(): ElementPlacement {
+    const accessor = this.#originals.isConnected;
+    return accessor === undefined || readOriginal(accessor, this.#element) === true ? "in_document" : "out_of_document";
   }
 
   load(): void {

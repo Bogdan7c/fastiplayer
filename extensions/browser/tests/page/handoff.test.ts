@@ -705,7 +705,7 @@ test("лента (16b2): ролик унесли за край окна и ст�
     video.rect = { left: 0, top: 5_000, right: 640, bottom: 5_360 };
     video.pause();
     await isolated.settle();
-    assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen" }]);
+    assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen", exit: "scrolled_off_screen" }]);
   });
 });
 
@@ -723,7 +723,7 @@ test("лента (находка живой проверки Instagram): пау�
     video.rect = { left: 0, top: -210, right: 640, bottom: 150 };
     video.pause();
     await isolated.settle();
-    assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen" }]);
+    assert.deepEqual(isolated.received, [{ kind: "page_playback", request: { kind: "pause" } }, { kind: "video_left_screen", exit: "scrolled_off_screen" }]);
   });
 });
 

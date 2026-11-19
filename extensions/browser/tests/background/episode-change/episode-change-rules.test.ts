@@ -135,6 +135,7 @@ describe("предел частоты page_title_changed", () => {
       },
       currentTabId: () => 1,
       openedPage: { title: "A", url: undefined },
+      addressSeen: () => {},
     });
     listeners[0]?.({ tabId: 1, title: "B", url: undefined });
     clock.advance(PAGE_TITLE_SETTLE_MS);
@@ -242,6 +243,7 @@ describe("подписка сеанса на вкладки", () => {
       watchTabUpdates: tabs.watch,
       currentTabId: () => currentTab,
       openedPage: { title: "A", url: "https://site.example/1" },
+      addressSeen: () => {},
     });
     tabs.emit({ tabId: 8, title: "Other", url: "https://other.example/" });
     assert.deepEqual(player.sent, []);

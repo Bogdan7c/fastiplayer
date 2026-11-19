@@ -48,7 +48,7 @@ function begins(world: World): Extract<PageCommand, { kind: "begin_handoff" }>[]
 function scrolledAway(world: World): void {
   const port = world.framePorts.last();
   port.deliver({ kind: "page_playback", request: { kind: "pause" } });
-  port.deliver({ kind: "video_left_screen" });
+  port.deliver({ kind: "video_left_screen", exit: "scrolled_off_screen" });
 }
 
 /** Новый документ подтвердил тень после переезда. */

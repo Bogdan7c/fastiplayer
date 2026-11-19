@@ -34,6 +34,7 @@ import {
   type HeldVideoReply,
   type HeldVideoReport,
   type HlsStreamKind,
+  type ScreenExitKind,
   type LocalMseEvent,
   type PageEvent,
   type PageEventBudgetKind,
@@ -147,6 +148,7 @@ const UNSUPPORTED_MEDIA_FORMS: readonly UnsupportedMediaForm[] = [
 ];
 const HANDOFF_END_CAUSES: readonly HandoffEndCause[] = ["returned", "element_released", "page_flood", "page_player_failed", "next_episode_not_started"];
 const HLS_STREAM_KINDS: readonly HlsStreamKind[] = ["vod", "live"];
+const SCREEN_EXIT_KINDS: readonly ScreenExitKind[] = ["scrolled_off_screen", "removed_from_document"];
 
 // ------------------------------------------------------------------ примитивы
 
@@ -344,8 +346,10 @@ export function parsePageEvent(value: unknown): PageEvent | undefined {
       return hasExactKeys(value, ["kind"]) ? { kind: "shadow_alive" } : undefined;
     case "next_episode_wait_began":
       return hasExactKeys(value, ["kind"]) ? { kind: "next_episode_wait_began" } : undefined;
-    case "video_left_screen":
-      return hasExactKeys(value, ["kind"]) ? { kind: "video_left_screen" } : undefined;
+    case "video_left_screen": {
+      const exit = value["exit"];
+      return hasExactKeys(value, ["kind", "exit"]) && isOneOf(exit, SCREEN_EXIT_KINDS) ? { kind: "video_left_screen", exit } : undefined;
+    }
     case "handoff_ended": {
       const cause = value["cause"];
       return hasExactKeys(value, ["kind", "cause"]) && isOneOf(cause, HANDOFF_END_CAUSES) ? { kind: "handoff_ended", cause } : undefined;

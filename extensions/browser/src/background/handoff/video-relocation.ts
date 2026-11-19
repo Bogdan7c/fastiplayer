@@ -131,6 +131,17 @@ export interface VideoRelocation {
   /** Годится ли сейчас для переезда тихий ролик ленты. */
   silentClipAdoption(): SilentClipAdoption;
   /**
+   * Лента листается и сеанс ждёт её следующий ролик (16b3): наш ролик ушёл с экрана или пропал в сеансе-ленте.
+   * Тень при этом может ещё стоять на остановленном ролике (фаза `active`) или уже снята (`between_videos`).
+   */
+  waitsForNextFeedVideo(): boolean;
+  /**
+   * Сеанс-лента потерял текущий ролик без ухода прокруткой (16b3, правило F2: страница удалила элемент или сняла
+   * источник, адрес не ушёл в другой раздел): лента продолжается — ожидание `next_in_feed`, без предела, как после
+   * ухода с экрана. Зовётся ДО `videoLeft`, иначе ожидание начнётся как короткое `next_video`.
+   */
+  feedVideoLost(): void;
+  /**
    * Документ страницы ушёл, сеанс ждёт видео нового документа (16c): сторож взведён во всех фреймах до
    * `stop()`, а свой срок ожидания переезд снимает и больше не начинает — срок у ожидания перезагрузки свой.
    */
@@ -282,6 +293,11 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
       applyState();
     },
     silentClipAdoption: () => (feedScrolledAway ? "accepted" : "refused"),
+    waitsForNextFeedVideo: () => feedScrolledAway,
+    feedVideoLost() {
+      feedScrolledAway = true;
+      applyState();
+    },
     pageReloadBegan() {
       pageReloading = true;
       applyState();

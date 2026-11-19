@@ -89,6 +89,7 @@ import { createCurrentVideoGeneration } from "./current-video-generation.ts";
 import type { ChosenVideo } from "./video-choice.ts";
 import { createVideoRelocation, type NextVideoWait } from "./video-relocation.ts";
 import { createSessionEpisodeChange } from "./episode-change/session-episode-change.ts";
+import { createSessionFeed, type LeaveFeedAnswer } from "./feed/session-feed.ts";
 import { endAfterSourceLoss, sourceLossOfExpiredWait, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
 import { describeRefusal, describeSocketEnd, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
@@ -116,6 +117,8 @@ export function startHandoffSession(
     armFrames: (leaseMs) => dependencies.armNextVideo(presence.tabId(), leaseMs),
     onWaitExpired: (wait) => endForNoNextVideo(wait),
   });
+  // Края ленты (16b3): шаг ленты, уход из ленты, раздел адреса — feed/session-feed.ts.
+  const feed = createSessionFeed({ scheduler: dependencies.scheduler, openedUrl: target.tabUrl, feedAwaitsNextVideo: () => relocation.waitsForNextFeedVideo(), leaveFeed: () => endForLeftFeed() });
   // Адаптеры сайтов (09d, 14b): реклама и меню вариантов — аренда наблюдения во фреймах, сводки, команды плеера.
   const siteAdapters = createSessionSiteAdapters({
     currentTabId: () => presence.tabId(),
@@ -191,6 +194,7 @@ export function startHandoffSession(
     agreedProtocol: () => agreedProtocol,
     playerHearsPage: () => socketAttached && acceptsStream() && !pageReturn.isReturning(),
     send: (message) => socket?.enqueue({ kind: "message", message }),
+    addressSeen: (url) => feed.addressSeen(url),
   });
   let phase: SessionPhase = "opening";
   let place: SessionPlace = { frameId: target.frameId, beginRequestId: target.beginRequestId, fileAddressRule: target.fileAddressRule };
@@ -242,6 +246,7 @@ export function startHandoffSession(
     phase = "finished";
     stopPageSide();
     episodeChange.stop();
+    feed.stop();
     // Открытие страницы отменяется, открытая нами вкладка закрывается (11b2).
     pageReturn.cancel();
     releaseDemand();
@@ -441,6 +446,16 @@ export function startHandoffSession(
     endByPageSideStep(endAfterSourceLoss(sourceLossOfExpiredWait(wait), { pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol }));
   }
 
+  /** Уход из ленты в другой раздел (16b3, F3/F5): «Source tab closed». Посреди переезда — позже (новая тень решит). */
+  function endForLeftFeed(): LeaveFeedAnswer {
+    if (phase === "moving") return "not_now";
+    if (phase === "active") tryPostToPage(END_WITHOUT_PLAYER);
+    // Досмотр скачанного: паузу, которую поставила уходящая страница (или сеанс в ожидании), окну снять.
+    if (feed.windowPausedByPage()) forwardStreamEvent({ kind: "page_playback", request: { kind: "play" } });
+    if (phase === "active" || phase === "between_videos") endByPageSideStep({ kind: "page_navigated_away" });
+    return "ended";
+  }
+
   /** Конец по стороне страницы: очередь и код причины или, если одностраничник ушёл без видео, `tab_gone{navigated_away}`. */
   function endByPageSideStep(lossEnd: SourceLossEnd): void {
     if (lossEnd.kind === "end_on_page_side") return endOnPageSide(lossEnd.closeReason, lossEnd.end);
@@ -469,8 +484,10 @@ export function startHandoffSession(
     if (phase === "page_away") return adoptReturnedVideo(frameId, report);
     if (phase === "page_reloading") return pageReload.heldVideo(frameId, report);
     if ((phase !== "active" && phase !== "between_videos") || !relocation.adoptionOpen()) return "release";
+    if (feed.heldVideoPlace() === "other_section") return "release"; // F5: ролик другого раздела окно не уводит
     const decision = judgeHeldVideo(frameId, report, place.fileAddressRule, playerAbilitiesOf(agreedProtocol), relocation.silentClipAdoption());
     if (decision.kind === "release") return "release";
+    feed.moveToHeldVideoBegan();
     moveToVideo(decision.video, decision.fileAddressRule, () => waitForNextVideo());
     return "adopt";
   }
@@ -551,7 +568,9 @@ export function startHandoffSession(
         return;
       case "video_left_screen":
         // Лента листается (16b2): переезд решает фон по своим правилам, плееру событие не нужно.
-        if (phase === "active") relocation.ourVideoLeftScreen();
+        if (phase !== "active") return;
+        relocation.ourVideoLeftScreen();
+        feed.videoLeftScreen(event.exit); // после переезда: отсрочка F5 спрашивает его об ожидании
         return;
       case "page_playback":
         // Страница снова запустила наш ролик: к нему вернулись, лента дальше не листается.
@@ -601,6 +620,7 @@ export function startHandoffSession(
     silenceWatch.start();
     videoGeneration.videoStarted();
     relocation.videoStarted(incomingVideo);
+    feed.videoStarted();
     episodeChange.videoBegan();
     siteAdapters.videoStarted();
     resolveOutcome({ kind: "started", player_window: playerWindow });
@@ -614,10 +634,13 @@ export function startHandoffSession(
     // В `moving` это прежняя тень: мы сами её сняли. В `between_videos` тени уже нет.
     if (phase !== "active") return;
     // Тень сняла страница сама: правило — session-end-rules.ts (переезд, поломка плеера сайта, вина страницы).
-    const facts = { nextVideoExpected: relocation.nextVideoExpectedAfterLoss(), episodeEnded: relocation.episodeEnded(), pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol };
+    const feedLoss = cause === "element_released" ? feed.currentVideoLost() : "not_feed"; // края ленты 16b3
+    const facts = { nextVideoExpected: relocation.nextVideoExpectedAfterLoss(), episodeEnded: relocation.episodeEnded(), pageAddress: episodeChange.pageAddressSinceVideoBegan(), feedLoss, agreedProtocol };
     const step = stepAfterPageEndedShadow(cause, facts);
-    if (step.kind === "wait_for_next_video") waitForNextVideo();
+    if (step.kind === "wait_for_next_in_feed") relocation.feedVideoLost();
+    if (step.kind === "wait_for_next_video" || step.kind === "wait_for_next_in_feed") waitForNextVideo();
     else if (step.kind === "leave_page") leavePage(step.reason);
+    else if (feedLoss === "left_feed") endForLeftFeed(); // тот же `tab_gone`, но окно досматривает (F3)
     else endByPageSideStep(step);
   }
 
@@ -636,6 +659,7 @@ export function startHandoffSession(
       episodeChange.videoBegan();
     }
     for (const item of translated.items) socket.enqueue(item);
+    if (event.kind === "page_playback") feed.pagePlaybackForwarded(event.request.kind);
   }
 
   /** Поток страницы идёт в плеер: тень стоит, встаёт или сеанс как раз переезжает. */

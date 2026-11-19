@@ -117,3 +117,78 @@ describe("отказ переезда относится к шагу ленты"
     assert.equal(heldReports(page.sent), 1);
   });
 });
+
+describe("обратный порядок: уход донесён раньше задержания, а отказ фона обогнал его в пути (16b3, F6)", () => {
+  it("отказ на том же шаге, пока новой передачи не было, — фон спрошен ещё раз, ролик под тенью", async () => {
+    const { guard, sent, nextReel, keyOf } = feedPage();
+    // pause() нашего ролика пришёл первым: тень донесла уход, шаг ленты уже новый.
+    guard.noteHandedOffVideoLeftScreen();
+    void pagePlay(nextReel);
+    assert.equal(heldReports(sent), 1);
+    // Донесение сторожа дошло до фона раньше `video_left_screen`: «переезд закрыт».
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 2, "фон спрошен заново — теперь он знает об уходе");
+    assert.equal(nextReel.real.paused, true, "ролик снова под тенью, в браузере не звучит");
+  });
+
+  it("второй отказ на том же шаге — окончательный: ролик играет в браузере, по кругу сторож не ходит", async () => {
+    const { guard, sent, nextReel, keyOf } = feedPage();
+    guard.noteHandedOffVideoLeftScreen();
+    void pagePlay(nextReel);
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    guard.arm(LEASE_MS);
+    assert.equal(heldReports(sent), 2);
+    assert.equal(nextReel.real.paused, false);
+  });
+
+  it("после ухода уже началась новая передача — фон ответил со знанием дела, отказ не переспрашивается", async () => {
+    const { guard, sent, nextReel, keyOf, addVideo } = feedPage();
+    const adopted = addVideo((video) => {
+      video.real.src = FILE_URL;
+    });
+    guard.noteHandedOffVideoLeftScreen();
+    void pagePlay(adopted);
+    assert.ok(guard.take(adopted) !== null, "фон принял ролик: тень встала на него");
+    void pagePlay(nextReel);
+    const reportsBefore = heldReports(sent);
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), reportsBefore, "повторного вопроса нет");
+    assert.equal(nextReel.real.paused, false, "отпущенный ролик играет сам");
+  });
+
+  it("до первого ухода с экрана (шаг 0) отказ не переспрашивается", async () => {
+    const { guard, sent, nextReel, keyOf } = feedPage();
+    void pagePlay(nextReel);
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 1);
+  });
+});
+
+describe("переспрос не снимает тень (стенд 16b3: пул TikTok, превью при уходе)", () => {
+  it("обещание play() страницы не отвергается, браузер ролик не запускал, после окончательного отказа ролик играет", async () => {
+    const { guard, sent, nextReel, keyOf } = feedPage();
+    guard.noteHandedOffVideoLeftScreen();
+    const promise = pagePlay(nextReel);
+    let rejection: unknown;
+    promise.catch((error: unknown) => {
+      rejection = error;
+    });
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 2);
+    assert.equal(browserPlays(nextReel), 0, "переспрос: тень не снималась, настоящий play() не звался");
+    assert.equal(nextReel.real.paused, true);
+    guard.release(keyOf(nextReel));
+    await flushMicrotasks();
+    await promise;
+    assert.equal(rejection, undefined, "страница не получила AbortError, которого не вызывала");
+    assert.equal(nextReel.real.paused, false, "окончательный отказ: ролик играет в браузере");
+  });
+});
+

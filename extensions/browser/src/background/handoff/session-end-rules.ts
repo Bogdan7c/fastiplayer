@@ -14,6 +14,7 @@ import { SESSION_CLOSE_CODES, tabGoneReasonIntroducedIn, versionIncludes, type P
 import type { HandoffEndCause, PageCommand } from "../../shared/handoff-contract.ts";
 import { endAfterSourceLoss, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
 import type { PageAddressSinceVideoBegan } from "./episode-change/page-address-tracker.ts";
+import type { FeedLoss } from "./feed/session-feed.ts";
 import type { HandoffSessionEnd } from "./session-contract.ts";
 import type { SessionPhase } from "./session-phase.ts";
 import { END_WITHOUT_PLAYER, RETURN_PAUSED_AT_SHADOW } from "./session-page-commands.ts";
@@ -75,6 +76,11 @@ export function closingAfterConfirmedEnd(end: HandoffSessionEnd): ConfirmedEndCl
 export type PageEndedShadowStep =
   /** Переезд открыт: это конец ролика, ждём следующее видео (09c2). */
   | { readonly kind: "wait_for_next_video" }
+  /**
+   * Сеанс-лента потерял ролик, а лента продолжается (16b3, F2): ждём следующий ролик ленты без предела. Сеанс
+   * сначала говорит переезду `feedVideoLost`, иначе ожидание началось бы как короткое `next_video` и кончилось 4009.
+   */
+  | { readonly kind: "wait_for_next_in_feed" }
   /** Плеер страницы сломался (решение 237): как уход страницы, с этой причиной. */
   | { readonly kind: "leave_page"; readonly reason: TabGoneReason }
   /**
@@ -94,6 +100,11 @@ export interface PageEndedShadowFacts {
   readonly episodeEnded: boolean;
   /** Сменился ли адрес вкладки с начала текущего видео (16a, решение 42). */
   readonly pageAddress: PageAddressSinceVideoBegan;
+  /**
+   * Что потеря значит для ленты (16b3, feed/session-feed.ts `currentVideoLost`). Спрашивается только для
+   * `element_released`: для прочих причин — `not_feed`.
+   */
+  readonly feedLoss: FeedLoss;
   readonly agreedProtocol: ProtocolVersion;
 }
 
@@ -107,11 +118,15 @@ export interface PageEndedShadowFacts {
  * - страница честно забрала видео, вкладка на месте — решение 179: «The page took the video back» (4009);
  *   адрес вкладки с начала видео сменился — уход одностраничника `tab_gone{navigated_away}` (решение 42);
  * - счётчик копий в MAIN-мире или воркере отказал (решение 200) — та же вина страницы, что бюджет событий (4003);
- * - `returned` без нашей просьбы — сбой внутри страницы (Д-6): для плеера ошибка потока (4003).
+ * - `returned` без нашей просьбы — сбой внутри страницы (Д-6): для плеера ошибка потока (4003);
+ * - лента (16b3): страница забрала ролик сеанса-ленты — уход из ленты (F3) кончает сеанс `tab_gone{navigated_away}`,
+ *   иначе лента продолжается (F2) и сеанс ждёт следующий ролик без предела. Не лента — правила выше как были.
  */
 export function stepAfterPageEndedShadow(cause: HandoffEndCause, facts: PageEndedShadowFacts): PageEndedShadowStep {
   const lossFacts = { pageAddress: facts.pageAddress, agreedProtocol: facts.agreedProtocol };
   if (cause === "next_episode_not_started" && facts.episodeEnded) return endAfterSourceLoss("next_episode_not_started", lossFacts);
+  if (cause === "element_released" && facts.feedLoss === "left_feed") return { kind: "page_navigated_away" };
+  if (cause === "element_released" && facts.feedLoss === "feed_continues") return { kind: "wait_for_next_in_feed" };
   // Тень не дождалась видео после рекламы (не серии): это обычная потеря источника, а не «серия не пришла».
   if (cause === "element_released" || cause === "page_player_failed" || cause === "next_episode_not_started") {
     if (facts.nextVideoExpected) return { kind: "wait_for_next_video" };

@@ -363,3 +363,17 @@ describe("сообщения сторожа следующего видео (с�
     assert.equal(parseArmNextVideoRequest({ kind: "arm_next_video", lease_ms: 3_000, page_return: { kind: "live" }, extra: 1 }), undefined);
   });
 });
+
+describe("как ролик ушёл с экрана — `video_left_screen{exit}` (16b3, F4)", () => {
+  it("оба вида проходят как есть", () => {
+    for (const exit of ["scrolled_off_screen", "removed_from_document"] as const) {
+      assert.deepEqual(parsePageEvent({ kind: "video_left_screen", exit }), { kind: "video_left_screen", exit });
+    }
+  });
+
+  it("без вида, с чужим видом или лишним полем — отказ", () => {
+    assert.equal(parsePageEvent({ kind: "video_left_screen" }), undefined, "вид обязателен");
+    assert.equal(parsePageEvent({ kind: "video_left_screen", exit: "teleported" }), undefined);
+    assert.equal(parsePageEvent({ kind: "video_left_screen", exit: "scrolled_off_screen", share: 0 }), undefined);
+  });
+});

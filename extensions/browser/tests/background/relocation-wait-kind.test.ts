@@ -55,3 +55,43 @@ describe("вид ожидания после конца ролика (16a)", () 
     assert.equal(outcome.expiredAfterMs, NEXT_VIDEO_WAIT_MS);
   });
 });
+
+describe("сеанс-лента потерял ролик без ухода прокруткой (16b3, F2)", () => {
+  function relocationWithExpiries() {
+    const clock = createFakeClock();
+    const expired: NextVideoWait[] = [];
+    const armings: number[] = [];
+    const relocation = createVideoRelocation({ scheduler: clock.scheduler, armFrames: (leaseMs) => void armings.push(leaseMs), onWaitExpired: (wait) => void expired.push(wait) });
+    relocation.videoStarted({ role: "film", mayBeAd: false });
+    return { clock, relocation, expired, armings };
+  }
+
+  it("`feedVideoLost` перед `videoLeft` — ожидание ленты без предела, сторож взведён", () => {
+    const { clock, relocation, expired, armings } = relocationWithExpiries();
+    assert.equal(relocation.waitsForNextFeedVideo(), false);
+    relocation.feedVideoLost();
+    assert.equal(relocation.waitsForNextFeedVideo(), true);
+    assert.equal(relocation.videoLeft(), "next_in_feed");
+    assert.ok(armings.length > 0, "сторож взведён для следующего ролика");
+    clock.advance(NEXT_EPISODE_WAIT_MS * 10);
+    assert.deepEqual(expired, []);
+    assert.equal(relocation.silentClipAdoption(), "accepted", "тихий ролик ленты годится, как после ухода с экрана");
+    relocation.stop();
+  });
+
+  it("без `feedVideoLost` та же потеря — прежнее короткое ожидание 15 с", () => {
+    const { clock, relocation, expired } = relocationWithExpiries();
+    assert.equal(relocation.videoLeft(), "next_video");
+    clock.advance(NEXT_VIDEO_WAIT_MS);
+    assert.deepEqual(expired, ["next_video"]);
+  });
+
+  it("новое видео снимает признак ленты: следующее ожидание снова по прежним правилам", () => {
+    const { relocation } = relocationWithExpiries();
+    relocation.feedVideoLost();
+    relocation.videoStarted({ role: "film", mayBeAd: false });
+    assert.equal(relocation.waitsForNextFeedVideo(), false);
+    assert.equal(relocation.adoptionOpen(), false, "ролик на экране и не доиграл: переезд закрыт");
+    relocation.stop();
+  });
+});
