@@ -72,6 +72,7 @@ use self::generation_feed::{FeedReport, LoadedFeed, PendingFeed};
 use self::generation_placement::GenerationPlacement;
 use self::generation_rejection::ViewerAwareness;
 use self::generation_start::GenerationStart;
+use self::install_reconcile::note_generation_shown;
 use self::page_clock::{LoadedClockWord, LoadedMediaShown, PageClock, PageStartWord};
 use self::page_reopen::PageReopen;
 use self::seek_handover::UnansweredSeek;
@@ -597,6 +598,7 @@ impl SessionMedia {
             // Поколение впервые показано: «ждём следующую серию» (если было) кончилось.
             self.end_next_episode_wait_on_generation_shown();
             let seek_after_show = self.seek_after_show_with_viewer_click(seek_when_shown, now);
+            note_generation_shown(generation, observation, seek_after_show);
             self.reconcile_with_page(observation, seek_after_show);
         }
         if let Some(fault) = fault {

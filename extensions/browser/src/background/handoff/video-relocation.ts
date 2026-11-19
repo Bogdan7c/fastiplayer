@@ -87,6 +87,15 @@ export interface RelocationClockTick {
   readonly relation: ClockRelation;
 }
 
+/**
+ * Как вернуть странице прежнее видео при переезде (16b3b, решение 372):
+ * - `at_its_second` — шаг ленты: прежний ролик остаётся на той секунде, где страница его остановила, как у
+ *   самого сайта (Instagram продолжает живой элемент со своей секунды, если к нему вернуться);
+ * - `at_start` — реклама, ролик «может быть рекламой», видео, доигравшее до конца, и любой другой переезд:
+ *   начало и пауза (правило 09c2). У доигравшего конец файла дал бы странице второе `ended`.
+ */
+export type PreviousVideoLeave = "at_its_second" | "at_start";
+
 /** На каком видео стоит сеанс. */
 export interface RelocationVideo {
   readonly role: VideoRole;
@@ -135,6 +144,8 @@ export interface VideoRelocation {
    * Тень при этом может ещё стоять на остановленном ролике (фаза `active`) или уже снята (`between_videos`).
    */
   waitsForNextFeedVideo(): boolean;
+  /** Как вернуть странице текущее видео, если сеанс сейчас переезжает с него (`PreviousVideoLeave`). */
+  howToLeavePreviousVideo(): PreviousVideoLeave;
   /**
    * Сеанс-лента потерял текущий ролик без ухода прокруткой (16b3, правило F2: страница удалила элемент или сняла
    * источник, адрес не ушёл в другой раздел): лента продолжается — ожидание `next_in_feed`, без предела, как после
@@ -294,6 +305,11 @@ export function createVideoRelocation(dependencies: VideoRelocationDependencies)
     },
     silentClipAdoption: () => (feedScrolledAway ? "accepted" : "refused"),
     waitsForNextFeedVideo: () => feedScrolledAway,
+    howToLeavePreviousVideo() {
+      // Шаг ленты — только ролик, который ушёл прокруткой посреди просмотра и не похож на рекламу.
+      const feedStepMidReel = feedScrolledAway && role !== "ad" && !mayBeAd && !endedReached;
+      return feedStepMidReel ? "at_its_second" : "at_start";
+    },
     feedVideoLost() {
       feedScrolledAway = true;
       applyState();

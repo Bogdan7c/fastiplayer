@@ -2,6 +2,7 @@
 
 import type { PageCommand } from "../../shared/handoff-contract.ts";
 import type { FramePort } from "./frame-port.ts";
+import type { PreviousVideoLeave } from "./video-relocation.ts";
 
 /** Снять тень без указаний плеера: позиция тени, играть/стоять как тень. */
 export const END_WITHOUT_PLAYER: Extract<PageCommand, { kind: "end_handoff" }> = {
@@ -16,6 +17,26 @@ export const LEAVE_PREVIOUS_VIDEO: Extract<PageCommand, { kind: "end_handoff" }>
   position: { kind: "at", position_us: 0 },
   resume: { kind: "exactly", resume: "paused" },
 };
+
+/**
+ * Снять тень прежнего ролика ленты при шаге (16b3b, решение 372): позиция ТЕНИ — та секунда, где страница
+ * остановила ролик, — и пауза. Вернётся человек к живому элементу — сайт продолжит с неё, как без моста.
+ */
+export const LEAVE_PREVIOUS_FEED_REEL: Extract<PageCommand, { kind: "end_handoff" }> = {
+  kind: "end_handoff",
+  position: { kind: "shadow_position" },
+  resume: { kind: "exactly", resume: "paused" },
+};
+
+/** Команда снятия прежнего видео при переезде по решению переезда (`PreviousVideoLeave`). */
+export function leavePreviousVideoCommand(leave: PreviousVideoLeave): Extract<PageCommand, { kind: "end_handoff" }> {
+  switch (leave) {
+    case "at_its_second":
+      return LEAVE_PREVIOUS_FEED_REEL;
+    case "at_start":
+      return LEAVE_PREVIOUS_VIDEO;
+  }
+}
 
 /**
  * Вернуть видео странице по кнопке «Return» заглушки (решение 236): позиция ТЕНИ (линия времени страницы,

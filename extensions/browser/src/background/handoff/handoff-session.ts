@@ -90,7 +90,7 @@ import { createSessionEpisodeChange } from "./episode-change/session-episode-cha
 import { createSessionFeed, type LeaveFeedAnswer } from "./feed/session-feed.ts";
 import { endAfterSourceLoss, sourceLossOfExpiredWait, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
 import { describeRefusal, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
-import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
+import { disconnectQuietly, END_WITHOUT_PLAYER, leavePreviousVideoCommand, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
 import { closingAfterConfirmedEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
 import { createPageLeave } from "./session-page-leave.ts";
@@ -500,14 +500,15 @@ export function startHandoffSession(
   }
 
   /**
-   * Переезд. Прежняя тень снимается на начало ролика и на паузе: конец файла дал бы странице второе
-   * `ended`. Её `handoff_ended` в фазе `moving` ничего не значит. Тот же документ — тот же порт и те же
+   * Переезд. Прежняя тень снимается на паузе: шаг ленты оставляет ролик на его секунде, остальное — на начале
+   * (конец файла дал бы странице второе `ended`); выбирает переезд (`howToLeavePreviousVideo`, решение 372).
+   * Её `handoff_ended` в фазе `moving` ничего не значит. Тот же документ — тот же порт и те же
    * локальные ключи MediaSource; другой фрейм — новый порт, старый закрывается следом за командой.
    * `ifBeginFails` — что делать, если тень не встанет: при переезде ждать следующее видео, при возврате — отказ.
    */
   function moveToVideo(video: ChosenVideo, fileAddressRule: FileAddressRule, ifBeginFails: () => void): void {
     const leavingPort = framePort;
-    if (phase === "active") tryPostToPage(LEAVE_PREVIOUS_VIDEO);
+    if (phase === "active") tryPostToPage(leavePreviousVideoCommand(relocation.howToLeavePreviousVideo()));
     silenceWatch.stop();
     phase = "moving";
     shownRef = null;
@@ -610,6 +611,10 @@ export function startHandoffSession(
       abandonGrantedSession(outcomeOfRefusedBegin(event.outcome), "navigated_away");
       return;
     }
+    // Переезд в том же документе (лента, реклама → фильм): ключи MediaSource прежних видео отвязаны, и живой
+    // элемент, вернувшийся прокруткой назад, получит новое поколение (16b3b, решение 372). Новый порт и так
+    // начал документ с чистого листа — тогда это пустое действие.
+    if (phase === "moving") translator?.beginNextVideo();
     // Тень вернувшейся страницы встала (11b2): `page_returned` — раньше любого события нового документа.
     pageReturn.shadowStood();
     pageReturn.noteVideoInPlayer({ role: incomingVideo.role, durationS: incomingVideo.durationS });

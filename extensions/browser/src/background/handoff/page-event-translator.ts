@@ -72,6 +72,14 @@ export interface DocumentTranslator {
    * плееру не уходит. Нумерация поколений общая с файлом и MSE.
    */
   translateHlsSource(root: ResourceHandle): HlsSourceTranslation;
+  /**
+   * Тень встала на другом видео этого документа (переезд в том же фрейме). Всё, что объявлено до сих пор,
+   * — прежние видео: их MediaSource, упомянутый снова (живой элемент ленты вернулся прокруткой назад, 16b3b),
+   * открывает новое поколение со своим `source_buffer_added`, а не нарушение «объявлен дважды».
+   * Зовётся строго по `handoff_began{started}` нового видео: страница шлёт его раньше повтора журнала, а
+   * после него событий прежней передачи уже нет (порт доставляет по порядку).
+   */
+  beginNextVideo(): void;
 }
 
 const success = (items: readonly OutgoingItem[]): TranslationResult => ({ ok: true, items });
@@ -170,6 +178,11 @@ export function createDocumentTranslator(numbering: StreamNumbering): DocumentTr
         generation,
         items: [message({ type: "generation_started", generation }), message({ type: "hls_source_added", generation, root })],
       };
+    },
+    beginNextVideo() {
+      document.beginNextVideo();
+      // SourceBuffer записаны «поколение:индекс»: прежние поколения больше не упоминаются, их записи — мусор.
+      announcedSourceBuffers.clear();
     },
     translate(event) {
       switch (event.kind) {

@@ -9,7 +9,9 @@
 
 use std::time::Duration;
 
+use browser_bridge_protocol::StreamGeneration;
 use player_core::PlaybackState;
+use tracing::info;
 
 use super::SessionMedia;
 use crate::browser_session::playback::PlaybackObservation;
@@ -51,4 +53,23 @@ impl SessionMedia {
             self.note_play_state_commanded();
         }
     }
+}
+
+/// Строка журнала «поколение впервые показано и с какой секунды оно идёт» (16b3b).
+///
+/// По ней стенд видит, какой ролик в окне и с какой секунды: возврат к ролику ленты на
+/// его секунде, ожидание данных после прокрутки назад. Секунда старта — перемотка,
+/// отложенная до показа, если она есть (её плеер исполнит следом), иначе позиция, на
+/// которой плеер поставил медиа.
+pub(super) fn note_generation_shown(
+    generation: StreamGeneration,
+    observation: &PlaybackObservation,
+    seek_after_show: Option<Duration>,
+) {
+    let start = seek_after_show.unwrap_or(observation.position);
+    info!(
+        generation = generation.get(),
+        start_ms = start.as_millis(),
+        "Browser stream generation shown"
+    );
 }
