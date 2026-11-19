@@ -15,6 +15,12 @@ const BURST: ExpectedWindow = ExpectedWindow::EndsOnLastReel {
 };
 const HONEST_END: ExpectedWindow = ExpectedWindow::EndsHonestly {
     reel_stream_widths: &[640, 512],
+    window: WindowAfterLeave::StandsPaused,
+};
+/// Уход Shorts (S4): прежний конец 306, окно доигрывает и закрывается.
+const PLAYED_OUT_END: ExpectedWindow = ExpectedWindow::EndsHonestly {
+    reel_stream_widths: &[640, 512],
+    window: WindowAfterLeave::PlaysOut,
 };
 const WAITS: ExpectedWindow = ExpectedWindow::WaitsAtFeedEnd {
     reel_stream_widths: &[640, 512, 384],
@@ -57,12 +63,22 @@ fn good_scroll() -> ScrollRecord {
     }
 }
 
+/// Сообщение о конце: окно на паузе ждёт зрителя (решение 370) — так кончается здоровый уход из ленты.
 fn end_notice(cause: &str) -> EndNotice {
+    notice_line("waiting_for_viewer", cause, "none")
+}
+
+/// Сообщение о конце: окно доиграло скачанное (конец 306).
+fn played_out_notice(cause: &str) -> EndNotice {
+    notice_line("finished", cause, "drained")
+}
+
+fn notice_line(notice: &str, cause: &str, end: &str) -> EndNotice {
     EndNotice {
-        notice: "finished".into(),
+        notice: notice.into(),
         cause: cause.into(),
-        end: "drained".into(),
-        line: format!("Browser session end notice shown notice=finished cause={cause} end=drained"),
+        end: end.into(),
+        line: format!("Browser session end notice shown notice={notice} cause={cause} end={end}"),
     }
 }
 
@@ -120,7 +136,7 @@ fn honest_end() -> FeedEvidence {
             generations_before_edge: Some(vec![1, 2]),
             end: Some(EndRecord {
                 notice: Ok(end_notice("tab_gone")),
-                window_closed: Ok(()),
+                window_after_end: Ok(()),
             }),
             window_still_present: None,
         }),
@@ -280,7 +296,7 @@ fn an_end_with_another_cause_is_not_an_honest_end() {
     let mut evidence = honest_end();
     edge_mut(&mut evidence).end = Some(EndRecord {
         notice: Ok(end_notice("page_took_video_back")),
-        window_closed: Ok(()),
+        window_after_end: Ok(()),
     });
     assert!(failure_of(HONEST_END, &evidence).contains("source tab closed notice"));
 }
@@ -290,19 +306,45 @@ fn a_session_that_never_ended_is_not_an_honest_end() {
     let mut evidence = honest_end();
     edge_mut(&mut evidence).end = Some(EndRecord {
         notice: Err("timed out".into()),
-        window_closed: Ok(()),
+        window_after_end: Ok(()),
     });
     assert!(failure_of(HONEST_END, &evidence).contains("did not end honestly"));
 }
 
 #[test]
-fn a_window_that_stayed_after_the_end_fails() {
+fn a_window_that_played_out_after_leaving_the_feed_fails() {
+    // Решение 370: доиграть скачанное без зрителя — провал, даже с «Source tab closed».
+    let mut evidence = honest_end();
+    evidence.end_notice_lines = vec![played_out_notice("tab_gone").line];
+    edge_mut(&mut evidence).end = Some(EndRecord {
+        notice: Ok(played_out_notice("tab_gone")),
+        window_after_end: Ok(()),
+    });
+    assert!(failure_of(HONEST_END, &evidence).contains("notice=waiting_for_viewer"));
+}
+
+#[test]
+fn a_window_that_closed_instead_of_standing_paused_fails() {
     let mut evidence = honest_end();
     edge_mut(&mut evidence).end = Some(EndRecord {
         notice: Ok(end_notice("tab_gone")),
-        window_closed: Err("still on the bus".into()),
+        window_after_end: Err("the window should stand paused, but it is gone".into()),
     });
-    assert!(failure_of(HONEST_END, &evidence).contains("window stayed"));
+    assert!(failure_of(HONEST_END, &evidence).contains("should stand paused"));
+}
+
+#[test]
+fn the_shorts_leave_still_demands_the_played_out_end() {
+    let mut evidence = honest_end();
+    evidence.end_notice_lines = vec![played_out_notice("tab_gone").line];
+    edge_mut(&mut evidence).end = Some(EndRecord {
+        notice: Ok(played_out_notice("tab_gone")),
+        window_after_end: Ok(()),
+    });
+    let verdict = judge_feed(PLAYED_OUT_END, &evidence);
+    assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+    // Окно на паузе там, где строка ждёт доигрывания, — провал.
+    assert!(failure_of(PLAYED_OUT_END, &honest_end()).contains("notice=finished"));
 }
 
 #[test]

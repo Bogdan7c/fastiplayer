@@ -139,7 +139,11 @@ fn the_page_writes_every_mark_and_serves_every_hook_the_robot_needs() {
         "burst_intermediates",
     ];
     for row in EDGE_ROWS {
-        if let FeedScenario::Edge(EdgeScenario::LeaveSection { page_marks }) = row.scenario {
+        if let FeedScenario::Edge(
+            EdgeScenario::LeaveSection { page_marks, .. }
+            | EdgeScenario::LeaveBeforeStep { page_marks },
+        ) = row.scenario
+        {
             needed.extend(page_marks.iter().copied());
         }
     }
@@ -171,9 +175,17 @@ fn the_leave_rows_cover_the_three_live_shapes_and_each_demands_a_visible_muted_p
         .collect();
     assert_eq!(shapes, ["many", "pool", "moved"]);
     for row in leave_rows {
-        let FeedScenario::Edge(EdgeScenario::LeaveSection { page_marks }) = row.scenario else {
+        let FeedScenario::Edge(EdgeScenario::LeaveSection { page_marks, window }) = row.scenario
+        else {
             unreachable!("filtered above");
         };
+        // Решение 370: уход из ленты оставляет окно на паузе; доигрывает только Shorts (S4, конец 306).
+        let expected = if query_value(row, "shape") == Some("moved") {
+            WindowAfterLeave::PlaysOut
+        } else {
+            WindowAfterLeave::StandsPaused
+        };
+        assert_eq!(window, expected, "{}", row.step_id);
         assert!(
             page_marks
                 .iter()
@@ -224,5 +236,45 @@ fn the_removal_rows_expect_the_window_to_follow_the_feed_not_to_end() {
     assert_eq!(mid_move.len(), 2);
     for row in mid_move {
         assert_eq!(query_value(row, "quirk"), Some("remove-old-during-move"));
+    }
+}
+
+#[test]
+fn the_leave_before_step_rows_never_scroll_and_expect_an_honest_end_on_reel_one() {
+    let rows: Vec<&FeedRow> = EDGE_ROWS
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.scenario,
+                FeedScenario::Edge(EdgeScenario::LeaveBeforeStep { .. })
+            )
+        })
+        .collect();
+    let shapes: Vec<_> = rows
+        .iter()
+        .filter_map(|row| query_value(row, "shape"))
+        .collect();
+    assert_eq!(shapes, ["many", "pool"]);
+    for row in rows {
+        let FeedScenario::Edge(scenario @ EdgeScenario::LeaveBeforeStep { page_marks }) =
+            row.scenario
+        else {
+            unreachable!("filtered above");
+        };
+        // Ни одной спокойной прокрутки: приговор ждёт ровно ноль прокруток и один показанный ролик.
+        assert_eq!(
+            expected_window(scenario),
+            ExpectedWindow::EndsHonestly {
+                reel_stream_widths: &[640],
+                window: WindowAfterLeave::StandsPaused,
+            }
+        );
+        assert!(
+            page_marks
+                .iter()
+                .any(|mark| mark.contains("muted=true visible=true")),
+            "{}: without a playing visible preview the row would pass idly",
+            row.step_id
+        );
     }
 }

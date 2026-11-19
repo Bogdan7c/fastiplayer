@@ -444,12 +444,12 @@ export function startHandoffSession(
     endByPageSideStep(endAfterSourceLoss(sourceLossOfExpiredWait(wait), { pageAddress: episodeChange.pageAddressSinceVideoBegan(), agreedProtocol }));
   }
 
-  /** Уход из ленты в другой раздел (16b3, F3/F5): «Source tab closed». Посреди переезда — позже (новая тень решит). */
+  /** Уход из ленты (16b3): «Source tab closed», окно на паузе. Посреди переезда — позже (новая тень решит). */
   function endForLeftFeed(): LeaveFeedAnswer {
     if (phase === "moving") return "not_now";
     if (phase === "active") tryPostToPage(END_WITHOUT_PLAYER);
-    // Досмотр скачанного: паузу, которую поставила уходящая страница (или сеанс в ожидании), окну снять.
-    if (feed.windowPausedByPage()) forwardStreamEvent({ kind: "page_playback", request: { kind: "play" } });
+    // Решение 370: окно встаёт на паузу с «Source tab closed», скачанное само не доигрывается (play зрителя — доиграет).
+    if (!feed.windowPausedByPage()) forwardStreamEvent({ kind: "page_playback", request: { kind: "pause" } });
     if (phase === "active" || phase === "between_videos") endByPageSideStep({ kind: "page_navigated_away" });
     return "ended";
   }
@@ -638,7 +638,7 @@ export function startHandoffSession(
     if (step.kind === "wait_for_next_in_feed") relocation.feedVideoLost();
     if (step.kind === "wait_for_next_video" || step.kind === "wait_for_next_in_feed") waitForNextVideo();
     else if (step.kind === "leave_page") leavePage(step.reason);
-    else if (feedLoss === "left_feed") endForLeftFeed(); // тот же `tab_gone`, но окно досматривает (F3)
+    else if (feedLoss === "left_feed") endForLeftFeed(); // тот же `tab_gone`, но окно встаёт на паузу (F3, решение 370)
     else endByPageSideStep(step);
   }
 

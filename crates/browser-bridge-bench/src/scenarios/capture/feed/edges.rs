@@ -7,10 +7,12 @@
 //! | `feed-burst-*` | после спокойной прокрутки три прокрутки подряд с промежутком ~200 мс, пять роликов | окно кончает на ПОСЛЕДНЕМ ролике, поколения подряд, кадры растут |
 //! | `feed-removed-mid-move-*` | прежний элемент удалён сразу после `play()` следующего, посреди переезда | сеанс жив, окно на следующем ролике |
 //! | `feed-removed-after-move-*` | элемент, на который переехало окно, удалён через 0,3 с, адрес тот же | сеанс жив, окно идёт к следующему ролику |
-//! | `feed-leave-section-*` | уход в другой раздел: адрес, удаление/снятие источника, играющее тихое превью | честный конец «Source tab closed», превью не принято |
-//! | `feed-leave-while-waiting` | конец ленты (окно ждёт), потом уход в раздел с играющим превью | честный конец, превью не принято |
+//! | `feed-leave-section-*` | уход в другой раздел: адрес, удаление/снятие источника, играющее тихое превью | честный конец «Source tab closed», окно на паузе (решение 370; Shorts — доигрывает, 306), превью не принято |
+//! | `feed-leave-before-step-*` | ролик отдан, прокруток нет, сразу уход в другой раздел | честный конец, окно на паузе, превью не принято |
+//! | `feed-leave-while-waiting` | конец ленты (окно ждёт), потом уход в раздел с играющим превью | честный конец, окно на паузе, превью не принято |
 //! | `feed-end-waits` | конец ленты без ухода (решение 356) | 15 с ожидания: ни конца, ни нового поколения, окно на месте |
 
+use super::edge_judge::WindowAfterLeave;
 use super::judge::ExpectedWindow;
 use super::steps::WheelPlace;
 use super::{BeforeScrolling, FeedRow, FeedScenario};
@@ -31,6 +33,14 @@ pub(super) enum EdgeScenario {
     LeaveSection {
         /// Метки журнала страницы, которыми она доказывает, что уход был целиком (адрес, удаление, превью).
         page_marks: &'static [&'static str],
+        /// Каким окно остаётся после конца: на паузе (решение 370) или доигрывает (Shorts, 306).
+        window: WindowAfterLeave,
+    },
+    /// Ролик 1 отдан, прокруток НЕТ вовсе, затем уход в другой раздел сценарием формы (сеанс ещё не делал
+    /// шага ленты).
+    LeaveBeforeStep {
+        /// Метки журнала страницы, которыми она доказывает, что уход был целиком.
+        page_marks: &'static [&'static str],
     },
     /// Конец ленты (окно ждёт), затем уход в другой раздел с играющим превью.
     LeaveWhileWaiting,
@@ -50,11 +60,17 @@ pub(super) fn expected_window(scenario: EdgeScenario) -> ExpectedWindow {
         EdgeScenario::CurrentRemovedAfterMove => ExpectedWindow::FollowsFeed {
             reel_stream_widths: &EDGE_REEL_STREAM_WIDTHS[..=2],
         },
-        EdgeScenario::LeaveSection { .. } => ExpectedWindow::EndsHonestly {
+        EdgeScenario::LeaveSection { window, .. } => ExpectedWindow::EndsHonestly {
             reel_stream_widths: &EDGE_REEL_STREAM_WIDTHS[..=1],
+            window,
+        },
+        EdgeScenario::LeaveBeforeStep { .. } => ExpectedWindow::EndsHonestly {
+            reel_stream_widths: &EDGE_REEL_STREAM_WIDTHS[..=0],
+            window: WindowAfterLeave::StandsPaused,
         },
         EdgeScenario::LeaveWhileWaiting => ExpectedWindow::EndsHonestly {
             reel_stream_widths: &EDGE_REEL_STREAM_WIDTHS[..=2],
+            window: WindowAfterLeave::StandsPaused,
         },
         EdgeScenario::WaitAtFeedEnd => ExpectedWindow::WaitsAtFeedEnd {
             reel_stream_widths: &EDGE_REEL_STREAM_WIDTHS[..=2],
@@ -143,6 +159,7 @@ pub(super) const EDGE_ROWS: &[FeedRow] = &[
         "&mode=handoff&shape=many&reels=3",
         EdgeScenario::LeaveSection {
             page_marks: MARKS_LEAVE_MANY,
+            window: WindowAfterLeave::StandsPaused,
         },
     ),
     edge_row(
@@ -150,6 +167,7 @@ pub(super) const EDGE_ROWS: &[FeedRow] = &[
         "&mode=handoff&shape=pool&reels=3",
         EdgeScenario::LeaveSection {
             page_marks: MARKS_LEAVE_POOL,
+            window: WindowAfterLeave::StandsPaused,
         },
     ),
     edge_row(
@@ -157,6 +175,22 @@ pub(super) const EDGE_ROWS: &[FeedRow] = &[
         "&mode=handoff&shape=moved&reels=3",
         EdgeScenario::LeaveSection {
             page_marks: MARKS_LEAVE_MOVED,
+            window: WindowAfterLeave::PlaysOut,
+        },
+    ),
+    // Уход до первого шага ленты (находка: сеанс без единой прокрутки).
+    edge_row(
+        "feed-leave-before-step-many",
+        "&mode=handoff&shape=many&reels=3",
+        EdgeScenario::LeaveBeforeStep {
+            page_marks: MARKS_LEAVE_MANY,
+        },
+    ),
+    edge_row(
+        "feed-leave-before-step-pool",
+        "&mode=handoff&shape=pool&reels=3",
+        EdgeScenario::LeaveBeforeStep {
+            page_marks: MARKS_LEAVE_POOL,
         },
     ),
     // Конец ленты: окно ждёт; уход из раздела ожидания — честный конец.

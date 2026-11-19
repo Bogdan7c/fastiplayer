@@ -209,6 +209,10 @@ describe("F3: уход из ленты — адрес сменился и рол
     world.clock.advance(1_500);
     world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
     assert.deepEqual(tabGoneReasons(world), ["navigated_away"], "сразу на потере, без ожидания");
+    // Решение 370: страница паузы не ставила — окно ставит на паузу сам сеанс, перед `tab_gone`.
+    const lastTwo = world.sockets.last().sentMessages().slice(-2);
+    assert.deepEqual(lastTwo.map((message) => message.type), ["page_playback", "tab_gone"]);
+    assert.ok(lastTwo[0]?.type === "page_playback" && lastTwo[0].request.kind === "pause");
   });
 
   it("форма TikTok (T5): адрес другого раздела, через 6 мс ролик вынут и встал на паузу, потеря раньше отсрочки — конец сразу на потере", async () => {
@@ -359,13 +363,20 @@ describe("раздел ленты выучивается на шаге лент�
   });
 });
 
-describe("уход из ленты: окно досматривает скачанное, а не ждёт зрителя на паузе страницы", () => {
-  /** Что ушло плееру после последней новости: виды сообщений по порядку. */
+describe("уход из ленты: окно встаёт на паузу с «Source tab closed» (решение 370)", () => {
+  /** Что ушло плееру: виды сообщений по порядку (`page_playback` — с видом просьбы). */
   function wireTypes(world: World): string[] {
     return world.sockets.last().sentMessages().map((message) => (message.type === "page_playback" ? `page_playback:${message.request.kind}` : message.type));
   }
 
-  it("Instagram: страница поставила уходящий ролик на паузу — перед `tab_gone` окну «играть» (конец на потере, F3)", async () => {
+  /** Последнее слово об игре перед `tab_gone` и сам `tab_gone` в конце провода. */
+  function lastPlaybackBeforeTabGone(world: World): string | undefined {
+    const types = wireTypes(world);
+    assert.equal(types.at(-1), "tab_gone");
+    return types.filter((type) => type.startsWith("page_playback:")).at(-1);
+  }
+
+  it("Instagram: страница поставила уходящий ролик на паузу — окно на паузе, «играть» не шлётся (конец на потере, F3)", async () => {
     const world = await feedSession();
     feedStep(world, 2);
     world.updateTab({ url: EXPLORE });
@@ -374,10 +385,11 @@ describe("уход из ленты: окно досматривает скача
     // Потеря раньше отсрочки F5: конец решает окно F3.
     world.clock.advance(FEED_SECTION_LEAVE_GRACE_MS / 2);
     world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
-    assert.deepEqual(wireTypes(world).slice(-2), ["page_playback:play", "tab_gone"]);
+    assert.equal(lastPlaybackBeforeTabGone(world), "page_playback:pause");
+    assert.equal(wireTypes(world).filter((type) => type === "page_playback:pause").length, 2, "пауза шага 1 и пауза ухода; второй своей нет");
   });
 
-  it("окно ждало следующий ролик (сеанс сам поставил паузу) — после смены раздела тоже «играть» перед `tab_gone`", async () => {
+  it("окно ждало следующий ролик (сеанс сам поставил паузу) — после смены раздела пауза остаётся", async () => {
     const world = await feedSession();
     feedStep(world, 2);
     leftScreen(world);
@@ -385,10 +397,10 @@ describe("уход из ленты: окно досматривает скача
     world.clock.advance(FEED_EXIT_WINDOW_MS * 2);
     world.updateTab({ url: EXPLORE });
     world.clock.advance(FEED_SECTION_LEAVE_GRACE_MS);
-    assert.deepEqual(wireTypes(world).slice(-2), ["page_playback:play", "tab_gone"]);
+    assert.equal(lastPlaybackBeforeTabGone(world), "page_playback:pause");
   });
 
-  it("страница паузы не ставила (окно играет или на паузе зрителя) — «играть» не шлётся", async () => {
+  it("страница паузы не ставила (окно играет) — сеанс сам ставит окно на паузу перед `tab_gone`", async () => {
     const world = await feedSession();
     feedStep(world, 2);
     world.updateTab({ url: EXPLORE });
@@ -397,8 +409,44 @@ describe("уход из ленты: окно досматривает скача
     world.clock.advance(1_000);
     world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
     const types = wireTypes(world);
-    assert.equal(types.at(-1), "tab_gone");
-    assert.equal(types.slice(types.lastIndexOf("generation_started")).includes("page_playback:play"), false);
+    assert.deepEqual(types.slice(-2), ["page_playback:pause", "tab_gone"]);
+    assert.equal(types.includes("page_playback:play"), false, "скачанное само не доигрывается");
   });
 });
 
+describe("уход до первого шага ленты: раздел не выучен, а уход сайта виден", () => {
+  it("Instagram (I6): адрес «Интересного», ролик вынут и на паузе — честный конец, превью не берётся", async () => {
+    const world = await feedSession();
+    world.updateTab({ url: EXPLORE });
+    world.clock.advance(500);
+    leftScreen(world, "removed_from_document");
+    assert.deepEqual(tabGoneReasons(world), ["navigated_away"]);
+    assert.equal(world.handoffs.heldVideo(TAB, 0, report(SILENT_PREVIEW)), "release");
+    assert.deepEqual(generationsOnWire(world), [1], "превью не стало поколением 2");
+  });
+
+  it("порядок «удаление → адрес» (T5 наоборот): ролик вынут, адрес пришёл в окне — тот же конец", async () => {
+    const world = await feedSession();
+    leftScreen(world, "removed_from_document");
+    assert.deepEqual(world.ended, []);
+    world.clock.advance(FEED_EXIT_WINDOW_MS - 100);
+    world.updateTab({ url: "https://www.instagram.com/explore/" });
+    assert.deepEqual(tabGoneReasons(world), ["navigated_away"]);
+  });
+
+  it("шаг TikTok до первого шага: ролик вынут, адрес тот же — не уход, окно едет к следующему", async () => {
+    const world = await feedSession();
+    leftScreen(world, "removed_from_document");
+    world.clock.advance(FEED_EXIT_WINDOW_MS * 2);
+    assert.deepEqual(world.ended, []);
+    assert.equal(world.handoffs.heldVideo(TAB, 0, report(reel(2))), "adopt");
+  });
+
+  it("шаг Instagram до первого шага: уход прокруткой и новый адрес ролика — не уход", async () => {
+    const world = await feedSession();
+    leftScreen(world);
+    world.updateTab({ url: NEXT_REEL_ADDRESS });
+    assert.deepEqual(world.ended, []);
+    assert.equal(world.handoffs.heldVideo(TAB, 0, report(reel(2))), "adopt");
+  });
+});

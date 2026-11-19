@@ -43,7 +43,10 @@ pub(super) enum ExpectedWindow {
     EndsOnLastReel { reel_stream_widths: &'static [u64] },
     /// Уход из ленты в другой раздел (16b3): честный конец «Source tab closed», превью нового раздела не
     /// принято. `reel_stream_widths` — ролики, которые окно успело показать до ухода.
-    EndsHonestly { reel_stream_widths: &'static [u64] },
+    EndsHonestly {
+        reel_stream_widths: &'static [u64],
+        window: edge_judge::WindowAfterLeave,
+    },
     /// Конец ленты без ухода (решение 356): окно ждёт, не кончает сеанс и не берёт новых роликов.
     /// `reel_stream_widths` — ролики, которые окно показало до конца ленты.
     WaitsAtFeedEnd { reel_stream_widths: &'static [u64] },
@@ -179,8 +182,11 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
         ExpectedWindow::EndsOnLastReel { reel_stream_widths } => {
             edge_judge::last_reel_failures(reel_stream_widths, evidence, &mut failures);
         }
-        ExpectedWindow::EndsHonestly { reel_stream_widths } => {
-            edge_judge::honest_end_failures(reel_stream_widths, evidence, &mut failures);
+        ExpectedWindow::EndsHonestly {
+            reel_stream_widths,
+            window,
+        } => {
+            edge_judge::honest_end_failures(reel_stream_widths, window, evidence, &mut failures);
         }
         ExpectedWindow::WaitsAtFeedEnd { reel_stream_widths } => {
             edge_judge::waits_failures(reel_stream_widths, evidence, &mut failures);

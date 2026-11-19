@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::super::super::context::ScenarioError;
 use super::super::super::entries::return_hand::ReturnHand;
-use super::edge_judge::{EdgeRecord, EndRecord};
+use super::edge_judge::{EdgeRecord, EndRecord, WindowAfterLeave};
 use super::edges::{EDGE_REEL_STREAM_WIDTHS, EDGE_WHEEL, EdgeScenario};
 use super::judge::{FrameGrowthCheck, ScrollRecord};
 use super::steps::{
@@ -62,7 +62,12 @@ pub(super) fn run_edge(
         EdgeScenario::BurstToLastReel => burst_to_last_reel(hand),
         EdgeScenario::OldRemovedDuringMove => old_removed_during_move(hand),
         EdgeScenario::CurrentRemovedAfterMove => current_removed_after_move(hand),
-        EdgeScenario::LeaveSection { page_marks } => leave_section(hand, control, page_marks),
+        EdgeScenario::LeaveSection { page_marks, window } => {
+            leave_section(hand, control, page_marks, 1, window)
+        }
+        EdgeScenario::LeaveBeforeStep { page_marks } => {
+            leave_section(hand, control, page_marks, 0, WindowAfterLeave::StandsPaused)
+        }
         EdgeScenario::LeaveWhileWaiting => leave_while_waiting(hand, control),
         EdgeScenario::WaitAtFeedEnd => wait_at_feed_end(hand, control),
     }
@@ -194,14 +199,20 @@ fn leave_section(
     hand: &mut ReturnHand<'_, '_>,
     control: &PlayerControl,
     page_marks: &[&str],
+    calm_scrolls: usize,
+    window: WindowAfterLeave,
 ) -> Result<EdgeRun, ScenarioError> {
-    let calm = scroll_to_reel(hand, 2, EDGE_WHEEL)?;
+    // Спокойная прокрутка на ролик 2 или (`calm_scrolls == 0`) ни одной.
+    let mut scrolls = Vec::new();
+    if calm_scrolls > 0 {
+        scrolls.push(scroll_to_reel(hand, 2, EDGE_WHEEL)?);
+    }
     let generations_before_edge = loaded_generations(hand)?;
     hand.run().tell_page("hook:leave-section");
     let stimulus = page_logged_all(hand, page_marks);
-    let end = observe_honest_end(hand, control);
+    let end = observe_honest_end(hand, control, window);
     Ok(EdgeRun {
-        scrolls: vec![calm],
+        scrolls,
         edge: EdgeRecord {
             generations_before_edge: Some(generations_before_edge),
             end: Some(end),
@@ -247,7 +258,7 @@ fn leave_while_waiting(
             ],
         )
     });
-    let end = observe_honest_end(hand, control);
+    let end = observe_honest_end(hand, control, WindowAfterLeave::StandsPaused);
     Ok(EdgeRun {
         scrolls,
         edge: EdgeRecord {
@@ -279,20 +290,37 @@ fn wait_at_feed_end(
     })
 }
 
-/// Честный конец: сообщение окна о конце сеанса, закрытие окна и короткое ожидание, не примет ли окно
-/// превью с опозданием.
-fn observe_honest_end(hand: &mut ReturnHand<'_, '_>, control: &PlayerControl) -> EndRecord {
+/// Честный конец: сообщение окна о конце сеанса, затем окно — на месте после короткого ожидания (решение 370:
+/// стоит на паузе; за это же ожидание видно, не примет ли окно превью с опозданием) или закрылось (доиграло).
+fn observe_honest_end(
+    hand: &mut ReturnHand<'_, '_>,
+    control: &PlayerControl,
+    window: WindowAfterLeave,
+) -> EndRecord {
     let notice = hand
         .run()
         .player_log
         .wait_for_end_notice(END_NOTICE_TIMEOUT)
         .map_err(|error| format!("no end notice from the player: {error}"));
-    let window_closed = control
-        .wait_until_gone(WINDOW_GONE_TIMEOUT)
-        .map_err(|error| format!("the player window did not close: {error}"));
-    std::thread::sleep(AFTER_END_GRACE);
+    let window_after_end = match window {
+        WindowAfterLeave::StandsPaused => {
+            std::thread::sleep(AFTER_END_GRACE);
+            control
+                .wait_until_controllable(WINDOW_PRESENT_TIMEOUT)
+                .map_err(|error| format!("the window should stand paused, but it is gone: {error}"))
+        }
+        WindowAfterLeave::PlaysOut => {
+            let closed = control
+                .wait_until_gone(WINDOW_GONE_TIMEOUT)
+                .map_err(|error| {
+                    format!("the window should play out and close, but it stayed: {error}")
+                });
+            std::thread::sleep(AFTER_END_GRACE);
+            closed
+        }
+    };
     EndRecord {
         notice,
-        window_closed,
+        window_after_end,
     }
 }

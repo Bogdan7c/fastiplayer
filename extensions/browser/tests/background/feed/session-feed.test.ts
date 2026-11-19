@@ -101,15 +101,13 @@ describe("потеря ролика (F2, F3)", () => {
     assert.equal(feed.currentVideoLost(), "feed_continues");
   });
 
-  it("F3 без шага ленты раздел не выучен: вынутый ролик и другой адрес — ждём, как раньше (неверный конец хуже)", () => {
-    const { feed, state, clock, leaveRequests } = feedWorld();
+  it("без шага ленты раздел не выучен: F3 по разделу молчит, вынутый ролик с новым адресом решает правило «до первого шага»", () => {
+    const { feed, state, leaveRequests } = feedWorld();
     feed.addressSeen(EXPLORE);
     state.feedAwaits = true;
     feed.videoLeftScreen("removed_from_document");
-    assert.equal(feed.currentVideoLost(), "feed_continues");
-    assert.equal(feed.heldVideoPlace(), "feed_section", "ролик не отсеивается по невыученному разделу");
-    clock.advance(FEED_SECTION_LEAVE_GRACE_MS * 5);
-    assert.deepEqual(leaveRequests, []);
+    assert.equal(leaveRequests.length, 1, "уход до первого шага");
+    assert.equal(feed.currentVideoLost(), "feed_continues", "F3 без выученного раздела не отвечает `left_feed`");
   });
 
   it("адрес, пришедший в окне уточнения после шага, становится разделом ленты; после окна — уже уход", () => {
@@ -300,6 +298,72 @@ describe("пауза окна по слову страницы (досмотр �
     assert.equal(feed.windowPausedByPage(), true);
     feed.pagePlaybackForwarded("play");
     assert.equal(feed.windowPausedByPage(), false);
+  });
+});
+
+describe("уход до первого шага ленты (раздел не выучен)", () => {
+  it("адрес сменился с начала ролика, потом ролик вынут — конец просится сразу", () => {
+    const { feed, state, leaveRequests, clock } = feedWorld();
+    feed.addressSeen(EXPLORE);
+    clock.advance(500);
+    state.feedAwaits = true;
+    feed.videoLeftScreen("removed_from_document");
+    assert.deepEqual(leaveRequests, [500]);
+  });
+
+  it("ролик вынут, адрес пришёл в окне — конец; дальше окна — нет", () => {
+    const inWindow = feedWorld();
+    inWindow.state.feedAwaits = true;
+    inWindow.feed.videoLeftScreen("removed_from_document");
+    inWindow.clock.advance(FEED_EXIT_WINDOW_MS);
+    inWindow.feed.addressSeen(EXPLORE);
+    assert.equal(inWindow.leaveRequests.length, 1);
+
+    const late = feedWorld();
+    late.state.feedAwaits = true;
+    late.feed.videoLeftScreen("removed_from_document");
+    late.clock.advance(FEED_EXIT_WINDOW_MS + 1);
+    late.feed.addressSeen(EXPLORE);
+    late.clock.advance(FEED_SECTION_LEAVE_GRACE_MS * 5);
+    assert.deepEqual(late.leaveRequests, []);
+  });
+
+  it("шаг TikTok: вынут без смены адреса — не уход; уход прокруткой с новым адресом (Instagram) — не уход", () => {
+    const tiktok = feedWorld();
+    tiktok.state.feedAwaits = true;
+    tiktok.feed.videoLeftScreen("removed_from_document");
+    tiktok.clock.advance(FEED_SECTION_LEAVE_GRACE_MS * 5);
+    assert.deepEqual(tiktok.leaveRequests, []);
+    assert.equal(tiktok.feed.heldVideoPlace(), "feed_section");
+
+    const instagram = feedWorld();
+    instagram.feed.addressSeen(REEL_2);
+    instagram.state.feedAwaits = true;
+    instagram.feed.videoLeftScreen("scrolled_off_screen");
+    instagram.clock.advance(FEED_SECTION_LEAVE_GRACE_MS * 5);
+    assert.deepEqual(instagram.leaveRequests, []);
+  });
+
+  it("сеанс посреди переезда (`not_now`): пока конец не принят, задержанное видео не берётся", () => {
+    const { feed, state, leaveRequests, clock } = feedWorld();
+    state.answer = "not_now";
+    feed.addressSeen(EXPLORE);
+    state.feedAwaits = true;
+    feed.videoLeftScreen("removed_from_document");
+    assert.equal(feed.heldVideoPlace(), "other_section");
+    state.answer = "ended";
+    clock.advance(FEED_SECTION_LEAVE_GRACE_MS);
+    assert.equal(leaveRequests.length, 2, "спрошено снова после отсрочки");
+  });
+
+  it("раздел уже выучен — правило молчит: тот же раздел и вынутый ролик решают F3/F2", () => {
+    const { feed, state, takeFeedStep, leaveRequests, clock } = feedWorld();
+    takeFeedStep();
+    feed.addressSeen(REEL_2);
+    state.feedAwaits = true;
+    feed.videoLeftScreen("removed_from_document");
+    clock.advance(FEED_SECTION_LEAVE_GRACE_MS * 5);
+    assert.deepEqual(leaveRequests, []);
   });
 });
 

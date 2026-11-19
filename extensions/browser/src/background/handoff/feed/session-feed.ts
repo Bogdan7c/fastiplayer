@@ -17,8 +17,8 @@
 // - F3. Уход из ленты: ролик потерян, НЕ уйдя перед этим прокруткой, и вкладка сменила РАЗДЕЛ (feed-section.ts)
 //   после старта ролика, в пределах окна `FEED_EXIT_WINDOW_MS` — в любом порядке. Раздел раньше потери — ответ
 //   `left_feed` сразу; потеря раньше раздела — сеанс сперва ждёт, а пришедший в окне адрес другого раздела просит
-//   конец через `leaveFeed`. Конец — `tab_gone{navigated_away}` («Source tab closed», досмотр скачанного; решения
-//   42, 306).
+//   конец через `leaveFeed`. Конец — `tab_gone{navigated_away}` («Source tab closed»; решения 42, 306; окно встаёт
+//   на паузу — решение 370).
 //   Почему раздел, а не любой адрес (отступление от буквы правила, отчёт 16b3): Instagram меняет адрес на КАЖДОМ
 //   ролике (I1, I4). В быстрой серии промежуточный ролик встаёт, адрес уходит на следующий, а элемент удаляют;
 //   его уход с экрана мог не дойти (пауза пришла, пока ролик ещё был задержан сторожем). По букве «любой адрес» это
@@ -35,6 +35,13 @@
 // уточняется новостью об адресе, пришедшей в `FEED_SECTION_LEARN_MS` после этого, пока ролик не уходил с экрана
 // (новость `tabs.onUpdated` о `pushState` шага может прийти позже, чем встала тень). До первого шага ленты раздела
 // нет: F5 молчит, ролик «другого раздела» не отсеивается, F3 не судит — работают прежние правила.
+//
+// - Уход до первого шага ленты (стенд `feed-leave-before-step-*`): раздел ещё не выучен, но уход сайта виден и
+//   без него. Страница ВЫНУЛА текущий ролик (уход `removed_from_document`, не прокрутка), а адрес вкладки с начала
+//   этого ролика сменился — в любом порядке, второе в пределах `FEED_EXIT_WINDOW_MS` от первого. Так уходят
+//   Instagram (I6: адрес, удаление, пауза уже вынутого) и TikTok (T5). Шаг ленты так не выглядит: TikTok вынимает
+//   ролик без смены адреса (T1), Instagram уходит прокруткой (I1), Shorts переносит элемент без ухода с экрана (S1).
+//   Пока конец не принят (сеанс посреди переезда), задержанное видео не берётся: это превью нового раздела.
 //
 // Время — монотонные часы фона (`Scheduler.now`), отсрочка — таймер фона: таймеры скрытой вкладки спят.
 
@@ -99,7 +106,7 @@ export type HeldVideoPlace =
   | "not_a_feed_move"
   /** Тот же раздел, что у ленты. */
   | "feed_section"
-  /** Вкладка уже в другом разделе (F5): переезд не берёт. */
+  /** Вкладка уже в другом разделе (F5) или уход из ленты уже доказан: переезд не берёт. */
   | "other_section";
 
 /** Ответ сеанса на просьбу кончиться уходом из ленты. */
@@ -141,9 +148,9 @@ export interface SessionFeed {
    */
   pagePlaybackForwarded(request: "play" | "pause" | "set_rate"): void;
   /**
-   * Окно стоит на паузе по слову страницы (а не зрителя). При уходе из ленты такую паузу нужно снять: сайт ставит
-   * уходящий ролик на паузу сам (I6, T5), сеанс — пока ждал следующий ролик, а уход — это «досмотреть скачанное»
-   * (решения 42, 306). Паузу зрителя страница не повторяет, и она остаётся: окно ждёт человека.
+   * Окно уже стоит на паузе по слову страницы: сайт сам ставит уходящий ролик на паузу (I6, T5), сеанс — пока ждёт
+   * следующий ролик. При уходе из ленты окно должно стоять на паузе (решение 370): если пауза уже есть, второй не
+   * нужно.
    */
   windowPausedByPage(): boolean;
   /** Сеанс кончился: снять отсрочку; новости после этого ничего не делают. */
@@ -175,6 +182,10 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
   let unexplainedLossAtMs: number | undefined;
   // Адрес пришёл в окне после такой потери: конец просится, пока сеанс его не примет.
   let leaveRequested = false;
+  // Адрес вкладки, когда встал текущий ролик (правило «уход до первого шага»).
+  let urlAtVideoStart = ports.openedUrl;
+  // Когда страница вынула текущий ролик, пока раздел не выучен и адрес ещё тот же (ждём адрес в окне).
+  let removedBeforeLearningAtMs: number | undefined;
   // Последнее слово страницы об игре, ушедшее плееру (`undefined` — не было: окно играет, как после передачи).
   let lastPagePlayback: "play" | "pause" | undefined;
 
@@ -227,8 +238,10 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       latestSection = section;
       // Адрес самого шага ленты, пришедший чуть позже тени, — это раздел ленты, а не уход из него.
       if (now() <= sectionLearningUntilMs && currentExit === undefined) feedSection = section;
-      // Порядок «удаление → адрес» (F3): ролик уже потерян без прокрутки, другой раздел пришёл в окне — уход сразу.
-      if (unexplainedLossAtMs !== undefined && sectionChanged() && now() - unexplainedLossAtMs <= FEED_EXIT_WINDOW_MS) {
+      // Порядок «удаление → адрес» (F3; до выученного раздела — любой новый адрес после вынутого ролика): уход сразу.
+      const lossThenSection = unexplainedLossAtMs !== undefined && sectionChanged() && now() - unexplainedLossAtMs <= FEED_EXIT_WINDOW_MS;
+      const removalThenAddress = removedBeforeLearningAtMs !== undefined && now() - removedBeforeLearningAtMs <= FEED_EXIT_WINDOW_MS;
+      if (lossThenSection || removalThenAddress) {
         leaveRequested = true;
         requestLeave();
         return;
@@ -250,6 +263,8 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       lostAndWaiting = false;
       unexplainedLossAtMs = undefined;
       leaveRequested = false;
+      removedBeforeLearningAtMs = undefined;
+      urlAtVideoStart = latestUrl;
       videoStartedAtMs = now();
       // Новое видео: его игру страница назовёт сама (`page_playback` сразу за `handoff_began`), прежнее слово не в счёт.
       lastPagePlayback = undefined;
@@ -257,6 +272,15 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
     },
     videoLeftScreen(exit) {
       currentExit = exit;
+      // Уход до первого шага ленты (шапка): вынутый ролик и адрес, сменившийся с начала ролика.
+      if (!stopped && exit === "removed_from_document" && feedSection === undefined) {
+        if (latestUrl !== urlAtVideoStart) {
+          leaveRequested = true;
+          requestLeave();
+          return;
+        }
+        removedBeforeLearningAtMs = now();
+      }
       reviewSection();
     },
     currentVideoLost() {
@@ -269,6 +293,8 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       return "feed_continues";
     },
     heldVideoPlace() {
+      // Уход уже доказан, а конец ждёт конца переезда: задержанное видео — из нового раздела.
+      if (leaveRequested) return "other_section";
       if (!waitingForFeedVideo()) return "not_a_feed_move";
       return sectionChanged() ? "other_section" : "feed_section";
     },

@@ -6,8 +6,10 @@
 //!    вскоре `pause()`), окно в итоге показывает ПОСЛЕДНИЙ ролик, ширины кадра шли только вперёд, номера
 //!    поколений идут подряд без дыр, кадры на последнем ролике растут;
 //!  * уход из ленты: раздражитель был целиком (адрес, удаление/снятие источника, играющее видимое превью),
-//!    окно кончило сеанс сообщением «Source tab closed» (`notice=finished cause=tab_gone`) и закрылось, а
-//!    превью другого раздела окно НЕ приняло: новых поколений и новых ширин кадра нет;
+//!    окно кончило сеанс сообщением «Source tab closed» (`cause=tab_gone`) и, по решению 370, СТОИТ НА ПАУЗЕ
+//!    (`notice=waiting_for_viewer`) и не закрывается само: скачанное без зрителя не доигрывается. Исключение —
+//!    уход Shorts (S4, [`WindowAfterLeave::PlaysOut`]). Превью другого раздела окно НЕ приняло: новых поколений
+//!    и новых ширин кадра нет;
 //!  * конец ленты: страница ушла в раздел без видео и остановила последний ролик, а окно за всё ожидание не
 //!    показало сообщения о конце, не взяло нового ролика и осталось на месте.
 
@@ -20,13 +22,36 @@ use crate::observe::{EndNotice, FrameGrowth};
 /// трёх прокруток после спокойной даёт два промежуточных ролика, последний остаётся играть.
 pub(super) const MIN_BURST_INTERMEDIATES: f64 = 2.0;
 
+/// Каким окно должно остаться после честного конца ухода из ленты.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WindowAfterLeave {
+    /// Решение 370: окно стоит на паузе с «Source tab closed» (`notice=waiting_for_viewer`) и само не
+    /// закрывается; нажал play — доиграет скачанное.
+    StandsPaused,
+    /// Прежний конец решения 306: окно доигрывает скачанное и закрывается (`notice=finished`). Так кончается
+    /// уход Shorts (S4): сеанс Shorts не делает переездов (шаг — новое поколение на том же элементе), фон не
+    /// знает в нём ленты, и снятый источник кончает сеанс прежним правилом «адрес сменился».
+    PlaysOut,
+}
+
+impl WindowAfterLeave {
+    /// Какое сообщение о конце окно обязано показать (метка `notice=` журнала плеера).
+    pub(super) const fn expected_notice(self) -> &'static str {
+        match self {
+            Self::StandsPaused => "waiting_for_viewer",
+            Self::PlaysOut => "finished",
+        }
+    }
+}
+
 /// Как кончился сеанс по наблюдению робота (строки «уход из ленты»).
 #[derive(Debug)]
 pub(super) struct EndRecord {
     /// Сообщение о конце сеанса из журнала плеера или причина, почему его нет.
     pub notice: Result<EndNotice, String>,
-    /// Окно плеера закрылось (ушло с шины) или причина, почему нет.
-    pub window_closed: Result<(), String>,
+    /// Окно после конца повело себя, как ждёт строка ([`WindowAfterLeave`]): осталось на месте и отвечает
+    /// (`StandsPaused`) или закрылось (`PlaysOut`); `Err` — что вышло иначе.
+    pub window_after_end: Result<(), String>,
 }
 
 /// Улики края ленты: что сделала страница и что стало с окном.
@@ -188,11 +213,13 @@ fn forward_only_widths_failure(
     None
 }
 
-/// Сообщение о конце: «Source tab closed» (`notice=finished cause=tab_gone`).
-fn tab_gone_notice_failure(found: &EndNotice) -> Option<String> {
-    (!(found.cause == "tab_gone" && found.notice == "finished")).then(|| {
+/// Сообщение о конце: «Source tab closed» (`cause=tab_gone`) с меткой, которую требует [`WindowAfterLeave`]:
+/// `waiting_for_viewer` (окно на паузе) или `finished` (доиграло).
+fn tab_gone_notice_failure(found: &EndNotice, window: WindowAfterLeave) -> Option<String> {
+    let notice = window.expected_notice();
+    (!(found.cause == "tab_gone" && found.notice == notice)).then(|| {
         format!(
-            "expected the source tab closed notice (notice=finished, cause=tab_gone), got: {}",
+            "expected the source tab closed notice (notice={notice}, cause=tab_gone), got: {}",
             found.line
         )
     })
@@ -201,6 +228,7 @@ fn tab_gone_notice_failure(found: &EndNotice) -> Option<String> {
 /// Уход из ленты: честный конец, превью другого раздела не принято.
 pub(super) fn honest_end_failures(
     reel_stream_widths: &[u64],
+    window: WindowAfterLeave,
     evidence: &FeedEvidence,
     failures: &mut Vec<String>,
 ) {
@@ -216,13 +244,13 @@ pub(super) fn honest_end_failures(
         None => failures.push("the row did not observe how the session ended".to_owned()),
         Some(end) => {
             match &end.notice {
-                Ok(found) => failures.extend(tab_gone_notice_failure(found)),
+                Ok(found) => failures.extend(tab_gone_notice_failure(found, window)),
                 Err(message) => failures.push(format!(
                     "the session did not end honestly (no 'Source tab closed' notice): {message}"
                 )),
             }
-            if let Err(message) = &end.window_closed {
-                failures.push(format!("the player window stayed after the end: {message}"));
+            if let Err(message) = &end.window_after_end {
+                failures.push(format!("the player window after the end: {message}"));
             }
         }
     }
