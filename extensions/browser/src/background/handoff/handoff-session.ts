@@ -53,7 +53,6 @@ import { parsePageEvent, parsePageFloodNotice, parseViewerReturnRequest } from "
 import {
   PROTOCOL_VERSION_1_0,
   SESSION_CLOSE_CODES,
-  type PlayerSessionMessage,
   type ProtocolVersion,
   type TabGoneReason,
 } from "../../protocol/index.ts";
@@ -71,13 +70,12 @@ import type { SessionPhase } from "./session-phase.ts";
 export type { HandoffSession, HandoffSessionEnd } from "./session-contract.ts";
 export type { HandoffSessionDependencies, HandoffTarget, SessionDoor, TabDescription } from "./handoff-session-dependencies.ts";
 import type { HandoffSessionDependencies, HandoffTarget } from "./handoff-session-dependencies.ts";
-import { translatePlayerMessage } from "./player-message-translator.ts";
+import { createPlayerReactions } from "./player-reactions.ts";
 import {
   NORMAL_CLOSE_CODE,
   openSessionSocket,
   type QueueDeliveringCloseReason,
   type SessionSocket,
-  type SocketEndCause,
 } from "./session-socket.ts";
 import { referrerOf, startCheckedPulledSource, type PulledSourceEvent } from "./pulled-source-start.ts";
 import { createSessionSourceFeeds, networkForSource } from "./session-source-feeds.ts";
@@ -91,9 +89,9 @@ import { createVideoRelocation, type NextVideoWait } from "./video-relocation.ts
 import { createSessionEpisodeChange } from "./episode-change/session-episode-change.ts";
 import { createSessionFeed, type LeaveFeedAnswer } from "./feed/session-feed.ts";
 import { endAfterSourceLoss, sourceLossOfExpiredWait, type SourceLossEnd } from "./episode-change/source-loss-end.ts";
-import { describeRefusal, describeSocketEnd, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
+import { describeRefusal, outcomeOfRefusedBegin, playerWindowOf } from "./session-outcome-words.ts";
 import { disconnectQuietly, END_WITHOUT_PLAYER, LEAVE_PREVIOUS_VIDEO, RETURN_PLAYING_AT_SHADOW } from "./session-page-commands.ts";
-import { closingAfterConfirmedEnd, endCommandAfterPlayerSocketEnd, stepAfterPageEndedShadow, stepAfterPlayerSocketEnded } from "./session-end-rules.ts";
+import { closingAfterConfirmedEnd, stepAfterPageEndedShadow } from "./session-end-rules.ts";
 import { createSessionPageReturn } from "./page-return/session-page-return.ts";
 import { createPageLeave } from "./session-page-leave.ts";
 import { createPagePresence } from "./session-page-presence.ts";
@@ -373,7 +371,7 @@ export function startHandoffSession(
       token: granted.grant.token,
       createWebSocket: dependencies.createWebSocket,
       scheduler: dependencies.scheduler,
-      callbacks: { onAttached: handleAttached, onPlayerMessage: handlePlayerMessage, onEnded: handleSocketEnded },
+      callbacks: { onAttached: handleAttached, onPlayerMessage: playerReactions.handlePlayerMessage, onEnded: playerReactions.handleSocketEnded },
     });
     // Вкладку закрыли, пока плеер выдавал сеанс: сеанс выдан — честно закрываем его через attach.
     if (presence.wasRemoved()) abandonGrantedSession({ kind: "failed", reason: "tab_closed" }, "closed");
@@ -710,75 +708,27 @@ export function startHandoffSession(
 
   // ---------------------------------------------------------------- плеер → страница
 
-  function handlePlayerMessage(message: PlayerSessionMessage): void {
-    // Секунда плеера нужна возврату страницы во всех фазах (11b2): в сироте часы — единственная новость. Часы прошлого
-    // видео (16a2) тоже: пока вернувшаяся страница встаёт, плеер играет прежнее поколение — тот самый фильм.
-    if (message.type === "clock") pageReturn.notePlayerSecond(message.position_us);
-    // Память выбора решает по часам, у начала ли серия (14b2); в сироте её слушатели и так молчат. Часы прошлого
-    // видео (16a2) — секунда чужого ролика: конец рекламы на 12 с не значит «серия уже на 12-й секунде».
-    if (message.type === "clock" && videoGeneration.clockRelationOf(message.generation) !== "previous_video") siteAdapters.playerClock(message.position_us, message.state);
-    if (phase === "page_away") {
-      if (message.type === "reopen_page") pageReturn.reopenRequested();
-      if (message.type === "show_page") dependencies.noteForDeveloper("show_page ignored: the page is away");
-      return;
-    }
-    // До старта тени и после её снятия командовать некем; в `page_reloading` (16c) — часы, конец и байты.
-    if (phase !== "active" && phase !== "between_videos" && phase !== "moving" && phase !== "page_reloading") return;
-    const action = translatePlayerMessage(message, videoGeneration);
-    switch (action.kind) {
-      case "shadow":
-        // Пока тень встаёт в вернувшейся вкладке, часы старого видео переезду не указ (он остановлен).
-        if (action.command.kind === "clock" && !pageReturn.isReturning()) relocation.noteClockState(action.command);
-        // Между роликами часы некому показывать: тени нет.
-        if (phase === "active") commandPage({ kind: "shadow", command: action.command });
-        return;
-      case "end_handoff": {
-        const end: HandoffSessionEnd = action.cause === "returned_to_page" ? { kind: "returned_to_page" } : { kind: "stream_rejected" };
-        if (phase === "active") {
-          endHandoff({ kind: "end_handoff", position: action.position, resume: action.resume }, end);
-        } else {
-          // Тени нет, снимать нечего и ждать подтверждения не от кого: зритель закрыл окно между роликами.
-          pendingEnd = end;
-          completeEnding();
-        }
-        return;
-      }
-      case "site_adapter": return phase === "page_reloading" ? dependencies.noteForDeveloper("site adapter command ignored: the page is reloading") : void siteAdapters.command(action.command);
-      case "show_page": return void pageReveal.show(); // сбои разобраны внутри, наружу не бросает
-      case "fetch_resource":
-        // Ресурсы HLS просят только в поколении HLS; в другом поколении фид сам ответит `refused`.
-        if (socket !== undefined) feeds.requestResource(action.request, socket);
-        return;
-      case "fetch_range":
-        // Байты файла просят только в поколении-файле. Без файла запрос не наш (плеер ошибся
-        // сам): его чтение честно истечёт у плеера, сеанс страницы это не ломает.
-        feeds.requestRange(action.request);
-        return;
-      case "attached":
-      case "buffer_intake":
-      case "ignore":
-        return;
-    }
-  }
-
-  function handleSocketEnded(cause: SocketEndCause): void {
-    if (cause.kind === "closed_by_extension") return; // мы сами закрыли — решение уже принято
-    const playerEnded: HandoffSessionEnd = { kind: "player_ended", cause };
-    switch (stepAfterPlayerSocketEnded(phase)) { // таблица по фазам — session-end-rules.ts
-      case "fail_start":
-        return failStart({ kind: "player_unavailable", reason: `session_socket:${describeSocketEnd(cause)}` });
-      case "finish_abandoned":
-        return finish({ kind: "start_failed", outcome: abandoned?.outcome ?? { kind: "failed", reason: "abandoned" } });
-      case "end_shadow":
-        return endHandoff(endCommandAfterPlayerSocketEnd(cause), playerEnded);
-      case "finish_without_shadow":
-        // В сироте и в ожидании перезагрузки порта нет (команда никуда не уйдёт); открытие страницы отменит `finish`.
-        tryPostToPage(END_WITHOUT_PLAYER);
-        return finish(playerEnded);
-      case "nothing":
-        return;
-    }
-  }
+  const playerReactions = createPlayerReactions({
+    pageReturn,
+    videoGeneration,
+    siteAdapters,
+    relocation,
+    pageReveal,
+    feeds,
+    socket: () => socket,
+    phase: () => phase,
+    note: dependencies.noteForDeveloper,
+    commandPage: (command) => commandPage(command),
+    tryPostToPage: (command) => tryPostToPage(command),
+    endHandoff: (command, end) => endHandoff(command, end),
+    endWithoutShadow: (end) => {
+      pendingEnd = end;
+      completeEnding();
+    },
+    failStart: (startOutcome) => failStart(startOutcome),
+    abandonedOutcome: () => abandoned?.outcome,
+    finish: (end) => finish(end),
+  });
 
   // ---------------------------------------------------------------- уход страницы
 
