@@ -21,6 +21,8 @@ import { loadCatalog } from '../lib/bench-player.js';
 import { installEntryProbe } from '../lib/entry-probe.js';
 import { ReelSource, logWheelEvents, serveRobotCommands } from '../lib/feed-kit.js';
 import { EdgeFeed, PAGINGS, PAGING_NATIVE, PAGING_WHEEL, TAILS, TAIL_COMMENTS, TAIL_NONE } from '../lib/feed-edge-feed.js';
+import { BACKS, BACK_HISTORY, BACK_LIVE, BACK_NONE, backMetrics, createBackShape } from '../lib/feed-edge-back.js';
+import { CROWD_HOOK, HISTORY_NONE, HISTORY_PASSED_REELS_DETACHED, ReelCrowd } from '../lib/feed-history.js';
 import { EDGE_SHAPES, QUIRKS, QUIRK_NONE, createEdgeShape } from '../lib/feed-edge-shapes.js';
 
 // Края ленты коротких видео (сессия 16b3): то, что настоящие сайты делают помимо спокойного листания
@@ -31,7 +33,11 @@ import { EDGE_SHAPES, QUIRKS, QUIRK_NONE, createEdgeShape } from '../lib/feed-ed
 //  * `reels=<число>` — сколько роликов в ленте (по умолчанию 3; быстрая серия берёт 5);
 //  * `tail=none|comments` — после последнего ролика раздел без видео (конец ленты);
 //  * `paging=native|wheel` — родная прокрутка с прилипанием или листание жестами колеса (быстрая серия);
-//  * `quirk=none|remove-old-during-move` — страница убирает прежний элемент прямо во время переезда окна.
+//  * `quirk=none|remove-old-during-move` — страница убирает прежний элемент прямо во время переезда окна;
+//  * `back=none|live|recreated|history` — лента умеет шаг НАЗАД (16b3b, lib/feed-edge-back.js): `live` — тот же живой
+//    элемент ролика продолжает со своей секунды (Instagram), `recreated` — новый элемент с новым MediaSource, с нуля, `history` — «Назад» в истории после ухода (TikTok, хук `history-back`);
+//  * `history=none|passed-reels-detached` — только с `back=live`: после переезда окна страница качает дальние
+//    ролики сверх потолка памяти моста (lib/feed-history.js), ролик 1 при этом остаётся живым в документе.
 // Режим передачи: ролик 1 играет, страница ждёт робота. Робот отдаёт вкладку и листает НАСТОЯЩИМ колесом;
 // хуки `remove-current-reel`, `leave-section`, `leave-from-tail` запускают сценарии края. Судит Rust.
 await runScenario('feed-edges', async (ctx) => {
@@ -44,6 +50,11 @@ await runScenario('feed-edges', async (ctx) => {
   if (!PAGINGS.includes(paging)) throw new Error(`bad page query: paging=${paging}`);
   const quirk = raw.get('quirk') ?? QUIRK_NONE;
   if (!QUIRKS.includes(quirk)) throw new Error(`bad page query: quirk=${quirk}`);
+  const back = raw.get('back') ?? BACK_NONE;
+  if (!BACKS.includes(back)) throw new Error(`bad page query: back=${back}`);
+  const history = raw.get('history') ?? HISTORY_NONE;
+  if (history !== HISTORY_NONE && history !== HISTORY_PASSED_REELS_DETACHED) throw new Error(`bad page query: history=${history}`);
+  if (history !== HISTORY_NONE && back !== BACK_LIVE) throw new Error('history pressure is modelled for back=live only');
   const reels = Number(raw.get('reels') ?? 3);
   if (!Number.isInteger(reels) || reels < 2 || reels > 5) throw new Error(`bad page query: reels=${raw.get('reels')}`);
   if (tail === TAIL_COMMENTS && shape !== 'many') throw new Error('the tail section is modelled for shape=many only');
@@ -52,7 +63,13 @@ await runScenario('feed-edges', async (ctx) => {
   const source = new ReelSource(ctx, catalog);
   const feed = new EdgeFeed(ctx, { reels, tail });
   feed.mount(document.getElementById('feed'));
-  const behaviour = createEdgeShape(shape, ctx, source, feed, { reels, quirk });
+  // Давление памяти: пройденные ролики открываются ДО роликов ленты, их MediaSource обязаны быть старше.
+  const reelCrowd = history === HISTORY_PASSED_REELS_DETACHED ? await ReelCrowd.open(ctx, catalog) : null;
+  const behaviour = back === BACK_NONE
+    ? createEdgeShape(shape, ctx, source, feed, { reels, quirk })
+    : createBackShape(shape, back, ctx, source, feed, { reels, quirk });
+  // «Назад» в истории (`back=history`) — не прокрутка: лента назад не ходит, возврат делает хук `history-back`.
+  feed.allowStepBack = back !== BACK_NONE && back !== BACK_HISTORY;
   feed.waitUntilOldIsGone = behaviour.waitUntilOldIsGone;
   if (paging === PAGING_WHEEL) feed.enableWheelPaging();
   const wheel = logWheelEvents(ctx);
@@ -61,6 +78,7 @@ await runScenario('feed-edges', async (ctx) => {
   feed.watch({
     onStep: (from, to, kind) => behaviour.step(from, to, kind),
     onTail: (from) => behaviour.tail(from),
+    onStepBack: (from, to) => behaviour.stepBack(from, to),
   });
   if (!ctx.params.handoff) return;
   installEntryProbe(ctx);
@@ -70,9 +88,11 @@ await runScenario('feed-edges', async (ctx) => {
       'remove-current-reel': () => behaviour.removeCurrent(),
       'leave-section': () => behaviour.leaveSection(),
       'leave-from-tail': () => behaviour.leaveFromTail(),
+      ...(back === BACK_HISTORY ? { 'history-back': () => behaviour.historyBack() } : {}),
+      ...(reelCrowd === null ? {} : { [CROWD_HOOK]: () => reelCrowd.detachPassedReelsAndPreloadFarAhead() }),
     },
     onFinish: async () => {
-      for (const [name, value] of Object.entries(EdgeFeed.metrics())) ctx.metric(name, value);
+      for (const [name, value] of Object.entries({ ...EdgeFeed.metrics(), ...backMetrics() })) ctx.metric(name, value);
       ctx.metric('wheel_events_trusted', wheel.trusted);
     },
   });

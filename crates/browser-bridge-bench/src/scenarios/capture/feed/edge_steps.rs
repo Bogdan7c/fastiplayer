@@ -292,7 +292,7 @@ fn wait_at_feed_end(
 
 /// Честный конец: сообщение окна о конце сеанса, затем окно — на месте после короткого ожидания (решение 370:
 /// стоит на паузе; за это же ожидание видно, не примет ли окно превью с опозданием) или закрылось (доиграло).
-fn observe_honest_end(
+pub(super) fn observe_honest_end(
     hand: &mut ReturnHand<'_, '_>,
     control: &PlayerControl,
     window: WindowAfterLeave,

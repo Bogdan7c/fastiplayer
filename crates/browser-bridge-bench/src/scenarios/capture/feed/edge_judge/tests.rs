@@ -98,6 +98,8 @@ fn base() -> FeedEvidence {
         stay: None,
         page_download: None,
         edge: None,
+        back: None,
+        history_back: None,
         target_wait_lines: Vec::new(),
         generations: Vec::new(),
         shown_stream_widths: Vec::new(),

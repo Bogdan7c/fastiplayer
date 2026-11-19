@@ -21,7 +21,9 @@
 
 use super::super::super::evidence::{host_failures, page_failures, unexpected_player_lines};
 use super::super::super::outcome::Verdict;
+use super::back_judge::{self, BackRecord, BackStart};
 use super::edge_judge::{self, EdgeRecord};
+use super::history_back_judge::{self, HistoryBackRecord};
 use crate::browsers::HandOffOutcome;
 use crate::observe::{FrameGrowth, HostLogEvidence};
 use crate::site::{PageReport, SiteError};
@@ -50,6 +52,16 @@ pub(super) enum ExpectedWindow {
     /// Конец ленты без ухода (решение 356): окно ждёт, не кончает сеанс и не берёт новых роликов.
     /// `reel_stream_widths` — ролики, которые окно показало до конца ленты.
     WaitsAtFeedEnd { reel_stream_widths: &'static [u64] },
+    /// Прокрутка НАЗАД (16b3b): после прокрутки вперёд страница вернулась к уже виденному ролику. Окно идёт
+    /// за лентой в обе стороны (`reel_stream_widths` — `640, 512, 640`: первый ролик показан дважды), а
+    /// секунду старта вернувшегося поколения требует `start`.
+    ReturnsToEarlierReel {
+        reel_stream_widths: &'static [u64],
+        start: BackStart,
+    },
+    /// «Назад» в истории после ухода из ленты (16b3b, решения 375-376): первый сеанс кончился честно, окно
+    /// стоит, а вернувшийся ролик подхвачен вторым сеансом в ТОМ ЖЕ окне.
+    PicksUpAfterHistoryBack,
 }
 
 /// Можно ли окну показывать сообщение о конце сеанса в этой строке.
@@ -59,6 +71,15 @@ pub(super) enum EndNoticePolicy {
     Forbidden,
     /// Нужно (проверяется отдельно, `edge_judge`): строка про честный конец.
     Expected,
+}
+
+/// Можно ли новому поколению ждать данных у цели (строка плеера «у цели данных нет»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetWaitPolicy {
+    /// Нельзя: ролик обязан заиграть сразу (все строки, кроме замера).
+    Forbidden,
+    /// Можно: ожидание — измеряемый результат строки.
+    Allowed,
 }
 
 /// Судится ли рост кадров после переезда на ролик, к которому ведёт прокрутка.
@@ -115,6 +136,10 @@ pub(super) struct FeedEvidence {
     pub page_download: Option<Result<(), String>>,
     /// Улики края ленты (16b3): раздражитель страницы и что с ним стало (`None` — строка не про края).
     pub edge: Option<EdgeRecord>,
+    /// Улики прокрутки назад (16b3b; `None` — строка не про возврат).
+    pub back: Option<BackRecord>,
+    /// Улики «Назад» в истории после ухода (16b3b; `None` — строка не про это).
+    pub history_back: Option<HistoryBackRecord>,
     /// Строки журнала плеера «новое поколение не дождалось данных у цели» (их быть не должно).
     pub target_wait_lines: Vec<String>,
     /// Номера поколений из строк `Browser stream generation loaded` по порядку.
@@ -168,10 +193,31 @@ pub(super) fn growth_failure(what: &str, growth: &Result<FrameGrowth, String>) -
 pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> Verdict {
     let mut failures: Vec<String> = Vec::new();
     let end_notices = match expected {
-        ExpectedWindow::EndsHonestly { .. } => EndNoticePolicy::Expected,
+        ExpectedWindow::EndsHonestly { .. } | ExpectedWindow::PicksUpAfterHistoryBack => {
+            EndNoticePolicy::Expected
+        }
         _ => EndNoticePolicy::Forbidden,
     };
-    common_failures(evidence, end_notices, &mut failures);
+    let target_wait = match expected {
+        // Строка-замер (решение 369) не проваливается от ожидания данных у цели: ожидание — её результат.
+        ExpectedWindow::ReturnsToEarlierReel {
+            start: BackStart::Measured | BackStart::MeasuredFar,
+            ..
+        } => TargetWaitPolicy::Allowed,
+        _ => TargetWaitPolicy::Forbidden,
+    };
+    let expected_grants = match expected {
+        // Подхват после «Назад» — второй сеанс: посредник выдаёт пропуск дважды (окно при этом одно).
+        ExpectedWindow::PicksUpAfterHistoryBack => 2_u32,
+        _ => 1,
+    };
+    common_failures(
+        evidence,
+        end_notices,
+        target_wait,
+        expected_grants,
+        &mut failures,
+    );
     match expected {
         ExpectedWindow::FollowsFeed { reel_stream_widths } => {
             follow_failures(reel_stream_widths, evidence, &mut failures);
@@ -191,6 +237,15 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
         ExpectedWindow::WaitsAtFeedEnd { reel_stream_widths } => {
             edge_judge::waits_failures(reel_stream_widths, evidence, &mut failures);
         }
+        ExpectedWindow::ReturnsToEarlierReel {
+            reel_stream_widths,
+            start,
+        } => {
+            back_judge::return_failures(reel_stream_widths, start, evidence, &mut failures);
+        }
+        ExpectedWindow::PicksUpAfterHistoryBack => {
+            history_back_judge::pickup_failures(evidence, &mut failures);
+        }
     }
     failures.extend(page_failures(&evidence.page_report, evidence.page_id));
     let summary = format!(
@@ -199,6 +254,7 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
         without_consecutive_repeats(&evidence.shown_stream_widths),
         burst_gaps_note(evidence)
     );
+    let summary = format!("{summary}{}", back_judge::measurement_note(evidence));
     // Журнал страницы прикладывается только к провалу: в успехе он шум.
     let summary = if failures.is_empty() {
         summary
@@ -226,6 +282,8 @@ fn burst_gaps_note(evidence: &FeedEvidence) -> String {
 fn common_failures(
     evidence: &FeedEvidence,
     end_notices: EndNoticePolicy,
+    target_wait: TargetWaitPolicy,
+    expected_grants: u32,
     failures: &mut Vec<String>,
 ) {
     match &evidence.hand_off {
@@ -236,10 +294,11 @@ fn common_failures(
         Err(error) => failures.push(format!("hand_off_tab of reel 1: {error}")),
     }
     failures.extend(host_failures(&evidence.host));
-    if evidence.host.session_grants != 1 {
+    if evidence.host.session_grants != expected_grants {
         failures.push(format!(
-            "the player granted {} session(s) in the whole run, expected exactly one (one window for the whole feed)",
-            evidence.host.session_grants
+            "the player granted {} session(s) in the whole run, expected exactly {} (one window for the whole feed)",
+            evidence.host.session_grants,
+            if expected_grants == 1 { "one".to_owned() } else { expected_grants.to_string() }
         ));
     }
     if end_notices == EndNoticePolicy::Forbidden && !evidence.end_notice_lines.is_empty() {
@@ -262,7 +321,7 @@ fn common_failures(
             "the page did not download past the bridge memory, so the row proves nothing: {message}"
         ));
     }
-    if !evidence.target_wait_lines.is_empty() {
+    if target_wait == TargetWaitPolicy::Forbidden && !evidence.target_wait_lines.is_empty() {
         failures.push(format!(
             "the window waited out the whole deadline for data at the start of a reel instead of playing it at once: {}",
             evidence.target_wait_lines.join(" | ")
@@ -314,6 +373,16 @@ pub(super) fn scroll_record_failures(
     failures: &mut Vec<String>,
 ) {
     let label = format!("scroll {} (reel {} -> {})", index + 1, index + 1, index + 2);
+    labelled_scroll_failures(&label, scroll, failures);
+}
+
+/// То же, что [`scroll_record_failures`], но с названием прокрутки от вызывающего (прокрутка назад идёт
+/// от ролика к РАННЕМУ ролику, нумерация «индекс + 1» ей не подходит).
+pub(super) fn labelled_scroll_failures(
+    label: &str,
+    scroll: &ScrollRecord,
+    failures: &mut Vec<String>,
+) {
     // Отдельная причина: колесо вообще не дошло до страницы (стенд, а не продукт, не крутит).
     if scroll.trusted_wheel_events == 0 {
         failures.push(format!(
@@ -333,7 +402,7 @@ pub(super) fn scroll_record_failures(
         ));
     }
     if scroll.frame_growth_check == FrameGrowthCheck::Required {
-        failures.extend(growth_failure(&label, &scroll.frame_growth));
+        failures.extend(growth_failure(label, &scroll.frame_growth));
     }
 }
 

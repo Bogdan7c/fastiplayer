@@ -25,7 +25,8 @@ pub use quality_log::{
     BROWSER_QUALITY_SHOWN_MARKER, BrowserQualityLine, QualityBitrate, parse_browser_quality_shown,
 };
 pub use stream_generation_log::{
-    STREAM_GENERATION_LOADED_MARKER, STREAM_SURFACE_RECONFIGURED_MARKER,
-    parse_stream_generation_loaded, parse_stream_surface_width,
+    STREAM_GENERATION_LOADED_MARKER, STREAM_GENERATION_SHOWN_MARKER,
+    STREAM_SURFACE_RECONFIGURED_MARKER, ShownGeneration, parse_stream_generation_loaded,
+    parse_stream_generation_shown, parse_stream_surface_width, parse_target_wait_ms,
 };
 pub use summary_digest::SummaryDigest;

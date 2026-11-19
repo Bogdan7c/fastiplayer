@@ -64,6 +64,8 @@ fn following() -> FeedEvidence {
         stay: None,
         page_download: None,
         edge: None,
+        back: None,
+        history_back: None,
         target_wait_lines: Vec::new(),
         generations: vec![1, 2, 3],
         // Плеер может написать строку про один ролик дважды: подряд идущие повторы не в счёт.

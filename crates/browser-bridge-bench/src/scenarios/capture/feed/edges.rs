@@ -86,7 +86,7 @@ const MARKS_LEAVE_MANY: &[&str] = &[
     "leave-preview-playing kind=file muted=true visible=true",
 ];
 /// Метки ухода TikTok (T5): адрес, наш элемент удалён и на паузе, второй элемент играет тихое превью.
-const MARKS_LEAVE_POOL: &[&str] = &[
+pub(super) const MARKS_LEAVE_POOL: &[&str] = &[
     "leave-url-pushed path=/explore",
     "leave-paused-after-removal",
     "leave-preview-playing kind=mse muted=true visible=true",

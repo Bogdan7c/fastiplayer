@@ -215,7 +215,10 @@ fn forward_only_widths_failure(
 
 /// Сообщение о конце: «Source tab closed» (`cause=tab_gone`) с меткой, которую требует [`WindowAfterLeave`]:
 /// `waiting_for_viewer` (окно на паузе) или `finished` (доиграло).
-fn tab_gone_notice_failure(found: &EndNotice, window: WindowAfterLeave) -> Option<String> {
+pub(super) fn tab_gone_notice_failure(
+    found: &EndNotice,
+    window: WindowAfterLeave,
+) -> Option<String> {
     let notice = window.expected_notice();
     (!(found.cause == "tab_gone" && found.notice == notice)).then(|| {
         format!(

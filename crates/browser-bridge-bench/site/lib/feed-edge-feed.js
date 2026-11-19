@@ -8,7 +8,10 @@
 //   `reel-step n=<номер> kind=<normal|burst> t=<мс>` — страница перешла на ролик (burst: шаг пришёл раньше
 //                                                      BURST_GAP_MS после предыдущего, то есть предыдущий
 //                                                      ролик был промежуточным);
-//   `feed-tail-reached from=<номер>`                — лента ушла за последний ролик в раздел без видео.
+//   `feed-tail-reached from=<номер>`                — лента ушла за последний ролик в раздел без видео;
+//   `reel-step-back n=<номер> t=<мс>`               — лента вернулась НАЗАД к ролику (16b3b; только если
+//                                                      включён `allowStepBack`). Метка отличается от `reel-step`,
+//                                                      чтобы робот не принял старую строку за новую.
 
 import { feedState } from './feed-kit.js';
 
@@ -36,7 +39,7 @@ const WHEEL_GESTURE_PX = 800;
 const WHEEL_GESTURE_FORGET_MS = 300;
 
 /** Что страница насчитала про серию шагов (уходит в отчёт метриками). */
-export const stepStats = { finalReel: 1, steps: 0, burstIntermediates: 0, tailReached: 0, burstGapMinMs: null, burstGapMaxMs: null };
+export const stepStats = { finalReel: 1, steps: 0, backSteps: 0, burstIntermediates: 0, tailReached: 0, burstGapMinMs: null, burstGapMaxMs: null };
 
 export class EdgeFeed {
   /**
@@ -55,8 +58,11 @@ export class EdgeFeed {
     this.lastStepAt = null;
     /** Переход, только когда прежняя секция ушла с экрана ПОЛНОСТЬЮ (Instagram, TikTok); иначе — как только следующая видна достаточно (Shorts). */
     this.waitUntilOldIsGone = false;
+    /** Умеет ли лента шаг НАЗАД (16b3b); без этого она, как прежде, ходит только вперёд. */
+    this.allowStepBack = false;
     this.onStep = () => {};
     this.onTail = () => {};
+    this.onStepBack = () => {};
   }
 
   /** Строит секции роликов (и раздел без видео, если он нужен) внутри `parent`. */
@@ -91,9 +97,10 @@ export class EdgeFeed {
    * Начинает следить за прокруткой. `onStep(from, to, kind)` зовётся СИНХРОННО на каждой смене ролика
    * вперёд, `onTail(from)` — когда лента ушла в раздел без видео. Прежний переход не ждётся.
    */
-  watch({ onStep, onTail }) {
+  watch({ onStep, onTail, onStepBack = () => {} }) {
     this.onStep = onStep;
     this.onTail = onTail;
+    this.onStepBack = onStepBack;
     let scheduled = false;
     window.addEventListener('scroll', () => {
       if (scheduled) return;
@@ -133,13 +140,16 @@ export class EdgeFeed {
     }
   }
 
-  /** Самая дальняя секция, видимая достаточно: к ней лента и перешла (назад не ходим). */
+  /** Самая дальняя секция, видимая достаточно: к ней лента и перешла вперёд. Назад — только с `allowStepBack`. */
   #advanceIfScrolled() {
     let target = this.current;
     for (let number = this.current + 1; number < this.sections.length; number += 1) {
       if (this.ratios[number] >= CURRENT_VISIBLE_RATIO) target = number;
     }
-    if (target === this.current) return;
+    if (target === this.current) {
+      if (this.allowStepBack) this.#stepBackIfScrolled();
+      return;
+    }
     if (this.waitUntilOldIsGone && this.ratios[this.current] > 0) return;
     const from = this.current;
     this.current = target;
@@ -150,6 +160,25 @@ export class EdgeFeed {
       return;
     }
     this.#step(from, target);
+  }
+
+  /** Ближайшая прежняя секция, видимая достаточно: лента вернулась к ней (16b3b). */
+  #stepBackIfScrolled() {
+    let target = this.current;
+    for (let number = this.current - 1; number >= 1; number -= 1) {
+      if (this.ratios[number] >= CURRENT_VISIBLE_RATIO) {
+        target = number;
+        break;
+      }
+    }
+    if (target === this.current) return;
+    // Как вперёд: Instagram и TikTok переключают ролик, когда прежний ушёл с экрана целиком.
+    if (this.waitUntilOldIsGone && this.ratios[this.current] > 0) return;
+    const from = this.current;
+    this.current = target;
+    stepStats.backSteps += 1;
+    this.context.log(`reel-step-back n=${target} t=${this.context.elapsedMs()}`);
+    this.onStepBack(from, target);
   }
 
   #step(from, to) {
@@ -181,6 +210,7 @@ export class EdgeFeed {
       reels_started: feedState.reelsStarted,
       final_reel: stepStats.finalReel,
       reel_steps: stepStats.steps,
+      reel_steps_back: stepStats.backSteps,
       burst_intermediates: stepStats.burstIntermediates,
       tail_reached: stepStats.tailReached,
     };

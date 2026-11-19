@@ -162,14 +162,15 @@ fn locate_with_retries(hand: &ReturnHand<'_, '_>, run: &RunId) -> Result<PagePla
     }
 }
 
-/// Один рывок настоящего колеса в точке [`wheel_point`].
+/// Один рывок настоящего колеса в точке [`wheel_point`], в сторону `direction`.
 fn wheel_burst(
     hand: &ReturnHand<'_, '_>,
     run: &RunId,
     wheel: WheelPlace,
+    direction: WheelDirection,
 ) -> Result<(), ScenarioError> {
     let point = wheel_point(hand, run, wheel)?;
-    hand.scroll_wheel(point, WheelDirection::Down, NOTCHES_PER_BURST)
+    hand.scroll_wheel(point, direction, NOTCHES_PER_BURST)
 }
 
 /// Рост кадров между двумя сводками, начиная с НОВЫХ строк журнала (старые сводки не в счёт).
@@ -210,17 +211,28 @@ pub(super) struct WheelOutcome {
     pub reached: Result<(), String>,
 }
 
-/// Крутит настоящее колесо рывками, пока страница не запишет `mark` (потолок — `MAX_BURSTS` рывков).
+/// Крутит настоящее колесо ВНИЗ рывками, пока страница не запишет `mark` (потолок — `MAX_BURSTS` рывков).
 pub(super) fn wheel_until_page_logs(
     hand: &mut ReturnHand<'_, '_>,
     mark: &str,
     wheel: WheelPlace,
 ) -> Result<WheelOutcome, ScenarioError> {
+    wheel_until_page_logs_toward(hand, mark, wheel, WheelDirection::Down)
+}
+
+/// То же, что [`wheel_until_page_logs`], но колесо крутится в сторону `direction` (вверх — прокрутка
+/// ленты назад, 16b3b).
+pub(super) fn wheel_until_page_logs_toward(
+    hand: &mut ReturnHand<'_, '_>,
+    mark: &str,
+    wheel: WheelPlace,
+    direction: WheelDirection,
+) -> Result<WheelOutcome, ScenarioError> {
     let run = hand.run_ref().run.clone();
     let wheel_before = page_lines(hand, TRUSTED_WHEEL_MARK).len();
     let mut reached = Err("no wheel burst was made".to_owned());
     for burst in 1..=MAX_BURSTS {
-        wheel_burst(hand, &run, wheel)?;
+        wheel_burst(hand, &run, wheel, direction)?;
         if page_lines(hand, TRUSTED_WHEEL_MARK).len() == wheel_before {
             // Страница могла записать событие с опозданием: даём ей время, прежде чем сказать «не дошло».
             std::thread::sleep(WHEEL_REPORT_GRACE);
@@ -365,7 +377,7 @@ pub(super) fn scroll_to_comments(
     let run = hand.run_ref().run.clone();
     let mut stimulus = Err("no wheel burst was made".to_owned());
     for burst in 1..=MAX_BURSTS {
-        wheel_burst(hand, &run, WheelPlace::OverReel)?;
+        wheel_burst(hand, &run, WheelPlace::OverReel, WheelDirection::Down)?;
         if !page_lines(hand, MAIN_PAUSED_ON_LEAVING_MARK).is_empty() {
             // Страница сама остановила главный ролик: это уже не случай «листаем к комментариям».
             stimulus = Err("the page paused the main video when it left the screen".to_owned());

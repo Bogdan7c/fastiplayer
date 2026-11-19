@@ -39,7 +39,7 @@ export const QUIRKS = [QUIRK_NONE, QUIRK_REMOVE_OLD_DURING_MOVE];
 export const EDGE_SHAPES = ['many', 'pool', 'moved'];
 
 /** Адрес ролика в адресной строке: числа и длинные слова — подстановка идентификатора (F5). */
-const reelAddress = {
+export const reelAddress = {
   many: (to) => `/reels/DR${to}kQmZ7xa1/`,
   moved: (to) => `/shorts/Sh${to}aBcDeFgHiJ`,
 };
@@ -60,7 +60,7 @@ function playQuietly(context, video, what) {
 }
 
 /** Instagram: свой элемент на каждый ролик. */
-class ManyEdge {
+export class ManyEdge {
   name = 'many';
   // Прежний ролик ушёл с экрана целиком (доля 0), и только тогда страница его останавливает (I1).
   waitUntilOldIsGone = true;
@@ -177,7 +177,7 @@ class ManyEdge {
 }
 
 /** TikTok: два элемента по очереди; адрес не меняется. */
-class PoolEdge {
+export class PoolEdge {
   name = 'pool';
   waitUntilOldIsGone = true;
 

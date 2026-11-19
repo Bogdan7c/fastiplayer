@@ -25,9 +25,14 @@
 //! блока, страница переключает ролик на полпути прокрутки (прежний ещё на экране), а колесо человек
 //! крутит прямо над роликом, то есть над нашей заглушкой «Playing in Fastiplayer».
 
+mod back;
+mod back_judge;
+mod back_steps;
 mod edge_judge;
 mod edge_steps;
 mod edges;
+mod history_back;
+mod history_back_judge;
 mod judge;
 mod steps;
 
@@ -46,8 +51,12 @@ use crate::browsers::{BrowserError, BrowserKind, HandOffOutcome, hand_off_from_s
 use crate::environment::{BenchEnvironment, DesktopSetup, PlayerConfigProfile};
 use crate::observe::read_host_evidence;
 use crate::player_control::PlayerControl;
+use back::{BACK_ROWS, BackScenario};
+use back_judge::BackRecord;
 use edge_judge::EdgeRecord;
 use edges::{EDGE_ROWS, EdgeScenario};
+use history_back::HISTORY_BACK_ROWS;
+use history_back_judge::HistoryBackRecord;
 use judge::{ExpectedWindow, FeedEvidence, ScrollRecord, StayRecord, judge_feed};
 use steps::WheelPlace;
 
@@ -111,6 +120,10 @@ enum FeedScenario {
     ScrollToComments,
     /// Края ленты (16b3): быстрая серия, удаление элемента, уход в другой раздел, конец ленты (`edges.rs`).
     Edge(EdgeScenario),
+    /// Прокрутка назад (16b3b): вперёд на ролик 2, потом колесом вверх к ролику 1 (`back.rs`).
+    Back(BackScenario),
+    /// «Назад» в истории после ухода из ленты (16b3b): подхват вернувшегося ролика вторым сеансом (`history_back.rs`).
+    HistoryBack,
 }
 
 /// Строка таблицы: страница, адрес и сценарий.
@@ -229,7 +242,11 @@ const FEED_ROWS: &[FeedRow] = &[
 
 /// Все строки сценария: спокойная лента, затем края (16b3).
 fn all_rows() -> impl Iterator<Item = &'static FeedRow> {
-    FEED_ROWS.iter().chain(EDGE_ROWS)
+    FEED_ROWS
+        .iter()
+        .chain(EDGE_ROWS)
+        .chain(BACK_ROWS)
+        .chain(HISTORY_BACK_ROWS)
 }
 
 /// Идентификаторы страниц сценария (для `--page` и таблицы `capture`).
@@ -284,6 +301,8 @@ fn expected_window(scenario: FeedScenario) -> ExpectedWindow {
             }
         }
         FeedScenario::Edge(edge) => edges::expected_window(edge),
+        FeedScenario::Back(back) => back::expected_window(back),
+        FeedScenario::HistoryBack => history_back::EXPECTED_WINDOW,
     }
 }
 
@@ -296,6 +315,10 @@ struct AfterHandOff {
     page_download: Option<Result<(), String>>,
     /// Улики края ленты (`None` — строка не про края или до них не дошло).
     edge: Option<EdgeRecord>,
+    /// Улики прокрутки назад (`None` — строка не про возврат или до него не дошло).
+    back: Option<BackRecord>,
+    /// Улики «Назад» в истории (`None` — строка не про это или до него не дошло).
+    history_back: Option<HistoryBackRecord>,
 }
 
 fn drive(
@@ -323,6 +346,8 @@ fn drive(
             stay: None,
             page_download: None,
             edge: None,
+            back: None,
+            history_back: None,
         }
     };
     let page_report = hand.run_ref().finish_page();
@@ -346,6 +371,8 @@ fn drive(
             stay: after.stay,
             page_download: after.page_download,
             edge: after.edge,
+            back: after.back,
+            history_back: after.history_back,
             target_wait_lines,
             generations,
             shown_stream_widths,
@@ -375,6 +402,8 @@ fn follow_the_feed(
         stay: None,
         page_download: None,
         edge: None,
+        back: None,
+        history_back: None,
     };
     if let Err(message) =
         wait_for_session_granted(&hand.run_ref().stderr_log, SESSION_GRANTED_TIMEOUT)?
@@ -395,6 +424,8 @@ fn follow_the_feed(
             stay: None,
             page_download: None,
             edge: None,
+            back: None,
+            history_back: None,
         });
     }
     let mut after = AfterHandOff {
@@ -403,6 +434,8 @@ fn follow_the_feed(
         stay: None,
         page_download: None,
         edge: None,
+        back: None,
+        history_back: None,
     };
     if let Some(page_load) = row.before_scrolling.page_load() {
         // Листаем в любом случае: если докачки не было, приговор назовёт это отдельной причиной.
@@ -422,6 +455,16 @@ fn follow_the_feed(
             let run = edge_steps::run_edge(hand, control, edge)?;
             after.scrolls = run.scrolls;
             after.edge = Some(run.edge);
+        }
+        FeedScenario::Back(back) => {
+            let run = back_steps::run_back(hand, control, back)?;
+            after.scrolls = run.scrolls;
+            after.back = Some(run.record);
+        }
+        FeedScenario::HistoryBack => {
+            let run = history_back::run_history_back(hand, control)?;
+            after.scrolls = run.scrolls;
+            after.history_back = Some(run.record);
         }
     }
     Ok(after)
