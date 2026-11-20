@@ -208,9 +208,16 @@ export class ShadowController implements ShadowBehavior {
     this.#attempt(`held ${action}`, () => this.#showPlayerPlayState(action));
   }
 
-  /** Обещания `play()`, выданные страницей до тени: теперь их исполняет модель часов. */
+  /**
+   * Обещания `play()`, выданные страницей до тени: теперь их исполняет модель часов. Обычно — с `playing` модели.
+   * Если модель уже играет и данных хватает, перехода «в игру» больше не будет: так бывает, когда тень встала на
+   * `playing` настоящего элемента (сторож, 16b3b). Тогда обещания исполняются сразу, как `play()` стандарта у
+   * играющего элемента с данными (`ShadowTimeline.play`). Без этого обещание страницы ждало вечно (стенд
+   * `ad-film-same-element` на `b84bfb59`: фильм в окне, `play()` страницы не исполнен).
+   */
   takeOverPendingPlays(plays: readonly PendingPlay[]): void {
     this.#pendingPlays.push(...plays);
+    if (!this.#timeline.paused && this.#timeline.readyState >= READY_STATE.HAVE_FUTURE_DATA) this.#settlePendingPlays("resolve");
   }
 
   // -------------------------------------------------------------------------------------------

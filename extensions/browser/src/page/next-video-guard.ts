@@ -335,6 +335,7 @@ export class NextVideoGuard {
 
   /** `play()` страницы у элемента не в тени. Ушёл браузеру мимо сторожа — запоминается (`#pagePlaysPastGuard`). */
   #interceptPlay(element: object, realPlay: () => unknown): PlayWatchAnswer {
+    this.#forgetSettledPagePlay(element);
     const answer = this.#answerPlay(element, realPlay);
     if (answer.kind === "not_mine") this.#notePagePlayPastGuard(element);
     return answer;
@@ -352,6 +353,19 @@ export class NextVideoGuard {
       this.#listenOnElement(element);
     } catch {
       this.#environment.reportOddity("next video guard could not note a page play() call");
+    }
+  }
+
+  /**
+   * Новый `play()` застал элемент на паузе: прежнее настоящее обещание уже отвергнуто или исполнено. Его отвергают
+   * `pause()`, новый источник и конец ролика, и все они ставят паузу. Ждать обещание может, только пока элемент
+   * не вставал на паузу с того `play()`. Метка снимается; если и этот `play()` уйдёт мимо сторожа, она встанет снова.
+   */
+  #forgetSettledPagePlay(element: object): void {
+    try {
+      if (this.#pagePlaysPastGuard.has(element) && this.#environment.dom.isPaused(element)) this.#pagePlaysPastGuard.delete(element);
+    } catch {
+      this.#environment.reportOddity("next video guard could not read a paused state on play()");
     }
   }
 
@@ -375,8 +389,9 @@ export class NextVideoGuard {
    * 371, только путь другой: `play()` сказан до взвода, тень встала бы позже — на метаданных или обходом при взводе).
    * Задержание приходит, когда элемент дошёл до HAVE_FUTURE_DATA: доверенное `playing` — ровно тот миг, когда
    * браузер уже забрал обещание на исполнение. Плата — до первого кадра ролик успевает начать играть в браузере.
-   * Метку снимает исполненное обещание (`#forgetPagePlayIfExecuted`). Пауза страницы или новый источник до данных
-   * отвергают обещание сами, и метка тогда лишь откладывает задержание до `playing`.
+   * Метку снимает исполненное обещание (`#forgetPagePlayIfExecuted`) и новый `play()` на паузе
+   * (`#forgetSettledPagePlay`). Если обещание отвергнуто паузой или новым источником, а нового `play()` нет, метка
+   * откладывает задержание до `playing`. Обещания нашего мира тень тогда исполняет сразу (`takeOverPendingPlays`).
    */
   #pagePlayMayBePending(element: object): boolean {
     return this.#pagePlaysPastGuard.has(element) && this.#environment.dom.readyStateOf(element) < HAVE_FUTURE_DATA;

@@ -93,6 +93,44 @@ describe("play() страницы ушёл браузеру до взвода: �
     assert.equal(filmPlay.value, "pending", "обещание фильма у тени, а не отвергнуто");
   });
 
+  it("тень встала на `playing` поверх обещания нашего мира — обещание страницы исполняется, а не ждёт вечно", async () => {
+    // Стенд `ad-film-same-element` на `b84bfb59`: тень встала на `playing` (модель часов уже играет с данными), и
+    // обещание `play()` страницы, которое сторож выдал своим миром, тень забрала, но так и не исполнила: перехода
+    // «в игру» у модели больше не было. Порядок браузера: сперва доверенное `playing`, потом исполнение обещаний.
+    const { guard, sent, fresh } = poolPage();
+    void pagePlay(fresh).catch(() => {});
+    assert.equal(browserPlays(fresh), 1, "первый play() ушёл браузеру мимо сторожа");
+    guard.arm(LEASE_MS);
+    // Второй play() при взводе: элемент не на паузе, первое обещание может ждать — метка остаётся, странице —
+    // обещание нашего мира.
+    const ours = watchOutcome(pagePlay(fresh));
+    fresh.real.readyState = 1;
+    fresh.fireTrusted("loadedmetadata");
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 0, "поверх ждущего настоящего play() тень не встаёт");
+
+    fresh.real.readyState = 4;
+    fresh.fireTrusted("playing");
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 1, "задержано на `playing`");
+    assert.equal(ours.value, "resolved", "обещание страницы исполнила тень");
+  });
+
+  it("прежний play() отвергнут паузой страницы, затем новый play() — метка снята, тень встаёт на метаданных", async () => {
+    const { guard, sent, fresh } = poolPage();
+    const first = watchOutcome(pagePlay(fresh));
+    fresh.pause();
+    await flushMicrotasks();
+    assert.equal(first.value, "rejected:AbortError", "страница сама прервала свой play()");
+    guard.arm(LEASE_MS);
+    const second = watchOutcome(pagePlay(fresh));
+    fresh.real.readyState = 1;
+    fresh.fireTrusted("loadedmetadata");
+    await flushMicrotasks();
+    assert.equal(heldReports(sent), 1, "задержано сразу на метаданных");
+    assert.equal(second.value, "pending", "обещание у тени");
+  });
+
   it("страховка: play() при взводе по-прежнему задерживается сразу на метаданных, обещание достаётся тени", async () => {
     const { guard, sent, fresh } = poolPage();
     guard.arm(LEASE_MS);
