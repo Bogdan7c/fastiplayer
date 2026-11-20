@@ -33,8 +33,9 @@ done
 
 cd "${REPO_ROOT}"
 
-# 1. Плеер и посредник — профилем BRIDGE_BENCH_PLAYER_PROFILE (release по умолчанию: плеер
-#    в отладочной сборке под нагрузкой параллельных строк опаздывает), стенд — debug.
+# 1. Плеер и посредник — профилем BRIDGE_BENCH_PLAYER_PROFILE (release по умолчанию, решение
+#    плана 16b3c2: под нагрузкой параллельных строк строки по времени не должны плыть из-за
+#    медленного плеера; отладочный под такой нагрузкой не замерялся), стенд — debug.
 player_profile="${BRIDGE_BENCH_PLAYER_PROFILE:-release}"
 case "${player_profile}" in
     release) player_profile_flag=(--release) ;;

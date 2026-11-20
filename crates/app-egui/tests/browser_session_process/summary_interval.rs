@@ -16,11 +16,11 @@ use super::*;
 const SUMMARY_INTERVAL_VARIABLE: &str = "FASTIPLAYER_TEST_BROWSER_SUMMARY_INTERVAL_MS";
 /// Короткий шаг теста, мс.
 const SHORT_INTERVAL_MS: &str = "500";
-/// Сколько промежуточных сводок тест ждёт подряд.
-const PERIODIC_SUMMARIES: usize = 3;
-/// Предел на три сводки с шагом 0,5 с: с запасом на установку поколения, но втрое меньше
-/// настоящего шага 10 с — с прежним шагом первая промежуточная пришла бы позже.
-const SHORT_SUMMARIES_DEADLINE: Duration = Duration::from_secs(4);
+/// Сколько промежуточных сводок тест собирает подряд (~4 с при шаге 0,5 с).
+const PERIODIC_SUMMARIES: usize = 8;
+/// Самый длинный допустимый промежуток между соседними сводками по отметкам журнала: шаг
+/// 0,5 с плюс тик часов 0,25 с и запас. С настоящим шагом было бы 10 с.
+const LONGEST_SUMMARY_GAP: Duration = Duration::from_millis(1_500);
 /// Строка процесса о принятом коротком шаге.
 const SHORTENED_NOTICE: &str = "Browser playback summary interval shortened";
 /// Строка процесса об отвергнутом значении.
@@ -49,17 +49,27 @@ fn a_short_summary_interval_reports_growing_frames_every_step() {
         "the process did not report the shortened interval"
     );
 
-    // Ролик фикстуры: 2,4 с видео скачано — хватает на несколько шагов по 0,5 с.
-    let started = Instant::now();
+    // Ролик фикстуры: 2,4 с видео скачано — хватает на несколько шагов по 0,5 с. Шаг меряется
+    // отметками самих строк журнала, а не часами теста: медленный старт поколения на CI не
+    // сдвигает промежуток между сводками.
     send_all(&mut socket, first_generation_head());
-    let frames: Vec<u64> = (0..PERIODIC_SUMMARIES)
-        .map(|_| log_number(&bus.wait_for_log_line(PERIODIC_SUMMARY), "presented_frames"))
+    let lines: Vec<String> = (0..PERIODIC_SUMMARIES)
+        .map(|_| bus.wait_for_log_line(PERIODIC_SUMMARY))
         .collect();
-    let elapsed = started.elapsed();
+    let moments: Vec<Duration> = lines.iter().map(|line| log_moment(line)).collect();
+    let frames: Vec<u64> = lines
+        .iter()
+        .map(|line| log_number(line, "presented_frames"))
+        .collect();
 
+    let longest_gap = moments
+        .windows(2)
+        .map(|pair| pair[1].saturating_sub(pair[0]))
+        .max()
+        .unwrap_or_default();
     assert!(
-        elapsed <= SHORT_SUMMARIES_DEADLINE,
-        "{PERIODIC_SUMMARIES} periodic summaries took {elapsed:?}: the short interval did not apply"
+        longest_gap <= LONGEST_SUMMARY_GAP,
+        "periodic summaries came {longest_gap:?} apart: the short interval did not apply ({moments:?})"
     );
     assert!(
         frames.windows(2).all(|pair| pair[0] <= pair[1]),
@@ -69,6 +79,24 @@ fn a_short_summary_interval_reports_growing_frames_every_step() {
         frames.last().is_some_and(|last| *last > frames[0]),
         "frames did not grow between short summaries: {frames:?}"
     );
+}
+
+/// Время суток из отметки в начале строки журнала (`2026-11-20T16:17:52.496257Z  INFO …`).
+fn log_moment(line: &str) -> Duration {
+    let stamp = line.split_whitespace().next().expect("a stamped log line");
+    let clock = stamp
+        .split_once('T')
+        .and_then(|(_, time)| time.strip_suffix('Z'))
+        .unwrap_or_else(|| panic!("no UTC time in {line:?}"));
+    let mut parts = clock.split(':');
+    let mut field = || -> f64 {
+        parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .unwrap_or_else(|| panic!("a malformed time in {line:?}"))
+    };
+    let (hours, minutes, seconds) = (field(), field(), field());
+    Duration::from_secs_f64(hours * 3_600.0 + minutes * 60.0 + seconds)
 }
 
 #[test]

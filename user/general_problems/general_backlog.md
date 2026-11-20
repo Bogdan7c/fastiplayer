@@ -715,6 +715,7 @@
 - **Где найдено:** 16b1 плана моста (18.11.2026); CI job «Documentation» красный и на коммитах до 16b1.
 - **Что видно:** документация `first_segment_unseen_before_sleep` (`crates/browser-bridge-bench/src/site/hls_live_sleep.rs`, 16d4) ссылается на приватный `window_at` — `rustdoc -D warnings` падает.
 - **Что сделать:** убрать ссылку или сделать её текстом — одна строка.
+- **Итог (16b3c2 плана моста, 20.11.2026) — ЗАКРЫТО исправлением.** Ссылка стала текстом; строгий rustdoc `app-egui` и стенда чистый (нужно было, чтобы проверить документацию самой 16b3c2).
 
 ## 67. Мост: после конца ролика окно может уйти на тихое превью под мышью
 
@@ -738,7 +739,7 @@
 ## 70. Мост: родной HLS иногда застревает в перемотке на старте
 
 - **Где найдено:** 16b3c2 плана моста (20.11.2026), второй из трёх прогонов быстрого набора: строка `capture chromium m3u8-in-src`, release-плеер, 8 частей стенда одновременно. Решение 389: починка — отдельная часть [16b3c3](../browser-bridge/16b3c3-hls-start-seek-hang.md).
-- **Что видно:** поколение показано с секунды страницы (`Browser stream generation shown start_ms=1245`), плеер принял точную перемотку на 1245 мс (`Public final seek accepted … seek_mode=Accurate resume_intent=Play`), HLS-демуксер получил её (`hls_manifest_segment_seek phase=final_receipt … actual_anchor_ms=80`), окно показало первый кадр. Дальше 60 с ни строки: сводка `presented_frames=23 audio_played_ms=0 buffering_entries=1 position_ms=0 state=seeking`. Видео стоит, звука нет, страница видит часы на нуле.
+- **Что видно:** поколение показано с секунды страницы (`Browser stream generation shown start_ms=1245`), плеер принял точную перемотку на 1245 мс (`Public final seek accepted … seek_mode=Accurate resume_intent=Play`), HLS-демуксер получил её (`hls_manifest_segment_seek phase=final_receipt … actual_anchor_ms=80`), окно показало первый кадр. Дальше 60 с ни строки: сводка `presented_frames=23 audio_played_ms=0 buffering_entries=1 position_ms=0 state=seeking`. Видео стоит, звука нет, страница видит часы на нуле. Перед этим: `Decoder thread exiting` в момент показа поколения и обновление списка дорожек сразу после ответа демуксера, но с `active_seek=false first_post_seek_track_update=false` (полная выдержка — в `user/browser-bridge/results/16b3c2.md`).
 - **Как часто:** 1 раз из ~20 прогонов этой строки; 16 повторов подряд (по 8 сразу) прошли чисто. Раньше не ловилось: отладочный плеер медленнее, и строки шли по одной.
 - **Что сделать:** ловить повтором строки под нагрузкой с подробным журналом `player_core`/`web_media_hls` (`FASTIPLAYER_BENCH_PLAYER_LOG`), найти, кто не завершает перемотку (ответ демуксера после `final_receipt`, установка поколения против перемотки «по показу» `seek_when_shown`), закрыть тестом процесса до кадра.
 
