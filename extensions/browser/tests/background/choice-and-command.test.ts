@@ -689,6 +689,25 @@ describe("выбор видео: тихий ролик ленты по кноп�
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [tile] }]), { kind: "nothing" });
   });
 
+  it("тихий зацикленный баннер ровно 160x90 не уходит: он не мелкий, но и не ролик на месте плеера (решение 384)", () => {
+    // Форма страницы стенда banner-autoplay в Firefox: баннер играет, площадь ровно на пороге плиток.
+    const banner = video(1, { ...SILENT_REEL, duration_s: 12, loop: true, visible_area_px: 160 * 90 });
+    const preview = video(2, { ...SILENT_REEL, duration_s: 12, loop: true, visible_area_px: 160 * 90 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [banner, preview] }]), { kind: "nothing" });
+  });
+
+  it("порог большого тихого ролика: на точку меньше 400x225 — остаётся странице, ровно 400x225 — уходит", () => {
+    const below = video(1, { ...SILENT_REEL, visible_area_px: VIDEO_FILTER_RULES.silentClipMinAreaPx - 1 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [below] }]), { kind: "nothing" });
+    const atThreshold = video(1, { ...SILENT_REEL, visible_area_px: VIDEO_FILTER_RULES.silentClipMinAreaPx });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [atThreshold] }]), handOff(0, "doc-top", 1, SILENT_REEL.duration_s));
+  });
+
+  it("превью-карточка 320x180 не уходит, хотя тихая и играет", () => {
+    const card = video(1, { ...SILENT_REEL, visible_area_px: 320 * 180 });
+    assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [card] }]), { kind: "nothing" });
+  });
+
   it("тихий ролик на паузе не уходит: страница его не показывает как видео", () => {
     const paused = video(1, { ...SILENT_REEL, playing: false });
     assert.deepEqual(chooseVideo([{ frameId: 0, candidates: [paused] }]), { kind: "nothing" });
@@ -705,7 +724,7 @@ describe("выбор видео: тихий ролик ленты по кноп�
   });
 
   it("из двух тихих роликов уходит крупнейший", () => {
-    const frames = [{ frameId: 0, candidates: [video(1, { ...SILENT_REEL, visible_area_px: 40_000 }), video(2, SILENT_REEL)] }];
+    const frames = [{ frameId: 0, candidates: [video(1, { ...SILENT_REEL, visible_area_px: 120_000 }), video(2, SILENT_REEL)] }];
     assert.deepEqual(chooseVideo(frames), handOff(0, "doc-top", 2, SILENT_REEL.duration_s));
   });
 });

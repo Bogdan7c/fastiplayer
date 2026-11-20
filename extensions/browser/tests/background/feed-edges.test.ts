@@ -255,14 +255,19 @@ describe("F3: уход из ленты — адрес сменился и рол
     assert.equal(world.handoffs.heldVideo(TAB, 0, report(reel(3))), "adopt");
   });
 
-  it("Shorts без переездов: адрес главной, источник снят, тень сдалась через 5 с — прежний уход по адресу (S4)", async () => {
+  it("Shorts без переездов: адрес главной — окно на паузе и «Source tab closed» через отсрочку, тень не ждём (S4, решение 381)", async () => {
+    // До 16b3c Shorts уходил прежним путём 306: снятый источник, 5 с тени, доигрывание. Теперь лента одного элемента
+    // узнаётся по списку адресов; подробные строки — feed-shorts.test.ts.
     const world = setup([{ frameId: 0, result: [reel(1)] }]);
     world.navigateTab("https://www.youtube.com/shorts/dQw4w9WgXcQ");
     await startHandoff(world);
     streamOf(world, 1);
     world.updateTab({ url: "https://www.youtube.com/" });
-    world.clock.advance(6_450);
-    world.framePorts.last().deliver({ kind: "handoff_ended", cause: "element_released" });
+    world.clock.advance(FEED_SECTION_LEAVE_GRACE_MS - 1);
+    assert.deepEqual(tabGoneReasons(world), [], "сразу не кончаем: отсрочка");
+    world.clock.advance(1);
+    const lastTwo = world.sockets.last().sentMessages().slice(-2);
+    assert.ok(lastTwo[0]?.type === "page_playback" && lastTwo[0].request.kind === "pause", "окно встаёт на паузу (решение 370)");
     assert.deepEqual(tabGoneReasons(world), ["navigated_away"]);
   });
 });

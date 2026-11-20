@@ -107,19 +107,6 @@ test("timestampOffset shifts segment times onto the page timeline", () => {
   assert.equal(journal.startCoverageAt(3), "lost", "without the offset 3 s would wrongly look covered by 2.4 s");
 });
 
-test("WebM: when the time of the first kept segment is unknown, the answer is unknown, not lost", () => {
-  const webm = MUXED_WEBM.bytes();
-  const journal = openJournal(WEBM_MIME);
-  journal.recordBytes(0, webm.slice(0, MUXED_WEBM.initEnd));
-  // Два кластера подряд: страница положила тот же кластер дважды (законный поток для сканера границ).
-  const cluster = webm.slice(MUXED_WEBM.initEnd);
-  journal.recordBytes(0, cluster.slice());
-  journal.recordBytes(0, cluster.slice());
-  // Выкинуты событие, init и первый кластер: медиаданные терялись, а время второго кластера не читается.
-  evictOldest(journal, 3);
-  assert.equal(journal.startCoverageAt(3), "unknown");
-});
-
 test("WebM with everything evicted is lost: no segment is left, its time is not needed", () => {
   const webm = MUXED_WEBM.bytes();
   const journal = openJournal(WEBM_MIME);

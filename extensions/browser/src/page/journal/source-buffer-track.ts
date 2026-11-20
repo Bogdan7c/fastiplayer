@@ -9,7 +9,7 @@
 //  - состоянием снимка: MIME, `timestampOffset` и выкинут ли сам `source_buffer_added`;
 //  - временем сегментов (решение 364): с какой секунды страницы начинается сегмент на данном
 //    смещении потока. Читается лениво, по просьбе журнала, из заголовков фрагмента и init-сегмента
-//    (segment-scanner/fmp4-segment-time.ts). Пока умеет только fMP4; у WebM время «неизвестно».
+//    (segment-scanner/fmp4-segment-time.ts для fMP4, webm-segment-time.ts для WebM — решение 379).
 //
 // Тонкость: заголовок бокса/элемента может начаться в одном куске, а дочитаться в следующих
 // (YouTube режет где угодно, бывает и по байту). Тогда сканер сообщает границу со смещением,
@@ -20,6 +20,7 @@
 import type { RetainedMemory } from "./retained-memory.ts";
 import { isViewIntact, recordView, type RecordedView } from "./view-integrity.ts";
 import { readFmp4FragmentDecodeTime, readFmp4TrackTimescales, type StreamByteReader } from "../segment-scanner/fmp4-segment-time.ts";
+import { readWebmClusterTimestamp, readWebmTimecodeScale, webmSecondsOf } from "../segment-scanner/webm-segment-time.ts";
 import { MAX_HEADER_BYTES } from "../segment-scanner/header-walker.ts";
 import { containerOfMimeType, createSegmentScanner, type ScannableContainer, type SegmentScanner } from "../segment-scanner/scanner.ts";
 
@@ -63,8 +64,14 @@ interface OpenInit {
   bytes: number;
 }
 
-/** Шкалы дорожек init-сегмента: номер дорожки → единиц в секунде (`null` — init не разобран). */
+/** Шкалы дорожек fMP4 init-сегмента: номер дорожки → единиц в секунде (`null` — init не разобран). */
 type TrackTimescales = ReadonlyMap<number, number> | null;
+
+/** Что init-сегмент говорит о времени своих сегментов (разбор — один раз на init). */
+type InitTiming =
+  | { readonly container: "fmp4"; readonly timescales: TrackTimescales }
+  /** `timecodeScaleNs` — нс на тик кластера; `null` — init не разобран. */
+  | { readonly container: "webm"; readonly timecodeScaleNs: number | null };
 
 export class SourceBufferTrack {
   readonly index: number;
@@ -72,8 +79,8 @@ export class SourceBufferTrack {
   #scanner: SegmentScanner | null;
   /** Контейнер текущего формата потока (`null` — сканер его не понимает). */
   #container: ScannableContainer | null;
-  /** Шкалы уже разобранных init-сегментов (разбор — один раз на init, запись живёт вместе с ним). */
-  readonly #timescalesOfInit = new WeakMap<InitSegment, { readonly timescales: TrackTimescales }>();
+  /** Шкалы времени уже разобранных init-сегментов (разбор — один раз на init, запись живёт вместе с ним). */
+  readonly #timingOfInit = new WeakMap<InitSegment, InitTiming>();
   /** Сколько байтов уже прошло через этот SourceBuffer (смещение следующего куска). */
   #streamOffset = 0;
   /**
@@ -234,28 +241,46 @@ export class SourceBufferTrack {
    * `null` — время неизвестно: формат не fMP4, заголовок ещё не пришёл или не разобран, нет init.
    */
   segmentStartSeconds(segmentStart: number, readStream: StreamByteReader): number | null {
-    if (this.#container !== "fmp4") return null;
-    const fragment = readFmp4FragmentDecodeTime(readStream, segmentStart);
-    if (fragment === null) return null;
+    const container = this.#container;
+    if (container === null) return null;
     // Шкала — из init-сегмента, который действует на этом месте потока (последний начатый не позже).
     let init: InitSegment | null = null;
     for (const candidate of this.#inits) {
       if (candidate.start <= segmentStart) init = candidate;
     }
-    const timescales = init === null ? null : this.#timescalesOf(init);
-    if (timescales === null) return null;
+    if (init === null) return null;
+    const timing = this.#timingOf(init, container);
+    if (timing === null) return null;
+    if (timing.container === "webm") return this.#webmSegmentStartSeconds(segmentStart, readStream, timing.timecodeScaleNs);
+    return this.#fmp4SegmentStartSeconds(segmentStart, readStream, timing.timescales);
+  }
+
+  #fmp4SegmentStartSeconds(segmentStart: number, readStream: StreamByteReader, timescales: TrackTimescales): number | null {
+    const fragment = readFmp4FragmentDecodeTime(readStream, segmentStart);
+    if (fragment === null || timescales === null) return null;
     // Дорожка в SourceBuffer обычно одна: если номер из фрагмента не сошёлся, шкала единственной верна.
     const timescale = timescales.get(fragment.trackId) ?? (timescales.size === 1 ? [...timescales.values()][0] : undefined);
     return timescale === undefined ? null : fragment.decodeTime / timescale;
   }
 
-  #timescalesOf(init: InitSegment): TrackTimescales {
-    const known = this.#timescalesOfInit.get(init);
-    if (known !== undefined) return known.timescales;
+  #webmSegmentStartSeconds(segmentStart: number, readStream: StreamByteReader, timecodeScaleNs: number | null): number | null {
+    if (timecodeScaleNs === null) return null;
+    const clusterTimestamp = readWebmClusterTimestamp(readStream, segmentStart);
+    return clusterTimestamp === null ? null : webmSecondsOf(clusterTimestamp, timecodeScaleNs);
+  }
+
+  /** Время init-сегмента по формату потока; `null` — формат не понят. Разбор кэшируется на init. */
+  #timingOf(init: InitSegment, container: ScannableContainer): InitTiming | null {
+    const known = this.#timingOfInit.get(init);
+    if (known !== undefined && known.container === container) return known;
+    const readInit: StreamByteReader = (offset, length) => readInitBytes(init, offset, length);
     const initEnd = initEndOf(init);
-    const timescales = readFmp4TrackTimescales((offset, length) => readInitBytes(init, offset, length), init.start, initEnd);
-    this.#timescalesOfInit.set(init, { timescales });
-    return timescales;
+    const timing: InitTiming =
+      container === "webm"
+        ? { container, timecodeScaleNs: readWebmTimecodeScale(readInit, init.start, initEnd) }
+        : { container, timescales: readFmp4TrackTimescales(readInit, init.start, initEnd) };
+    this.#timingOfInit.set(init, timing);
+    return timing;
   }
 
   /** Есть ли среди init-сегментов такой, чей буфер страница уже отсоединила или урезала. */

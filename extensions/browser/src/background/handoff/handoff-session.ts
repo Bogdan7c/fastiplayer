@@ -662,6 +662,7 @@ export function startHandoffSession(
     // больше не нужен — его текущие запросы обрываются, а не докачивают ненужное.
     // Новое поколение — новая серия на экране плеера (16a): опорный адрес и «ждём следующую» — заново.
     if (translated.items.some(startsGeneration)) {
+      if (feed.pageGenerationBegan() === "session_ended") return; // 381: превью вне ленты Shorts окну не отдаётся
       feeds.endGeneration();
       episodeChange.videoBegan();
     }

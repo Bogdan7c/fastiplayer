@@ -43,12 +43,29 @@
 //   ролик без смены адреса (T1), Instagram уходит прокруткой (I1), Shorts переносит элемент без ухода с экрана (S1).
 //   Пока конец не принят (сеанс посреди переезда), задержанное видео не берётся: это превью нового раздела.
 //
+// Лента одного элемента (16b3c, решения 374, 381, 382; список — single-element-feeds.ts). YouTube Shorts листается
+// новым поколением ТОГО ЖЕ элемента: переездов нет, и выученного раздела не бывает. Такую ленту сеанс узнаёт только
+// по адресу из списка (адрес открытия или любая новость об адресе — порядок «поколение раньше адреса» не важен):
+// - 382. Страница убрала ролик (`element_released`), адрес всё ещё в ленте — лента продолжается (`feed_continues`,
+//   ожидание без предела, как F2), а не 4009. Правило «уход до первого шага» для такой ленты молчит: адрес Shorts
+//   меняется на каждом ролике, и «адрес сменился с начала ролика» здесь — шаг ленты, а не уход.
+// - 381. Адрес вкладки ушёл из ленты списка — через `FEED_SECTION_LEAVE_GRACE_MS` конец уходом из ленты
+//   (`leaveFeed`: окно на паузе, «Source tab closed», решение 370), даже если ролик не терялся и ничего не ждём:
+//   `element_released` (5 с тени после снятого источника) не ждётся.
+// - Превью нового раздела окно не берёт: задержанное видео — «другой раздел», а новое поколение страницы, пришедшее
+//   уже вне ленты (новый MediaSource на том же элементе), — повод кончить сеанс сразу, ДО того как поколение уйдёт
+//   плееру (`pageGenerationBegan`). Поколение, пришедшее раньше новости об адресе, неотличимо от шага ленты: окно
+//   его покажет, а конец придёт по адресу через отсрочку.
+// Сериал с номером серии в адресе (`/serial/123/4`) в список не входит: его новое поколение и смена адреса судятся
+// прежними правилами (16a, 306) — никогда как лента.
+//
 // Время — монотонные часы фона (`Scheduler.now`), отсрочка — таймер фона: таймеры скрытой вкладки спят.
 
 import type { ScreenExitKind } from "../../../shared/handoff-contract.ts";
 import type { Scheduler } from "../../host-link/native-port.ts";
 import { createTimerSlot } from "../../host-link/timer-slot.ts";
 import { feedSectionOf, type FeedSection } from "./feed-section.ts";
+import { createSingleElementFeedWatch } from "./single-element-feeds.ts";
 
 /**
  * Через сколько после смены адреса сайт успевает вынуть ролик: наблюдение 19 ноября 2026 — Instagram ~0,5 с,
@@ -126,6 +143,16 @@ export type LeaveFeedAnswer =
   /** Сеанс прямо сейчас переезжает: спросить снова после отсрочки. */
   | "not_now";
 
+/** Что делать сеансу с новым поколением страницы (`generation_started` в переводе её события). */
+export type PageGenerationAnswer =
+  /** Отдать плееру, как всегда: шаг ленты, новая серия, первое видео сеанса. */
+  | "forward"
+  /**
+   * Вкладка уже ушла из ленты одного элемента, и сеанс кончился уходом из ленты прямо сейчас (381): поколение — это
+   * превью нового раздела, плееру его не отдавать.
+   */
+  | "session_ended";
+
 export interface SessionFeedPorts {
   readonly scheduler: Scheduler;
   /** Адрес вкладки при старте сеанса (`HandoffTarget.tabUrl`), если браузер его назвал. */
@@ -152,6 +179,11 @@ export interface SessionFeed {
   currentVideoLost(): FeedLoss;
   /** Где задержано видео: в разделе ленты или уже в другом (F5). */
   heldVideoPlace(): HeldVideoPlace;
+  /**
+   * Страница начала новое поколение (новый MediaSource; у Shorts так выглядит и шаг ленты, и превью главной на том
+   * же элементе). Зовётся ДО того, как поколение уйдёт плееру. Вне ленты одного элемента (381) просит конец сразу.
+   */
+  pageGenerationBegan(): PageGenerationAnswer;
   /**
    * Плееру ушло слово страницы об игре (`page_playback{play|pause}`): от тени или от самого сеанса, когда он встал
    * ждать следующий ролик. Скорость (`set_rate`) игру не меняет.
@@ -204,6 +236,10 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
   let lastPagePlayback: "play" | "pause" | undefined;
   // Откуда сеанс ушёл из ленты (решение 375); до ухода — `not_left`.
   let leftPlace: FeedLeftPlace = NOT_LEFT;
+  // Лента одного элемента по списку адресов (16b3c): была ли вкладка в ней и не ушла ли.
+  const singleElementFeed = createSingleElementFeedWatch(ports.openedUrl);
+  // Тень хоть раз вставала в этом сеансе. До этого новое поколение — начало самого видео сеанса, а не превью.
+  let aVideoStood = false;
 
   const now = (): number => ports.scheduler.now();
 
@@ -212,14 +248,31 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
     return lostAndWaiting || ports.feedAwaitsNextVideo();
   }
 
-  /** Вкладка ушла в другой раздел, чем у текущего ролика (неразборный или неизвестный адрес — не ушла). */
+  /** Вкладка была в ленте одного элемента из списка и ушла из неё (решение 381). */
+  function leftSingleElementFeed(): boolean {
+    return singleElementFeed.state() === "left_feed";
+  }
+
+  /** Раздел ленты известен: выучен на шаге ленты или задан списком лент одного элемента. */
+  function feedSectionKnown(): boolean {
+    return feedSection !== undefined || singleElementFeed.state() !== "never_in_feed";
+  }
+
+  /**
+   * Вкладка ушла в другой раздел, чем у текущего ролика (неразборный или неизвестный адрес — не ушла). У ленты из
+   * списка раздел — сам список: шаг Shorts (`/shorts/<id>`) раздела не меняет, а уход из списка — меняет.
+   */
   function sectionChanged(): boolean {
+    if (singleElementFeed.state() !== "never_in_feed") return leftSingleElementFeed();
     return feedSection !== undefined && latestSection !== undefined && latestSection !== feedSection;
   }
 
-  /** Пора ли просить конец: ждём ролик ленты, а вкладка в другом разделе (F5) или адрес пришёл после потери (F3). */
+  /**
+   * Пора ли просить конец: вкладка ушла из ленты одного элемента (381) — всегда; иначе — если ждём ролик ленты, а
+   * вкладка в другом разделе (F5) или адрес пришёл после потери (F3).
+   */
   function leaveIsDue(): boolean {
-    return waitingForFeedVideo() && (sectionChanged() || leaveRequested);
+    return leftSingleElementFeed() || (waitingForFeedVideo() && (sectionChanged() || leaveRequested));
   }
 
   /** Попросить конец; сеанс посреди переезда — спросить снова после отсрочки, если повод не прошёл. */
@@ -249,6 +302,8 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
     addressSeen(url) {
       if (stopped || url === latestUrl) return;
       latestUrl = url;
+      // Лента одного элемента: вход в неё и уход из неё — по списку; отсрочку 381 начнёт `reviewSection` ниже.
+      singleElementFeed.addressSeen(url);
       const section = feedSectionOf(url);
       if (section !== latestSection) lastSectionChangeAtMs = now();
       latestSection = section;
@@ -284,12 +339,17 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       videoStartedAtMs = now();
       // Новое видео: его игру страница назовёт сама (`page_playback` сразу за `handoff_began`), прежнее слово не в счёт.
       lastPagePlayback = undefined;
+      aVideoStood = true;
       leaveTimer.cancel();
+      // Тень встала на видео, когда вкладка уже ушла из ленты одного элемента (переезд начался до ухода): конец
+      // по-прежнему положен, отсрочка — заново.
+      if (leftSingleElementFeed()) reviewSection();
     },
     videoLeftScreen(exit) {
       currentExit = exit;
-      // Уход до первого шага ленты (шапка): вынутый ролик и адрес, сменившийся с начала ролика.
-      if (!stopped && exit === "removed_from_document" && feedSection === undefined) {
+      // Уход до первого шага ленты (шапка): вынутый ролик и адрес, сменившийся с начала ролика. У ленты из списка
+      // раздел известен сразу, и адрес Shorts меняется на каждом ролике без переезда — правило молчит (382).
+      if (!stopped && exit === "removed_from_document" && !feedSectionKnown()) {
         if (latestUrl !== urlAtVideoStart) {
           leaveRequested = true;
           requestLeave();
@@ -300,7 +360,12 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       reviewSection();
     },
     currentVideoLost() {
-      if (stopped || !(feedStepTaken || ports.feedAwaitsNextVideo())) return "not_feed";
+      if (stopped) return "not_feed";
+      // 381: вкладка уже вне ленты одного элемента (отсрочка конца ещё идёт) — это уход, а не потеря ролика.
+      if (leftSingleElementFeed()) return "left_feed";
+      // 382: адрес в ленте из списка — это лента, даже без единого переезда.
+      const knownFeed = feedStepTaken || ports.feedAwaitsNextVideo() || singleElementFeed.state() === "in_feed";
+      if (!knownFeed) return "not_feed";
       const scrolledAway = currentExit === "scrolled_off_screen";
       if (!scrolledAway && sectionLeftWithinExitWindow()) return "left_feed";
       if (!scrolledAway) unexplainedLossAtMs = now();
@@ -309,18 +374,33 @@ export function createSessionFeed(ports: SessionFeedPorts): SessionFeed {
       return "feed_continues";
     },
     heldVideoPlace() {
-      // Уход уже доказан, а конец ждёт конца переезда: задержанное видео — из нового раздела.
-      if (leaveRequested) return "other_section";
+      // Уход уже доказан (или вкладка вне ленты одного элемента), а конец ждёт отсрочки или конца переезда:
+      // задержанное видео — из нового раздела.
+      if (leaveRequested || leftSingleElementFeed()) return "other_section";
       if (!waitingForFeedVideo()) return "not_a_feed_move";
       return sectionChanged() ? "other_section" : "feed_section";
+    },
+    pageGenerationBegan() {
+      // До первой тени поколение — начало самого видео сеанса. После неё фаза `beginning` уже не наступает, и ответ
+      // `ended` значит, что сеанс действительно кончился (`active`/`between_videos`), а `not_now` — что он переезжает.
+      if (stopped || !aVideoStood || !leftSingleElementFeed()) return "forward";
+      // Вкладка вне ленты одного элемента, а страница дала новый MediaSource (превью главной на том же элементе):
+      // конец сейчас, не дожидаясь отсрочки, — иначе превью стало бы роликом окна.
+      leaveTimer.cancel();
+      if (ports.leaveFeed() === "ended") return "session_ended";
+      // Посреди переезда поколение — у видео, на которое сеанс уже переезжает; конец — после отсрочки.
+      leaveTimer.start(FEED_SECTION_LEAVE_GRACE_MS, recheckLeave);
+      return "forward";
     },
     pagePlaybackForwarded(request) {
       if (request !== "set_rate") lastPagePlayback = request;
     },
     windowPausedByPage: () => lastPagePlayback === "pause",
     sessionLeftFeed() {
+      // Лента из списка — её раздел (Shorts не переезжает, и адрес старта ролика может быть ещё не лентой: стенд).
       // До первого шага раздел не выучен: лента — раздел адреса, на котором встал ушедший ролик.
-      const section = feedSection ?? (urlAtVideoStart === undefined ? undefined : feedSectionOf(urlAtVideoStart));
+      const startSection = urlAtVideoStart === undefined ? undefined : feedSectionOf(urlAtVideoStart);
+      const section = singleElementFeed.lastFeedSection() ?? feedSection ?? startSection;
       leftPlace = section === undefined ? NOT_LEFT : { kind: "left", section };
     },
     feedLeftPlace: () => leftPlace,

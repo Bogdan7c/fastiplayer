@@ -203,13 +203,27 @@ test("watched part: chunks cut anywhere (headers split between chunks) give the 
   }
 });
 
-test("watched part: unknown segment time is never taken for watched (WebM, a detached page buffer)", () => {
+test("watched part: WebM cluster times are read (decision 379), so a watched head is given back", () => {
   const webm = liveWebm(6);
   const { journal: webmJournal } = newJournal();
   addSourceBuffer(webmJournal, 0, "video/webm");
   append(webmJournal, 0, segmentsOf(webm.bytes, webm.initEnd, webm.mediaStarts));
-  assert.equal(webmJournal.evictOldestIfWatchedBefore(1_000), false, "WebM cluster times are not read");
-  assert.deepEqual(replayedBytes(webmJournal, 0), webm.bytes, "the WebM journal is whole");
+  // Кластеры живого WebM стартуют на 0, 1, 2 … мс (шкала 1 мс). Просмотрено 2,5 мс: кластеры 0 и 1 позади
+  // (следующие границы 1 и 2 мс), кластер 2 (следующая граница 3 мс) ещё нет.
+  assert.ok(evictWatched(webmJournal, 0.0025) > 0, "the watched head is given back");
+  assert.deepEqual(replayedBytes(webmJournal, 0), concat([webm.bytes.subarray(0, webm.initEnd), webm.bytes.subarray(webm.mediaStarts[2])]));
+});
+
+test("watched part: unknown segment time is never taken for watched (WebM without Timestamp, a detached page buffer)", () => {
+  const webm = liveWebm(6);
+  // Ломаем Timestamp каждого кластера (ID 0xE7 -> 0xEC, Void): время кластера не читается.
+  const broken = webm.bytes.slice();
+  for (const start of webm.mediaStarts) broken[start + 12] = 0xec;
+  const { journal: webmJournal } = newJournal();
+  addSourceBuffer(webmJournal, 0, "video/webm");
+  append(webmJournal, 0, segmentsOf(broken, webm.initEnd, webm.mediaStarts));
+  assert.equal(webmJournal.evictOldestIfWatchedBefore(1_000), false, "WebM cluster time is not readable");
+  assert.deepEqual(replayedBytes(webmJournal, 0), broken, "the WebM journal is whole");
 
   const { budget, journal } = newJournal();
   addSourceBuffer(journal, 0, VIDEO_MIME);

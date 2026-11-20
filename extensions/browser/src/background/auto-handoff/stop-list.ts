@@ -8,11 +8,15 @@
 // Беззвучные ролики ленты режим 2 и так не берёт (фильтр звука), короткие — фильтр длины; кому соцсеть мешает,
 // добавляет её в свой стоп-лист или ставит сайту «Never».
 //
-// Форма записи общая со своим стоп-листом человека (`normalizeStopListEntry`): `host` или `host/начало-пути`.
-// - хост совпадает, если адрес вкладки на этом хосте или на его поддомене (`www.` и порт не мешают);
-// - путь, если он есть в записи, совпадает на границе сегмента: `/shorts` и `/shorts/abc` — да, `/shortsx` — нет.
+// Форма записи общая со своим стоп-листом человека (`normalizeStopListEntry`): `host` или `host/начало-пути`;
+// правило совпадения — shared/web-address-match.ts.
 
-import { normalizeStopListEntry, siteKeyOfHost } from "../../shared/auto-handoff-settings.ts";
+import { addressMatchesSiteEntry, type WebAddress } from "../../shared/web-address-match.ts";
+
+// Разбор адреса и сопоставление с записью живут в shared/web-address-match.ts (16b3c: им же пользуется лента одного
+// элемента). Здесь — прежние имена, чтобы потребители режима 2 не менялись.
+export { parseWebAddress, type WebAddress } from "../../shared/web-address-match.ts";
+export { addressMatchesSiteEntry as addressMatchesStopListEntry } from "../../shared/web-address-match.ts";
 
 /** Группа встроенного стоп-листа: название для людей и записи. */
 export interface StopListGroup {
@@ -65,44 +69,7 @@ export function builtInStopListEntries(): readonly string[] {
   return BUILT_IN_STOP_LIST_GROUPS.flatMap((group) => group.entries);
 }
 
-/** Адрес вкладки, разобранный для сопоставления: только http(s). */
-export interface WebAddress {
-  /** Ключ сайта: хост строчными без `www.` (см. `siteKeyOfHost`). */
-  readonly siteKey: string;
-  /** Путь строчными, начинается с `/`. */
-  readonly path: string;
-}
-
-/** Разобрать адрес вкладки. `undefined` — это не веб-страница (служебная страница браузера, файл, мусор). */
-export function parseWebAddress(tabUrl: string): WebAddress | undefined {
-  let parsed: URL;
-  try {
-    parsed = new URL(tabUrl);
-  } catch {
-    return undefined;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-  const siteKey = siteKeyOfHost(parsed.hostname);
-  return siteKey === null ? undefined : { siteKey, path: parsed.pathname.toLowerCase() };
-}
-
-/** Путь адреса лежит под путём записи на границе сегмента: `/shorts` и `/shorts/abc` — да, `/shortsx` — нет. */
-function pathIsUnder(path: string, entryPath: string): boolean {
-  return path === entryPath || path.startsWith(`${entryPath}/`);
-}
-
-/** Адрес подходит одной записи. Битая запись (не `host[/путь]`) не подходит ни к чему. */
-export function addressMatchesStopListEntry(address: WebAddress, rawEntry: string): boolean {
-  const entry = normalizeStopListEntry(rawEntry);
-  if (entry === null) return false;
-  const slash = entry.indexOf("/");
-  const entryHost = slash < 0 ? entry : entry.slice(0, slash);
-  const entryPath = slash < 0 ? "" : entry.slice(slash);
-  const hostMatches = address.siteKey === entryHost || address.siteKey.endsWith(`.${entryHost}`);
-  return hostMatches && (entryPath === "" || pathIsUnder(address.path, entryPath));
-}
-
 /** Адрес подходит хотя бы одной записи списка. */
 export function addressIsInStopList(address: WebAddress, entries: readonly string[]): boolean {
-  return entries.some((entry) => addressMatchesStopListEntry(address, entry));
+  return entries.some((entry) => addressMatchesSiteEntry(address, entry));
 }

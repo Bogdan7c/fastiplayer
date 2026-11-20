@@ -140,8 +140,9 @@ export function chooseMainVideo(frames: readonly FrameCandidates[], rules: Video
 }
 
 /**
- * Тихий ролик на месте плеера (решение 357): вердикт `junk` только из-за беззвучия (короткий или
- * зацикленный), но он играет, виден и крупный — не плитка и не баннер. Так выглядит ролик ленты, который
+ * Тихий ролик на месте плеера (решения 357, 384): вердикт `junk` только из-за беззвучия (короткий или
+ * зацикленный), но он играет, виден и крупный — не плитка, не баннер и не превью-карточка (порог
+ * `silentClipMinAreaPx`, а не `smallAreaPx`: баннер ровно 160x90 иначе уходил в окно). Так выглядит ролик ленты, который
  * страница запустила без звука. Это не «главное видео» по вердикту: такой ролик берут, только когда другого
  * видео нет и человек сам попросил передать вкладку, или когда окно идёт за лентой (переезд 16b2).
  * Режим 2 (автозапуск) этим правилом не пользуется: у него свой фильтр звука (решение 259).
@@ -149,7 +150,7 @@ export function chooseMainVideo(frames: readonly FrameCandidates[], rules: Video
 export function isSilentClipInPlayerPlace(entry: ClassifiedVideo, rules: VideoFilterRules = VIDEO_FILTER_RULES): boolean {
   const { candidate } = entry;
   if (entry.verdict !== "junk" || !candidate.muted || !candidate.playing) return false;
-  return candidate.visible_area_px >= rules.smallAreaPx && HANDOFF_FORMS.includes(candidate.media.kind);
+  return candidate.visible_area_px >= rules.silentClipMinAreaPx && HANDOFF_FORMS.includes(candidate.media.kind);
 }
 
 /** Итог выбора по ссылке человека: обычный итог или «такого видео в свежем опросе нет». */

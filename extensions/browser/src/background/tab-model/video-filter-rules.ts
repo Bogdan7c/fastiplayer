@@ -30,6 +30,13 @@ export interface VideoFilterRules {
    * не плеер. 160x90 — самая мелкая плитка превью на лентах.
    */
   readonly smallAreaPx: number;
+  /**
+   * Сколько видимых CSS-пикселей нужно беззвучному ролику, чтобы кнопка или переезд ленты взяли его
+   * как «тихий ролик на месте плеера» (решения 357, 384). Это порог «большого» ролика, а не «не
+   * крошечного»: баннер ровно 160x90 и превью-карточки (320x180, 360x202) остаются странице, а ролик
+   * Instagram на экране (~164 000 точек в живом опросе 16b2) проходит с запасом. 400x225.
+   */
+  readonly silentClipMinAreaPx: number;
 }
 
 /** Правила по умолчанию. */
@@ -48,4 +55,5 @@ export const VIDEO_FILTER_RULES: VideoFilterRules = {
   shortClipSeconds: 30,
   prerollMaxSeconds: 180,
   smallAreaPx: 160 * 90,
+  silentClipMinAreaPx: 400 * 225,
 };
