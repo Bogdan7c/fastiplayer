@@ -1,5 +1,7 @@
 # Сессия 16b3d: видео в shadow DOM и `loop` под давлением памяти
 
+> **Убрана в общий бэклог решением 387** (пп. 68–69): края лент, сайты с контентом не ломают. Файл оставлен как описание задачи.
+
 Часть [16b](16b-short-video-feeds.md), отделена от [16b3c](16b3c-reel-start-and-shorts.md) решением 383. Опирается на [16b3b](16b3b-feed-back-and-start.md) и [16b3c](16b3c-reel-start-and-shorts.md).
 
 > Выполни сессию 16b3d плана `user/browser-bridge/`: видео в shadow DOM и `loop` под давлением памяти. Сначала прочитай `user/browser-bridge/README.md`, этот файл, `results/16b3b.md` и `results/16b3c.md`.
