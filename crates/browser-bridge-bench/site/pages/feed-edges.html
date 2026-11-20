@@ -23,7 +23,7 @@ import { ReelSource, logWheelEvents, serveRobotCommands } from '../lib/feed-kit.
 import { EdgeFeed, PAGINGS, PAGING_NATIVE, PAGING_WHEEL, TAILS, TAIL_COMMENTS, TAIL_NONE } from '../lib/feed-edge-feed.js';
 import { BACKS, BACK_HISTORY, BACK_LIVE, BACK_NONE, backMetrics, createBackShape } from '../lib/feed-edge-back.js';
 import { CROWD_HOOK, HISTORY_NONE, HISTORY_PASSED_REELS_DETACHED, ReelCrowd } from '../lib/feed-history.js';
-import { EDGE_SHAPES, QUIRKS, QUIRK_NONE, createEdgeShape } from '../lib/feed-edge-shapes.js';
+import { EDGE_SHAPES, MOVED_ADDRESSES, MOVED_ADDRESS_SHORTS, QUIRKS, QUIRK_NONE, createEdgeShape } from '../lib/feed-edge-shapes.js';
 
 // Края ленты коротких видео (сессия 16b3): то, что настоящие сайты делают помимо спокойного листания
 // (наблюдение без моста, Firefox 160, 19 ноября 2026). Подробности каждой формы — lib/feed-edge-shapes.js,
@@ -34,12 +34,15 @@ import { EDGE_SHAPES, QUIRKS, QUIRK_NONE, createEdgeShape } from '../lib/feed-ed
 //  * `tail=none|comments` — после последнего ролика раздел без видео (конец ленты);
 //  * `paging=native|wheel` — родная прокрутка с прилипанием или листание жестами колеса (быстрая серия);
 //  * `quirk=none|remove-old-during-move` — страница убирает прежний элемент прямо во время переезда окна;
+//  * `address=shorts|serial` — только с `shape=moved` (16b3c): адрес шага `/shorts/<id>` (лента из списка
+//    экстеншена) или `/serial/123/<n>` (сериал: новое поколение и новый адрес, но не лента);
 //  * `back=none|live|recreated|history` — лента умеет шаг НАЗАД (16b3b, lib/feed-edge-back.js): `live` — тот же живой
 //    элемент ролика продолжает со своей секунды (Instagram), `recreated` — новый элемент с новым MediaSource, с нуля, `history` — «Назад» в истории после ухода (TikTok, хук `history-back`);
 //  * `history=none|passed-reels-detached` — только с `back=live`: после переезда окна страница качает дальние
 //    ролики сверх потолка памяти моста (lib/feed-history.js), ролик 1 при этом остаётся живым в документе.
 // Режим передачи: ролик 1 играет, страница ждёт робота. Робот отдаёт вкладку и листает НАСТОЯЩИМ колесом;
-// хуки `remove-current-reel`, `leave-section`, `leave-from-tail` запускают сценарии края. Судит Rust.
+// хуки `remove-current-reel`, `leave-section`, `leave-from-tail` запускают сценарии края (формы `moved` ещё
+// `leave-with-same-element-preview` и `drop-current-source`, 16b3c). Судит Rust.
 await runScenario('feed-edges', async (ctx) => {
   const raw = ctx.params.raw;
   const shape = raw.get('shape') ?? 'many';
@@ -58,6 +61,9 @@ await runScenario('feed-edges', async (ctx) => {
   const reels = Number(raw.get('reels') ?? 3);
   if (!Number.isInteger(reels) || reels < 2 || reels > 5) throw new Error(`bad page query: reels=${raw.get('reels')}`);
   if (tail === TAIL_COMMENTS && shape !== 'many') throw new Error('the tail section is modelled for shape=many only');
+  const address = raw.get('address') ?? MOVED_ADDRESS_SHORTS;
+  if (!MOVED_ADDRESSES.includes(address)) throw new Error(`bad page query: address=${address}`);
+  if (raw.has('address') && shape !== 'moved') throw new Error('the step address is modelled for shape=moved only');
 
   const catalog = await loadCatalog();
   const source = new ReelSource(ctx, catalog);
@@ -66,7 +72,7 @@ await runScenario('feed-edges', async (ctx) => {
   // Давление памяти: пройденные ролики открываются ДО роликов ленты, их MediaSource обязаны быть старше.
   const reelCrowd = history === HISTORY_PASSED_REELS_DETACHED ? await ReelCrowd.open(ctx, catalog) : null;
   const behaviour = back === BACK_NONE
-    ? createEdgeShape(shape, ctx, source, feed, { reels, quirk })
+    ? createEdgeShape(shape, ctx, source, feed, { reels, quirk, address })
     : createBackShape(shape, back, ctx, source, feed, { reels, quirk });
   // «Назад» в истории (`back=history`) — не прокрутка: лента назад не ходит, возврат делает хук `history-back`.
   feed.allowStepBack = back !== BACK_NONE && back !== BACK_HISTORY;
@@ -88,6 +94,10 @@ await runScenario('feed-edges', async (ctx) => {
       'remove-current-reel': () => behaviour.removeCurrent(),
       'leave-section': () => behaviour.leaveSection(),
       'leave-from-tail': () => behaviour.leaveFromTail(),
+      ...(shape === 'moved' && back === BACK_NONE ? {
+        'leave-with-same-element-preview': () => behaviour.leaveWithSameElementPreview(),
+        'drop-current-source': () => behaviour.dropCurrentSource(),
+      } : {}),
       ...(back === BACK_HISTORY ? { 'history-back': () => behaviour.historyBack() } : {}),
       ...(reelCrowd === null ? {} : { [CROWD_HOOK]: () => reelCrowd.detachPassedReelsAndPreloadFarAhead() }),
     },

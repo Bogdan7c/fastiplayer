@@ -3,11 +3,13 @@
 
 use super::super::judge::ScrollRecord;
 use super::super::judge::{EndNoticePolicy, ExpectedWindow, FrameGrowthCheck, judge_feed};
+use super::super::switch_judge::healthy_switch_lines;
 use super::*;
 use crate::browsers::HandOffOutcome;
 use crate::observe::{FrameEvidence, HostLogEvidence};
 use crate::scenarios::outcome::Outcome;
 use crate::site::{PageReport, PageStatus, RunId};
+use std::time::Duration;
 
 const WIDTHS: &[u64] = &[640, 512, 384, 320, 448];
 const BURST: ExpectedWindow = ExpectedWindow::EndsOnLastReel {
@@ -16,11 +18,21 @@ const BURST: ExpectedWindow = ExpectedWindow::EndsOnLastReel {
 const HONEST_END: ExpectedWindow = ExpectedWindow::EndsHonestly {
     reel_stream_widths: &[640, 512],
     window: WindowAfterLeave::StandsPaused,
+    end_deadline: EndAfterAddressLeave::NotMeasured,
 };
-/// Уход Shorts (S4): прежний конец 306, окно доигрывает и закрывается.
+/// Уход со страницы сериала (`feed-leave-section-serial`): прежний конец 306, окно доигрывает и закрывается.
 const PLAYED_OUT_END: ExpectedWindow = ExpectedWindow::EndsHonestly {
     reel_stream_widths: &[640, 512],
     window: WindowAfterLeave::PlaysOut,
+    end_deadline: EndAfterAddressLeave::NotMeasured,
+};
+/// Предел строк Shorts в тестах (сама строка берёт `SHORTS_LEAVE_END_DEADLINE`).
+const SHORTS_DEADLINE: Duration = Duration::from_secs(3);
+/// Уход из Shorts (решение 381): окно на паузе, и не позже предела после смены адреса.
+const SHORTS_LEAVE_END: ExpectedWindow = ExpectedWindow::EndsHonestly {
+    reel_stream_widths: &[640, 512],
+    window: WindowAfterLeave::StandsPaused,
+    end_deadline: EndAfterAddressLeave::Within(SHORTS_DEADLINE),
 };
 const WAITS: ExpectedWindow = ExpectedWindow::WaitsAtFeedEnd {
     reel_stream_widths: &[640, 512, 384],
@@ -101,6 +113,7 @@ fn base() -> FeedEvidence {
         back: None,
         history_back: None,
         target_wait_lines: Vec::new(),
+        media_switch_lines: healthy_switch_lines(),
         generations: Vec::new(),
         shown_stream_widths: Vec::new(),
         end_notice_lines: Vec::new(),
@@ -120,6 +133,7 @@ fn burst() -> FeedEvidence {
             generations_before_edge: None,
             end: None,
             window_still_present: None,
+            end_after_address_leave: None,
         }),
         generations: vec![1, 2, 3],
         shown_stream_widths: vec![640, 640, 512, 448, 448],
@@ -141,6 +155,7 @@ fn honest_end() -> FeedEvidence {
                 window_after_end: Ok(()),
             }),
             window_still_present: None,
+            end_after_address_leave: None,
         }),
         generations: vec![1, 2],
         shown_stream_widths: vec![640, 640, 512],
@@ -161,6 +176,7 @@ fn waiting() -> FeedEvidence {
             generations_before_edge: Some(vec![1, 2, 3]),
             end: None,
             window_still_present: Some(Ok(())),
+            end_after_address_leave: None,
         }),
         generations: vec![1, 2, 3],
         shown_stream_widths: vec![640, 512, 384],
@@ -336,7 +352,7 @@ fn a_window_that_closed_instead_of_standing_paused_fails() {
 }
 
 #[test]
-fn the_shorts_leave_still_demands_the_played_out_end() {
+fn the_serial_leave_still_demands_the_played_out_end() {
     let mut evidence = honest_end();
     evidence.end_notice_lines = vec![played_out_notice("tab_gone").line];
     edge_mut(&mut evidence).end = Some(EndRecord {
@@ -347,6 +363,47 @@ fn the_shorts_leave_still_demands_the_played_out_end() {
     assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
     // Окно на паузе там, где строка ждёт доигрывания, — провал.
     assert!(failure_of(PLAYED_OUT_END, &honest_end()).contains("notice=finished"));
+}
+
+#[test]
+fn a_shorts_leave_that_ended_soon_after_the_address_passes() {
+    let mut evidence = honest_end();
+    edge_mut(&mut evidence).end_after_address_leave = Some(Ok(Duration::from_millis(1_250)));
+    let verdict = judge_feed(SHORTS_LEAVE_END, &evidence);
+    assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+}
+
+#[test]
+fn a_shorts_leave_that_waited_for_the_shadow_fails_the_deadline() {
+    // Прежний путь: снятый источник через 1,45 с и допуск тени 5 с — конец через ~6,5 с после адреса.
+    let mut evidence = honest_end();
+    edge_mut(&mut evidence).end_after_address_leave = Some(Ok(Duration::from_millis(6_450)));
+    let failure = failure_of(SHORTS_LEAVE_END, &evidence);
+    assert!(failure.contains("decision 381"), "{failure}");
+    // Ровно на пределе — ещё в срок.
+    edge_mut(&mut evidence).end_after_address_leave = Some(Ok(SHORTS_DEADLINE));
+    assert_eq!(
+        judge_feed(SHORTS_LEAVE_END, &evidence).outcome,
+        Outcome::Pass
+    );
+}
+
+#[test]
+fn a_shorts_leave_without_timing_fails() {
+    let evidence = honest_end();
+    assert!(failure_of(SHORTS_LEAVE_END, &evidence).contains("did not time the end"));
+    let mut untimed = honest_end();
+    edge_mut(&mut untimed).end_after_address_leave =
+        Some(Err("the page never logged 'leave-url-pushed path=/'".into()));
+    assert!(failure_of(SHORTS_LEAVE_END, &untimed).contains("was not timed"));
+}
+
+#[test]
+fn a_leave_row_without_a_deadline_ignores_the_timing() {
+    // Instagram и TikTok кончаются по удалению элемента: время до конца им не судится.
+    let mut evidence = honest_end();
+    edge_mut(&mut evidence).end_after_address_leave = Some(Ok(Duration::from_secs(9)));
+    assert_eq!(judge_feed(HONEST_END, &evidence).outcome, Outcome::Pass);
 }
 
 #[test]

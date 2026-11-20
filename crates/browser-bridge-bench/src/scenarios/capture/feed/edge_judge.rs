@@ -8,10 +8,13 @@
 //!  * уход из ленты: раздражитель был целиком (адрес, удаление/снятие источника, играющее видимое превью),
 //!    окно кончило сеанс сообщением «Source tab closed» (`cause=tab_gone`) и, по решению 370, СТОИТ НА ПАУЗЕ
 //!    (`notice=waiting_for_viewer`) и не закрывается само: скачанное без зрителя не доигрывается. Исключение —
-//!    уход Shorts (S4, [`WindowAfterLeave::PlaysOut`]). Превью другого раздела окно НЕ приняло: новых поколений
-//!    и новых ширин кадра нет;
+//!    сериал с номером серии в адресе ([`WindowAfterLeave::PlaysOut`], прежний конец 306). Превью другого
+//!    раздела окно НЕ приняло: новых поколений и новых ширин кадра нет. Уход из Shorts (решение 381) ещё и
+//!    скорый: сообщение о конце не позже предела после смены адреса ([`EndAfterAddressLeave::Within`]);
 //!  * конец ленты: страница ушла в раздел без видео и остановила последний ролик, а окно за всё ожидание не
 //!    показало сообщения о конце, не взяло нового ролика и осталось на месте.
+
+use std::time::Duration;
 
 use super::judge::{
     FeedEvidence, growth_failure, metric, scroll_record_failures, without_consecutive_repeats,
@@ -29,9 +32,20 @@ pub(super) enum WindowAfterLeave {
     /// закрывается; нажал play — доиграет скачанное.
     StandsPaused,
     /// Прежний конец решения 306: окно доигрывает скачанное и закрывается (`notice=finished`). Так кончается
-    /// уход Shorts (S4): сеанс Shorts не делает переездов (шаг — новое поколение на том же элементе), фон не
-    /// знает в нём ленты, и снятый источник кончает сеанс прежним правилом «адрес сменился».
+    /// уход со страницы сериала с номером серии в адресе (строка `feed-leave-section-serial`): у неё то же
+    /// устройство, что у Shorts (новое поколение на том же элементе и новый адрес), но адреса нет в списке лент
+    /// одного элемента (решение 374), и снятый источник кончает сеанс прежним правилом «адрес сменился».
+    /// До 16b3c так же кончался и уход Shorts (S4).
     PlaysOut,
+}
+
+/// Как скоро после смены адреса (первая метка ухода страницы) окно обязано показать сообщение о конце.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EndAfterAddressLeave {
+    /// Время не судится: конец ждёт удаления элемента или тени (I6, T5, сериал).
+    NotMeasured,
+    /// Уход по адресу (решение 381, Shorts): сообщение о конце не позже этого предела.
+    Within(Duration),
 }
 
 impl WindowAfterLeave {
@@ -69,6 +83,10 @@ pub(super) struct EdgeRecord {
     pub generations_before_edge: Option<Vec<u64>>,
     /// Конец ленты: окно после всего ожидания на месте и отвечает.
     pub window_still_present: Option<Result<(), String>>,
+    /// Уход по адресу (Shorts, 16b3c): сколько прошло от метки смены адреса до сообщения о конце (по часам
+    /// робота: оба мига — когда робот увидел строку журнала, погрешность — шаг опроса в обе стороны) или
+    /// почему не измерено. `None` — строка время не меряла.
+    pub end_after_address_leave: Option<Result<Duration, String>>,
 }
 
 /// Поколения шли строго вперёд с единицы (повтор или откат смертелен для плеера, `GenerationOutOfOrder`).
@@ -228,10 +246,30 @@ pub(super) fn tab_gone_notice_failure(
     })
 }
 
+/// Конец пришёл не позже предела после смены адреса (решение 381): иначе он ждал тень или удаление элемента.
+fn end_deadline_failure(edge: &EdgeRecord, deadline: EndAfterAddressLeave) -> Option<String> {
+    let EndAfterAddressLeave::Within(limit) = deadline else {
+        return None;
+    };
+    match &edge.end_after_address_leave {
+        None => {
+            Some("the row did not time the end after the page left the feed address".to_owned())
+        }
+        Some(Err(message)) => Some(format!(
+            "the end after the page left the feed address was not timed: {message}"
+        )),
+        Some(Ok(elapsed)) if *elapsed > limit => Some(format!(
+            "the session ended {elapsed:?} after the page left the feed address, expected within {limit:?}: the end waited for the page or the shadow, not for the address (decision 381)"
+        )),
+        Some(Ok(_)) => None,
+    }
+}
+
 /// Уход из ленты: честный конец, превью другого раздела не принято.
 pub(super) fn honest_end_failures(
     reel_stream_widths: &[u64],
     window: WindowAfterLeave,
+    end_deadline: EndAfterAddressLeave,
     evidence: &FeedEvidence,
     failures: &mut Vec<String>,
 ) {
@@ -257,6 +295,7 @@ pub(super) fn honest_end_failures(
             }
         }
     }
+    failures.extend(end_deadline_failure(edge, end_deadline));
     failures.extend(no_new_generation_failure(edge, &evidence.generations));
     failures.extend(exact_widths_failure(reel_stream_widths, evidence));
 }

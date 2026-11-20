@@ -35,6 +35,7 @@ mod history_back;
 mod history_back_judge;
 mod judge;
 mod steps;
+mod switch_judge;
 
 use std::time::Instant;
 
@@ -49,7 +50,7 @@ use super::super::page_filter::PageFilter;
 use super::{FRAMES_TIMEOUT, MIN_PRESENTED_FRAMES};
 use crate::browsers::{BrowserError, BrowserKind, HandOffOutcome, hand_off_from_service_page};
 use crate::environment::{BenchEnvironment, DesktopSetup, PlayerConfigProfile};
-use crate::observe::read_host_evidence;
+use crate::observe::{MEDIA_SWITCH_MARKER, read_host_evidence};
 use crate::player_control::PlayerControl;
 use back::{BACK_ROWS, BackScenario};
 use back_judge::BackRecord;
@@ -358,6 +359,7 @@ fn drive(
     let forbidden_player_lines = player_log.snapshot_forbidden(FORBIDDEN_PLAYER_LINES)?;
     let end_notice_lines = player_log.snapshot_forbidden(&[END_NOTICE_MARKER])?;
     let target_wait_lines = player_log.snapshot_forbidden(&[TARGET_WAIT_MARKER])?;
+    let media_switch_lines = player_log.snapshot_lines_containing(MEDIA_SWITCH_MARKER)?;
     let exit = hand.into_run().browser.shutdown()?;
     let host = read_host_evidence(&exit.stderr_log)?;
     Ok(judge_feed(
@@ -374,6 +376,7 @@ fn drive(
             back: after.back,
             history_back: after.history_back,
             target_wait_lines,
+            media_switch_lines,
             generations,
             shown_stream_widths,
             end_notice_lines,
@@ -535,6 +538,38 @@ mod tests {
             );
         }
         assert_eq!(REEL_STREAM_WIDTHS, [640, 512, 384]);
+    }
+
+    /// Решение 385: строка `feed-hover-preview` начинает наблюдение посреди главного ролика и ждёт две сводки
+    /// плеера по 10 с. Главный ролик страницы — 90-секундный ролик 6 той же ширины 640, что и ролик 1
+    /// (судья узнаёт главный ролик по ширине), а не 30-секундный ролик 1, который успевал доиграть.
+    #[test]
+    fn the_hover_page_main_reel_outlives_the_stay_observation() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script =
+            std::fs::read_to_string(root.join("media/generate.sh")).expect("the media generator");
+        assert!(
+            script.contains("make_reel 6 640x360 360 90 "),
+            "reel 6 must stay 640 wide and 90 s long"
+        );
+        assert!(
+            script.contains("\"reel-6\": 90.0"),
+            "the catalog must know reel 6 lasts 90 s"
+        );
+        let page = std::fs::read_to_string(root.join("site/pages/feed-hover.html"))
+            .expect("the hover page");
+        assert!(
+            page.contains("source.prepare(6, { muted: false })"),
+            "the hover page main video must be reel 6"
+        );
+        assert!(
+            !page.contains("source.prepare(1,"),
+            "reel 1 (30 s) ends inside the stay observation"
+        );
+        assert_eq!(
+            REEL_STREAM_WIDTHS[0], 640,
+            "the stay judge expects the main reel 640 wide"
+        );
     }
 
     #[test]

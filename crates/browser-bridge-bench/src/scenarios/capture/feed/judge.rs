@@ -24,6 +24,7 @@ use super::super::super::outcome::Verdict;
 use super::back_judge::{self, BackRecord, BackStart};
 use super::edge_judge::{self, EdgeRecord};
 use super::history_back_judge::{self, HistoryBackRecord};
+use super::switch_judge;
 use crate::browsers::HandOffOutcome;
 use crate::observe::{FrameGrowth, HostLogEvidence};
 use crate::site::{PageReport, SiteError};
@@ -48,6 +49,8 @@ pub(super) enum ExpectedWindow {
     EndsHonestly {
         reel_stream_widths: &'static [u64],
         window: edge_judge::WindowAfterLeave,
+        /// Как скоро после смены адреса окно обязано кончить сеанс (решение 381: уход из Shorts).
+        end_deadline: edge_judge::EndAfterAddressLeave,
     },
     /// Конец ленты без ухода (решение 356): окно ждёт, не кончает сеанс и не берёт новых роликов.
     /// `reel_stream_widths` — ролики, которые окно показало до конца ленты.
@@ -142,6 +145,8 @@ pub(super) struct FeedEvidence {
     pub history_back: Option<HistoryBackRecord>,
     /// Строки журнала плеера «новое поколение не дождалось данных у цели» (их быть не должно).
     pub target_wait_lines: Vec<String>,
+    /// Строки журнала плеера «смена медиа в окне» (решение 380): по ним судится «первый кадр без пустого».
+    pub media_switch_lines: Vec<String>,
     /// Номера поколений из строк `Browser stream generation loaded` по порядку.
     pub generations: Vec<u64>,
     /// Ширины кадра из строк «пул поверхностей перестроен под поток» по порядку (какой ролик показывало окно).
@@ -231,8 +236,15 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
         ExpectedWindow::EndsHonestly {
             reel_stream_widths,
             window,
+            end_deadline,
         } => {
-            edge_judge::honest_end_failures(reel_stream_widths, window, evidence, &mut failures);
+            edge_judge::honest_end_failures(
+                reel_stream_widths,
+                window,
+                end_deadline,
+                evidence,
+                &mut failures,
+            );
         }
         ExpectedWindow::WaitsAtFeedEnd { reel_stream_widths } => {
             edge_judge::waits_failures(reel_stream_widths, evidence, &mut failures);
@@ -247,6 +259,7 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
             history_back_judge::pickup_failures(evidence, &mut failures);
         }
     }
+    media_switch_failures_for(expected, evidence, &mut failures);
     failures.extend(page_failures(&evidence.page_report, evidence.page_id));
     let summary = format!(
         "generations {:?}, stream widths shown {:?}{}",
@@ -262,6 +275,25 @@ pub(super) fn judge_feed(expected: ExpectedWindow, evidence: &FeedEvidence) -> V
         format!("{summary}\n{}", evidence.page_log)
     };
     Verdict::from_failures(&failures, summary)
+}
+
+/// Правило решения 380 для строк, где окно меняет ролик (загружено больше одного поколения). Строка
+/// «окно осталось на первом ролике» смен не имеет и не судится. Сколько переездов ждать — по числу
+/// загруженных поколений без первого.
+fn media_switch_failures_for(
+    expected: ExpectedWindow,
+    evidence: &FeedEvidence,
+    failures: &mut Vec<String>,
+) {
+    if matches!(expected, ExpectedWindow::StaysOnFirstReel { .. }) {
+        return;
+    }
+    let expected_switches = evidence.generations.len().saturating_sub(1);
+    // Строка без переездов тоже не судится: смен в ней нет.
+    if expected_switches == 0 {
+        return;
+    }
+    switch_judge::media_switch_failures(&evidence.media_switch_lines, expected_switches, failures);
 }
 
 /// Промежутки между шагами быстрой серии, как их насчитала страница (для отчёта; пусто, если серии не было).

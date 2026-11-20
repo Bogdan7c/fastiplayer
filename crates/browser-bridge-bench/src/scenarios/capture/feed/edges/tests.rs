@@ -4,6 +4,7 @@
 
 use super::*;
 use std::path::Path;
+use std::time::Duration;
 
 fn site_file(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -134,6 +135,10 @@ fn the_page_writes_every_mark_and_serves_every_hook_the_robot_needs() {
         "'remove-current-reel'",
         "'leave-section'",
         "'leave-from-tail'",
+        // 16b3c: превью на том же элементе Shorts и снятый источник ролика без смены адреса.
+        "'leave-with-same-element-preview'",
+        "'drop-current-source'",
+        "stimulus current-source-dropped n=",
         // Метрики, на которые опирается приговор серии.
         "final_reel",
         "burst_intermediates",
@@ -151,11 +156,17 @@ fn the_page_writes_every_mark_and_serves_every_hook_the_robot_needs() {
         // Метки с полями («kind=file muted=true») собираются из кусков: ищем начало до первого `=`-поля.
         let probe = mark.split(" kind=").next().unwrap_or(mark);
         let probe = probe.split(" path=").next().unwrap_or(probe);
+        let probe = probe.split(" n=").next().unwrap_or(probe);
         assert!(
             sources.contains(probe),
             "the edge page lost '{probe}' (needed: '{mark}')"
         );
     }
+}
+
+/// Строка изображает сериал с номером серии в адресе (форма `moved`, `address=serial`), а не ленту из списка.
+fn is_serial_row(row: &FeedRow) -> bool {
+    query_value(row, "address") == Some("serial")
 }
 
 #[test]
@@ -173,14 +184,16 @@ fn the_leave_rows_cover_the_three_live_shapes_and_each_demands_a_visible_muted_p
         .iter()
         .filter_map(|row| query_value(row, "shape"))
         .collect();
-    assert_eq!(shapes, ["many", "pool", "moved"]);
+    assert_eq!(shapes, ["many", "pool", "moved", "moved", "moved"]);
     for row in leave_rows {
-        let FeedScenario::Edge(EdgeScenario::LeaveSection { page_marks, window }) = row.scenario
+        let FeedScenario::Edge(EdgeScenario::LeaveSection {
+            page_marks, window, ..
+        }) = row.scenario
         else {
             unreachable!("filtered above");
         };
-        // Решение 370: уход из ленты оставляет окно на паузе; доигрывает только Shorts (S4, конец 306).
-        let expected = if query_value(row, "shape") == Some("moved") {
+        // Решение 370: уход из ленты оставляет окно на паузе, Shorts тоже (381); доигрывает только сериал (306).
+        let expected = if is_serial_row(row) {
             WindowAfterLeave::PlaysOut
         } else {
             WindowAfterLeave::StandsPaused
@@ -267,6 +280,7 @@ fn the_leave_before_step_rows_never_scroll_and_expect_an_honest_end_on_reel_one(
             ExpectedWindow::EndsHonestly {
                 reel_stream_widths: &[640],
                 window: WindowAfterLeave::StandsPaused,
+                end_deadline: EndAfterAddressLeave::NotMeasured,
             }
         );
         assert!(
@@ -276,5 +290,120 @@ fn the_leave_before_step_rows_never_scroll_and_expect_an_honest_end_on_reel_one(
             "{}: without a playing visible preview the row would pass idly",
             row.step_id
         );
+    }
+}
+
+#[test]
+fn the_shorts_leave_rows_time_the_pause_from_the_address_and_the_serial_row_does_not() {
+    let moved_leaves: Vec<&FeedRow> = EDGE_ROWS
+        .iter()
+        .filter(|row| {
+            query_value(row, "shape") == Some("moved")
+                && matches!(
+                    row.scenario,
+                    FeedScenario::Edge(EdgeScenario::LeaveSection { .. })
+                )
+        })
+        .collect();
+    let ids: Vec<_> = moved_leaves.iter().map(|row| row.step_id).collect();
+    assert_eq!(
+        ids,
+        [
+            "feed-leave-section-moved",
+            "feed-leave-preview-same-element-moved",
+            "feed-leave-section-serial"
+        ]
+    );
+    for row in moved_leaves {
+        let FeedScenario::Edge(EdgeScenario::LeaveSection {
+            hook,
+            page_marks,
+            end_deadline,
+            ..
+        }) = row.scenario
+        else {
+            unreachable!("filtered above");
+        };
+        // Время до конца отсчитывается от ПЕРВОЙ метки — смены адреса.
+        assert_eq!(
+            page_marks.first(),
+            Some(&"leave-url-pushed path=/"),
+            "{}",
+            row.step_id
+        );
+        let expected_deadline = if is_serial_row(row) {
+            EndAfterAddressLeave::NotMeasured
+        } else {
+            EndAfterAddressLeave::Within(SHORTS_LEAVE_END_DEADLINE)
+        };
+        assert_eq!(end_deadline, expected_deadline, "{}", row.step_id);
+        let expected_hook = if row.step_id.contains("same-element") {
+            LeaveHook::SameElementPreview
+        } else {
+            LeaveHook::SectionScenario
+        };
+        assert_eq!(hook, expected_hook, "{}", row.step_id);
+    }
+    // Предел отделяет уход по адресу (~1 с) от прежнего пути через тень (1,45 с + 5 с).
+    assert!(SHORTS_LEAVE_END_DEADLINE >= Duration::from_secs(2));
+    assert!(SHORTS_LEAVE_END_DEADLINE < Duration::from_millis(6_450));
+}
+
+#[test]
+fn the_shorts_rows_step_through_list_addresses_and_the_serial_row_through_serial_ones() {
+    let shapes = site_file("lib/feed-edge-shapes.js");
+    // Адрес шага Shorts лежит под `/shorts/` — записью стенда в списке лент одного элемента экстеншена.
+    assert!(shapes.contains("moved: (to) => `/shorts/Sh${to}aBcDeFgHiJ`"));
+    assert!(shapes.contains("serial: (to) => `/serial/123/${to}`"));
+    let feeds = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../extensions/browser/src/background/handoff/feed/single-element-feeds.ts"),
+    )
+    .expect("the extension list of single-element feeds");
+    assert!(feeds.contains("\"127.0.0.1/shorts\", \"localhost/shorts\""));
+    // Ни одной записи-сериала и ни одного голого локального хоста: иначе сериал стенда стал бы лентой.
+    assert!(
+        !feeds.contains("/serial\""),
+        "a serial must never be a single-element feed"
+    );
+    assert!(
+        !feeds.contains("\"127.0.0.1\""),
+        "a bare bench host would make every bench page a feed"
+    );
+}
+
+#[test]
+fn the_shorts_dropped_reel_row_expects_the_window_to_wait_on_reel_two() {
+    let rows: Vec<&FeedRow> = EDGE_ROWS
+        .iter()
+        .filter(|row| row.scenario == FeedScenario::Edge(EdgeScenario::ReelDroppedWaits))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].step_id, "feed-shorts-reel-dropped-waits");
+    assert_eq!(query_value(rows[0], "shape"), Some("moved"));
+    assert_eq!(
+        query_value(rows[0], "address"),
+        None,
+        "Shorts, not a serial"
+    );
+    // Сообщение о конце в этой строке запрещено (`WaitsAtFeedEnd`): 4009 и «Source tab closed» — провал.
+    assert_eq!(
+        expected_window(EdgeScenario::ReelDroppedWaits),
+        ExpectedWindow::WaitsAtFeedEnd {
+            reel_stream_widths: &[640, 512]
+        }
+    );
+}
+
+#[test]
+fn no_row_filter_picks_a_shorts_row_together_with_another_one() {
+    // `BRIDGE_BENCH_FEED_ROW` выбирает строки ПОДСТРОКОЙ: имя строки не должно быть началом другой.
+    for row in EDGE_ROWS {
+        let picked: Vec<_> = EDGE_ROWS
+            .iter()
+            .filter(|other| other.step_id.contains(row.step_id))
+            .map(|other| other.step_id)
+            .collect();
+        assert_eq!(picked, [row.step_id], "{}", row.step_id);
     }
 }

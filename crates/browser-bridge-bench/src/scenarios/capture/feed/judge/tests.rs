@@ -1,5 +1,6 @@
 //! Тесты приговора ленты: здоровые улики дают «пройдено», а каждое нарушение — свой провал.
 
+use super::super::switch_judge::{healthy_switch_lines, switch_line};
 use super::*;
 use crate::observe::FrameEvidence;
 use crate::scenarios::outcome::Outcome;
@@ -67,6 +68,7 @@ fn following() -> FeedEvidence {
         back: None,
         history_back: None,
         target_wait_lines: Vec::new(),
+        media_switch_lines: healthy_switch_lines(),
         generations: vec![1, 2, 3],
         // Плеер может написать строку про один ролик дважды: подряд идущие повторы не в счёт.
         shown_stream_widths: vec![640, 640, 512, 512, 384],
@@ -290,4 +292,34 @@ fn a_stay_row_whose_frames_froze_is_a_failure() {
     let mut evidence = staying();
     evidence.stay.as_mut().expect("stay").frame_growth = Ok(growth(0));
     assert!(failure_of(STAYS, &evidence).contains("grew by only 0"));
+}
+
+#[test]
+fn a_feed_whose_new_reels_came_with_an_empty_frame_fails() {
+    // Три ролика, смены 2 и 3; на смене 3 на экран ушёл кадр без видео.
+    let mut evidence = following();
+    evidence.media_switch_lines = vec![
+        switch_line(1, "first_frame", "no_previous_frame", 0, Some(90)),
+        switch_line(2, "first_frame", "held", 0, Some(120)),
+        switch_line(3, "first_frame", "disabled", 1, Some(130)),
+    ];
+    let detail = failure_of(FOLLOWS, &evidence);
+    assert!(detail.contains("media switch 3: 1 empty frame"), "{detail}");
+}
+
+#[test]
+fn an_old_player_without_switch_lines_fails_a_row_that_relocates() {
+    let mut evidence = following();
+    evidence.media_switch_lines = Vec::new();
+    let detail = failure_of(FOLLOWS, &evidence);
+    assert!(detail.contains("needs 2"), "{detail}");
+}
+
+#[test]
+fn a_row_that_stays_on_the_first_reel_is_not_judged_for_switches() {
+    // Окно осталось на первом ролике: смен нет, строк журнала смен может не быть вовсе.
+    let mut evidence = staying();
+    evidence.media_switch_lines = Vec::new();
+    let verdict = judge_feed(STAYS, &evidence);
+    assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
 }

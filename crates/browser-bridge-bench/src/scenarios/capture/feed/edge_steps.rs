@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use super::super::super::context::ScenarioError;
 use super::super::super::entries::return_hand::ReturnHand;
-use super::edge_judge::{EdgeRecord, EndRecord, WindowAfterLeave};
-use super::edges::{EDGE_REEL_STREAM_WIDTHS, EDGE_WHEEL, EdgeScenario};
+use super::edge_judge::{EdgeRecord, EndAfterAddressLeave, EndRecord, WindowAfterLeave};
+use super::edges::{EDGE_REEL_STREAM_WIDTHS, EDGE_WHEEL, EdgeScenario, LeaveHook};
 use super::judge::{FrameGrowthCheck, ScrollRecord};
 use super::steps::{
     BURST_SETTLE, NOTCHES_PER_BURST, POLL_STEP, RELOCATE_TIMEOUT, frame_growth_from_now,
@@ -15,6 +15,7 @@ use super::steps::{
     wheel_point, wheel_until_page_logs,
 };
 use crate::desktop_input::WheelDirection;
+use crate::observe::EndNotice;
 use crate::player_control::PlayerControl;
 
 /// Сколько прокруток подряд в быстрой серии (после спокойной прокрутки на ролик 2).
@@ -62,14 +63,36 @@ pub(super) fn run_edge(
         EdgeScenario::BurstToLastReel => burst_to_last_reel(hand),
         EdgeScenario::OldRemovedDuringMove => old_removed_during_move(hand),
         EdgeScenario::CurrentRemovedAfterMove => current_removed_after_move(hand),
-        EdgeScenario::LeaveSection { page_marks, window } => {
-            leave_section(hand, control, page_marks, 1, window)
-        }
-        EdgeScenario::LeaveBeforeStep { page_marks } => {
-            leave_section(hand, control, page_marks, 0, WindowAfterLeave::StandsPaused)
-        }
+        EdgeScenario::LeaveSection {
+            hook,
+            page_marks,
+            window,
+            end_deadline,
+        } => leave_section(
+            hand,
+            control,
+            LeavePlan {
+                hook,
+                page_marks,
+                calm_scrolls: 1,
+                window,
+                end_deadline,
+            },
+        ),
+        EdgeScenario::LeaveBeforeStep { page_marks } => leave_section(
+            hand,
+            control,
+            LeavePlan {
+                hook: LeaveHook::SectionScenario,
+                page_marks,
+                calm_scrolls: 0,
+                window: WindowAfterLeave::StandsPaused,
+                end_deadline: EndAfterAddressLeave::NotMeasured,
+            },
+        ),
         EdgeScenario::LeaveWhileWaiting => leave_while_waiting(hand, control),
         EdgeScenario::WaitAtFeedEnd => wait_at_feed_end(hand, control),
+        EdgeScenario::ReelDroppedWaits => reel_dropped_waits(hand, control),
     }
 }
 
@@ -82,6 +105,7 @@ fn edge_with_stimulus(stimulus: Result<(), String>) -> EdgeRecord {
         generations_before_edge: None,
         end: None,
         window_still_present: None,
+        end_after_address_leave: None,
     }
 }
 
@@ -194,28 +218,106 @@ fn current_removed_after_move(hand: &mut ReturnHand<'_, '_>) -> Result<EdgeRun, 
     })
 }
 
+/// Как строка уходит из ленты: хук страницы, её метки, прокрутки до ухода и чего ждать от окна.
+struct LeavePlan {
+    hook: LeaveHook,
+    page_marks: &'static [&'static str],
+    /// Спокойных прокруток до ухода: одна (на ролик 2) или ни одной.
+    calm_scrolls: usize,
+    window: WindowAfterLeave,
+    end_deadline: EndAfterAddressLeave,
+}
+
 /// Уход из ленты после одной спокойной прокрутки: страница исполняет сценарий формы, окно кончает честно.
 fn leave_section(
     hand: &mut ReturnHand<'_, '_>,
     control: &PlayerControl,
-    page_marks: &[&str],
-    calm_scrolls: usize,
-    window: WindowAfterLeave,
+    plan: LeavePlan,
 ) -> Result<EdgeRun, ScenarioError> {
     // Спокойная прокрутка на ролик 2 или (`calm_scrolls == 0`) ни одной.
     let mut scrolls = Vec::new();
-    if calm_scrolls > 0 {
+    if plan.calm_scrolls > 0 {
         scrolls.push(scroll_to_reel(hand, 2, EDGE_WHEEL)?);
     }
     let generations_before_edge = loaded_generations(hand)?;
-    hand.run().tell_page("hook:leave-section");
-    let stimulus = page_logged_all(hand, page_marks);
-    let end = observe_honest_end(hand, control, window);
+    hand.run().tell_page(plan.hook.page_command());
+    let (stimulus, end, end_after_address_leave) = match plan.end_deadline {
+        EndAfterAddressLeave::NotMeasured => {
+            let stimulus = page_logged_all(hand, plan.page_marks);
+            (
+                stimulus,
+                observe_honest_end(hand, control, plan.window),
+                None,
+            )
+        }
+        EndAfterAddressLeave::Within(_) => {
+            let timed = timed_end_after_address_leave(hand, plan.page_marks);
+            let stimulus = page_logged_all(hand, plan.page_marks);
+            let end = EndRecord {
+                notice: timed.notice,
+                window_after_end: window_after_end(control, plan.window),
+            };
+            (stimulus, end, Some(timed.elapsed))
+        }
+    };
     Ok(EdgeRun {
         scrolls,
         edge: EdgeRecord {
             generations_before_edge: Some(generations_before_edge),
             end: Some(end),
+            end_after_address_leave,
+            ..edge_with_stimulus(stimulus)
+        },
+    })
+}
+
+/// Сообщение о конце и сколько оно шло от смены адреса страницей.
+struct TimedEnd {
+    notice: Result<EndNotice, String>,
+    elapsed: Result<Duration, String>,
+}
+
+/// Засекает смену адреса (первая метка ухода) и ждёт сообщение о конце СРАЗУ, не дожидаясь остальных меток:
+/// превью страница пишет позже (~1,9 с), а конец по адресу приходит раньше. Оба мига — когда робот увидел
+/// строку журнала, поэтому погрешность — шаг опроса журналов в обе стороны: поздно увиденный адрес укорачивает
+/// промежуток, поздно увиденный конец удлиняет. Предел строки с запасом много больше шага опроса.
+fn timed_end_after_address_leave(hand: &mut ReturnHand<'_, '_>, page_marks: &[&str]) -> TimedEnd {
+    let Some(address_mark) = page_marks.first() else {
+        let missing = "the row has no address mark to time the end from".to_owned();
+        return TimedEnd {
+            notice: Err(missing.clone()),
+            elapsed: Err(missing),
+        };
+    };
+    let address_left_at = page_logged_all(hand, &[address_mark]).map(|()| Instant::now());
+    let notice = wait_end_notice(hand);
+    let elapsed = match (&address_left_at, &notice) {
+        (Ok(at), Ok(_)) => Ok(at.elapsed()),
+        (Err(message), _) => Err(message.clone()),
+        (Ok(_), Err(message)) => Err(message.clone()),
+    };
+    TimedEnd { notice, elapsed }
+}
+
+/// Shorts (решение 382): спокойная прокрутка на ролик 2, страница снимает источник ролика без смены адреса,
+/// окно всё `FEED_END_QUIET_PERIOD` ждёт (дольше допуска тени 5 с: прежний код за это время кончил бы 4009).
+fn reel_dropped_waits(
+    hand: &mut ReturnHand<'_, '_>,
+    control: &PlayerControl,
+) -> Result<EdgeRun, ScenarioError> {
+    let scroll = scroll_to_reel(hand, 2, EDGE_WHEEL)?;
+    let generations_before_edge = loaded_generations(hand)?;
+    hand.run().tell_page("hook:drop-current-source");
+    let stimulus = page_logged_all(hand, &["stimulus current-source-dropped n=2"]);
+    std::thread::sleep(FEED_END_QUIET_PERIOD);
+    let window_still_present = control
+        .wait_until_controllable(WINDOW_PRESENT_TIMEOUT)
+        .map_err(|error| error.to_string());
+    Ok(EdgeRun {
+        scrolls: vec![scroll],
+        edge: EdgeRecord {
+            generations_before_edge: Some(generations_before_edge),
+            window_still_present: Some(window_still_present),
             ..edge_with_stimulus(stimulus)
         },
     })
@@ -297,12 +399,24 @@ pub(super) fn observe_honest_end(
     control: &PlayerControl,
     window: WindowAfterLeave,
 ) -> EndRecord {
-    let notice = hand
-        .run()
+    let notice = wait_end_notice(hand);
+    EndRecord {
+        notice,
+        window_after_end: window_after_end(control, window),
+    }
+}
+
+/// Сообщение окна о конце сеанса (журнал плеера).
+fn wait_end_notice(hand: &mut ReturnHand<'_, '_>) -> Result<EndNotice, String> {
+    hand.run()
         .player_log
         .wait_for_end_notice(END_NOTICE_TIMEOUT)
-        .map_err(|error| format!("no end notice from the player: {error}"));
-    let window_after_end = match window {
+        .map_err(|error| format!("no end notice from the player: {error}"))
+}
+
+/// Окно после сообщения о конце: на месте после короткого ожидания или закрылось ([`WindowAfterLeave`]).
+fn window_after_end(control: &PlayerControl, window: WindowAfterLeave) -> Result<(), String> {
+    match window {
         WindowAfterLeave::StandsPaused => {
             std::thread::sleep(AFTER_END_GRACE);
             control
@@ -318,9 +432,5 @@ pub(super) fn observe_honest_end(
             std::thread::sleep(AFTER_END_GRACE);
             closed
         }
-    };
-    EndRecord {
-        notice,
-        window_after_end,
     }
 }

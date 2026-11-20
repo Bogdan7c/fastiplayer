@@ -46,13 +46,14 @@ await runScenario('feed-hover', async (ctx) => {
   if (!['hover', 'comments'].includes(variant)) throw new Error(`bad page query: variant=${variant}`);
   document.body.classList.add(variant);
   const catalog = await loadCatalog();
-  requireMimeSupport(catalog, [{ assetId: 'reel-1', trackId: catalog.assets['reel-1'].tracks[0].id }]);
+  requireMimeSupport(catalog, [{ assetId: 'reel-6', trackId: catalog.assets['reel-6'].tracks[0].id }]);
   requireMimeSupport(catalog, [{ assetId: 'reel-2', trackId: catalog.assets['reel-2'].tracks[0].id }]);
   const source = new ReelSource(ctx, catalog);
   const wheel = logWheelEvents(ctx);
 
-  // Главный ролик: играет со звуком, как обычное видео страницы.
-  const main = await source.prepare(1, { muted: false });
+  // Главный ролик: играет со звуком, как обычное видео страницы. Ролик 6 (90 с, ширина 640), а не ролик 1
+  // (30 с): строка наблюдает окно дольше 30 с и не должна застать конец главного ролика (решение 385).
+  const main = await source.prepare(6, { muted: false });
   main.video.id = 'main';
   document.body.append(main.video);
   await main.video.play();

@@ -3,6 +3,7 @@
 
 mod error;
 mod host_evidence;
+mod media_switch_log;
 mod page_subtitle_log;
 mod playback_end;
 mod player_log;
@@ -12,6 +13,9 @@ mod summary_digest;
 
 pub use error::ObserveError;
 pub use host_evidence::{HostLogEvidence, parse_host_evidence, read_host_evidence};
+pub use media_switch_log::{
+    MEDIA_SWITCH_MARKER, MediaSwitch, SwitchEnd, SwitchOutcome, SwitchRelease, parse_media_switch,
+};
 pub use page_subtitle_log::{
     PAGE_SUBTITLE_DOCUMENT_MARKER, PAGE_SUBTITLE_TRACK_READY_MARKER, PageSubtitleDocumentLine,
     PageSubtitleTrackLine, max_subtitle_overlay_frames, parse_page_subtitle_document,

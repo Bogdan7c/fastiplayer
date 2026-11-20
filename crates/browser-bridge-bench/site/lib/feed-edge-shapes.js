@@ -15,6 +15,11 @@
 //  * `moved` (YouTube Shorts): один <video> переезжает по секциям, на шаге два новых MediaSource (S1), паузы
 //    нет, адрес меняется на каждом шаге. Уход (S4): `pushState('/')`, через 1,2 с элемент переставлен в
 //    документе, через 1,45 с его источник снят (`emptied`, паузы нет), через 1,9 с тихий ролик на MSE.
+//    16b3c: уход с превью на ТОМ ЖЕ элементе (`leaveWithSameElementPreview`: адрес, через 0,4 с — новый
+//    MediaSource превью на элементе Shorts, внутри отсрочки конца фона) и снятие источника текущего ролика без
+//    смены адреса (`dropCurrentSource`, решение 382). Адрес шага — `address=shorts` (`/shorts/<id>`, лента из
+//    списка экстеншена, решение 374) или `address=serial` (`/serial/123/<n>`: так же новое поколение и новый
+//    адрес, но это сериал — лентой он быть не должен).
 //
 // Журнал страницы:
 //   `stimulus <что>` — раздражитель состоялся (стенд требует эти строки: без них строка прошла бы вхолостую);
@@ -42,7 +47,21 @@ export const EDGE_SHAPES = ['many', 'pool', 'moved'];
 export const reelAddress = {
   many: (to) => `/reels/DR${to}kQmZ7xa1/`,
   moved: (to) => `/shorts/Sh${to}aBcDeFgHiJ`,
+  /** Сериал с номером серии в адресе (16b3c): шаг формы `moved`, но адрес не из списка лент одного элемента. */
+  serial: (to) => `/serial/123/${to}`,
 };
+
+/** Адрес шага формы `moved`: Shorts (лента из списка) или сериал (16b3c). */
+export const MOVED_ADDRESS_SHORTS = 'shorts';
+export const MOVED_ADDRESS_SERIAL = 'serial';
+export const MOVED_ADDRESSES = [MOVED_ADDRESS_SHORTS, MOVED_ADDRESS_SERIAL];
+
+/**
+ * Через сколько после смены адреса превью главной ставится на ТОТ ЖЕ элемент Shorts. Короче отсрочки конца фона
+ * (`FEED_SECTION_LEAVE_GRACE_MS` = 1 с): строка проверяет гонку «новое поколение пришло раньше, чем фон кончил
+ * сеанс по адресу». Живой Shorts запускал превью через 1,9 с, но на каком элементе — наблюдение не различило.
+ */
+const SAME_ELEMENT_PREVIEW_DELAY_MS = 400;
 
 /** Строит форму по имени. */
 export function createEdgeShape(name, context, source, feed, options) {
@@ -281,10 +300,13 @@ class MovedEdge {
   name = 'moved';
   waitUntilOldIsGone = false;
 
-  constructor(context, source, feed) {
+  constructor(context, source, feed, { address = MOVED_ADDRESS_SHORTS } = {}) {
+    if (!MOVED_ADDRESSES.includes(address)) throw new Error(`unknown moved address '${address}'`);
     this.context = context;
     this.source = source;
     this.feed = feed;
+    /** Адрес шага: `reelAddress.moved` (Shorts) или `reelAddress.serial`. */
+    this.addressOf = address === MOVED_ADDRESS_SERIAL ? reelAddress.serial : reelAddress.moved;
     this.entry = null;
     this.currentReel = 1;
     /** Переходы выполняются по одному: новый MediaSource ставится на элемент после предыдущего. */
@@ -309,7 +331,7 @@ class MovedEdge {
     const { video, player } = this.entry;
     // Перенос ОДНОЙ задачей (убрать и вставить без паузы между): иначе браузер поставил бы элемент на паузу.
     this.feed.sectionOf(to).append(video);
-    history.pushState({ reel: to }, '', reelAddress.moved(to));
+    history.pushState({ reel: to }, '', this.addressOf(to));
     // S1: на шаге два новых MediaSource подряд (сначала без запуска, потом настоящий).
     await player.newGeneration({ refs: this.source.refsOf(to), positionS: 0, autoplay: false });
     await player.newGeneration({ refs: this.source.refsOf(to), positionS: 0, autoplay: true });
@@ -339,5 +361,26 @@ class MovedEdge {
       this.context.log('leave-source-removed');
     }, 1450);
     setTimeout(() => playMsePreview(this.context, this.source), 1900);
+  }
+
+  /**
+   * Уход на главную с превью на ТОМ ЖЕ элементе (16b3c): адрес, затем новый MediaSource превью на элементе
+   * Shorts. Окно не должно принять это поколение за следующий ролик ленты.
+   */
+  leaveWithSameElementPreview() {
+    history.pushState({}, '', '/');
+    this.context.log('leave-url-pushed path=/');
+    setTimeout(() => {
+      this.context.log(`leave-same-element-preview n=${this.currentReel}`);
+      playMsePreview(this.context, this.source, this.entry);
+    }, SAME_ELEMENT_PREVIEW_DELAY_MS);
+  }
+
+  /** Страница сняла источник текущего ролика (`emptied`), элемент на месте, адрес тот же (решение 382). */
+  dropCurrentSource() {
+    const { video } = this.entry;
+    video.removeAttribute('src');
+    video.load();
+    this.context.log(`stimulus current-source-dropped n=${this.currentReel}`);
   }
 }

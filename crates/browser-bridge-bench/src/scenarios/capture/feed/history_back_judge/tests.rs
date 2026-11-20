@@ -2,6 +2,7 @@
 //! тест ломает ОДНО свидетельство здорового прогона и требует, чтобы приговор назвал именно его.
 
 use super::super::judge::{ExpectedWindow, judge_feed};
+use super::super::switch_judge::healthy_switch_lines;
 use super::*;
 use crate::browsers::HandOffOutcome;
 use crate::observe::{EndNotice, FrameEvidence, HostLogEvidence};
@@ -95,6 +96,7 @@ fn healthy() -> FeedEvidence {
             play_rejections: Vec::new(),
         }),
         target_wait_lines: Vec::new(),
+        media_switch_lines: healthy_switch_lines(),
         generations: vec![1, 2, 1],
         shown_stream_widths: vec![640, 512],
         end_notice_lines: vec![paused_end_notice().line],
