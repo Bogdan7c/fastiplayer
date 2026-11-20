@@ -71,16 +71,38 @@ pub(super) fn session_failures(
     failures
 }
 
-/// Приговор с журналами страниц всех сеансов: при провале они нужны, чтобы увидеть, что страница делала.
+/// Приговор с журналами страниц и заметками экстеншена всех сеансов: при провале по ним видно, что
+/// делала страница и какое условие памяти выбора не выполнилось (16b3c4).
 pub(super) fn with_page_logs(mut verdict: Verdict, sessions: &[(&str, &SessionRecord)]) -> Verdict {
     if verdict.outcome == Outcome::Fail {
         for (label, record) in sessions {
             verdict
                 .detail
                 .push_str(&format!("\n--- {label} session ---\n{}", record.page_log));
+            verdict.detail.push_str(&format!(
+                "\n--- {label} session: extension notes ---\n{}",
+                describe_extension_notes(&record.extension_notes)
+            ));
         }
     }
     verdict
+}
+
+/// Заметка фона экстеншена о записи выбора, сделанного на странице (`session-choice-memory.ts`).
+const CHOICE_REMEMBERED_NOTE: &str = "[fastiplayer] choice remembered (audio chosen on the page)";
+
+/// Есть ли среди заметок экстеншена эта.
+fn has_note(notes: &[String], note: &str) -> bool {
+    notes.iter().any(|line| line == note)
+}
+
+/// Заметки экстеншена строками; пусто — так и пишем, чтобы «канала нет» не выглядело «заметок нет».
+fn describe_extension_notes(notes: &[String]) -> String {
+    if notes.is_empty() {
+        "(no extension notes in this browser's log)".to_owned()
+    } else {
+        notes.join("\n")
+    }
 }
 
 /// Запись для отчёта: сколько сериалов помнит память и что в записи.
@@ -186,6 +208,13 @@ pub(super) fn judge_restart(evidence: &RestartEvidence) -> Verdict {
             PICKED_DUB_LABEL,
         )),
         None => failures.push("pick: the memory was not read".to_owned()),
+    }
+    // Канал заметок экстеншена (16b3c4): запись памяти видна и в журнале части. Без этой проверки
+    // сломанный канал заметили бы только в день, когда провал памяти нечем объяснить.
+    if !has_note(&evidence.picked.extension_notes, CHOICE_REMEMBERED_NOTE) {
+        failures.push(format!(
+            "pick: no extension note {CHOICE_REMEMBERED_NOTE:?} reached the bench (Firefox: browser console in the browser log; Chromium: service worker console over CDP)"
+        ));
     }
     // 2. После перезапуска страница САМА оказалась на Dub B: нажал экстеншен по памяти.
     let restores = switches_to(&evidence.restored.generation_lines, PICKED_DUB);
@@ -378,6 +407,7 @@ mod tests {
             }),
             forbidden_player_lines: Vec::new(),
             page_log: String::new(),
+            extension_notes: Vec::new(),
         }
     }
 
@@ -419,7 +449,10 @@ mod tests {
         RestartEvidence {
             page: "series-variants",
             fingerprint: fingerprint(),
-            picked: record(&[START, PICK]),
+            picked: SessionRecord {
+                extension_notes: vec![CHOICE_REMEMBERED_NOTE.to_owned()],
+                ..record(&[START, PICK])
+            },
             picked_failed_steps: Vec::new(),
             memory_after_pick: Some(memory_with(PICKED_DUB_LABEL, 5)),
             restored: record(&[START, PICK]),
@@ -483,6 +516,44 @@ mod tests {
         assert!(failure_text(&evidence).contains("the control would prove nothing"));
         evidence.restored_apply_delay = None;
         assert!(failure_text(&evidence).contains("never applied"));
+    }
+
+    /// Провал памяти показывает заметки экстеншена каждого сеанса (16b3c4): по ним видно, какое
+    /// условие записи не выполнилось. Сеанс без канала заметок помечен явно, а не пустой строкой.
+    #[test]
+    fn a_failed_verdict_carries_each_session_extension_notes() {
+        let mut evidence = good_restart();
+        evidence.memory_after_pick = Some(empty_memory());
+        evidence.picked.extension_notes = vec![
+            "[fastiplayer] page switched audio before the episode's film was on screen (the film left for an ad): not remembered"
+                .to_owned(),
+        ];
+        let text = failure_text(&evidence);
+        assert!(
+            text.contains(
+                "--- pick session: extension notes ---\n[fastiplayer] page switched audio before"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("--- restored session: extension notes ---\n(no extension notes"),
+            "{text}"
+        );
+        let passing = judge_restart(&good_restart());
+        assert!(
+            !passing.detail.contains("extension notes"),
+            "a pass stays short"
+        );
+    }
+
+    /// Канал заметок проверяется самой строкой: заметка о записи выбора не дошла — провал, даже если
+    /// память записалась (сломанный канал оставил бы следующий провал памяти без объяснения).
+    #[test]
+    fn a_missing_choice_remembered_note_fails_the_restart_row() {
+        let mut evidence = good_restart();
+        evidence.picked.extension_notes =
+            vec!["[fastiplayer] variant adapter describes the page".to_owned()];
+        assert!(failure_text(&evidence).contains("pick: no extension note"));
     }
 
     #[test]

@@ -113,6 +113,17 @@ pub(crate) fn http_json(
     })
 }
 
+/// Что дало одно чтение соединения CDP.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CdpRead {
+    /// Ответ на команду или событие.
+    Message(Value),
+    /// За потолок чтения ничего не пришло (или пришло не JSON-сообщение).
+    Quiet,
+    /// Браузер закрыл соединение (обычно — сам закрылся).
+    Closed,
+}
+
 /// Соединение CDP с одной целью (страницей или самим браузером).
 pub(crate) struct CdpConnection {
     socket: WebSocket<TcpStream>,
@@ -216,6 +227,60 @@ impl CdpConnection {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| BrowserError::protocol(PROTOCOL, format!("no string value in {result}")))
+    }
+
+    /// Шлёт команду, не дожидаясь ответа, и возвращает её `id`. `session` — сеанс цели в плоском
+    /// режиме (`Target.setAutoAttach { flatten: true }`): так команда уходит воркеру, а не браузеру.
+    ///
+    /// Нужна слушателю событий: `call` пропускает события, пришедшие раньше ответа, а
+    /// `Target.attachedToTarget` для уже живых целей приходит именно до ответа на `setAutoAttach`.
+    pub(crate) fn send_command(
+        &mut self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+    ) -> Result<u64, BrowserError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut request = json!({ "id": id, "method": method, "params": params });
+        if let Some(session_id) = session {
+            request["sessionId"] = Value::from(session_id);
+        }
+        self.socket
+            .send(Message::text(request.to_string()))
+            .map_err(|error| BrowserError::protocol(PROTOCOL, format!("send {method}: {error}")))?;
+        Ok(id)
+    }
+
+    /// Ставит потолок ожидания одного сообщения для [`Self::next_message`].
+    pub(crate) fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), BrowserError> {
+        self.socket
+            .get_ref()
+            .set_read_timeout(Some(timeout))
+            .map_err(|source| BrowserError::io("set the CDP read timeout", source))
+    }
+
+    /// Следующее сообщение соединения (ответ или событие) в разобранном виде.
+    pub(crate) fn next_message(&mut self) -> Result<CdpRead, BrowserError> {
+        match self.socket.read() {
+            Ok(Message::Text(text)) => Ok(serde_json::from_str::<Value>(text.as_str())
+                .map_or(CdpRead::Quiet, CdpRead::Message)),
+            Ok(Message::Close(_)) => Ok(CdpRead::Closed),
+            // Пинги и двоичные рамки CDP не шлёт; для слушателя это «ничего нового».
+            Ok(_) => Ok(CdpRead::Quiet),
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(CdpRead::Quiet)
+            }
+            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                Ok(CdpRead::Closed)
+            }
+            Err(error) => Err(BrowserError::protocol(PROTOCOL, format!("read: {error}"))),
+        }
     }
 
     /// Видимый текст страницы (`document.body.innerText`); пустая строка, если body ещё нет.

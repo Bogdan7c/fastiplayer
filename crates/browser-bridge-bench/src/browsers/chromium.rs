@@ -23,6 +23,7 @@ use super::support::{
     settle_page_text, spawn_browser, wait_until,
 };
 use super::toolbar_pin;
+use super::worker_console::WorkerConsoleRecorder;
 use super::{
     BrowserError, BrowserExit, BrowserKind, BrowserUnderTest, ExtensionPage, ExtensionSource,
     LaunchOptions, PopupSnapshot, TabHandle, WindowPrivacy,
@@ -53,6 +54,10 @@ pub(crate) struct Chromium {
     service_target: Option<Value>,
     /// Окно прогона: в приватном вкладки стенда и страницы экстеншена открываются в окне инкогнито.
     window_privacy: WindowPrivacy,
+    /// Слушатель консоли служебного воркера экстеншена (заметки фона, 16b3c4); `None` — уже остановлен.
+    worker_console: Option<WorkerConsoleRecorder>,
+    /// Куда слушатель пишет заметки экстеншена этого запуска.
+    extension_notes_log: PathBuf,
 }
 
 /// Аргументы командной строки (отдельная чистая функция: её проверяют тесты).
@@ -161,12 +166,18 @@ pub(crate) fn launch(
         let content = std::fs::read_to_string(&port_file).ok()?;
         content.lines().next()?.trim().parse::<u16>().ok()
     })?;
+    // Консоль фона слушаем с первых секунд: подключение к воркеру — до любой передачи.
+    let extension_notes_log =
+        BrowserKind::Chromium.extension_notes_log_path(environment.work_dir());
+    let worker_console = WorkerConsoleRecorder::start(port, extension_notes_log.clone())?;
     let chromium = Chromium {
         process,
         port,
         stderr_log,
         service_target: None,
         window_privacy: options.window_privacy,
+        worker_console: Some(worker_console),
+        extension_notes_log,
     };
     if options.window_privacy == WindowPrivacy::Private {
         // Экстеншены приватного прогона ставятся уже в запущенный браузер и сразу с разрешением
@@ -593,10 +604,15 @@ impl BrowserUnderTest for Chromium {
         // Дождаться ухода посредника (браузер закрыл его stdin) и добить остатки группы.
         let _group_gone = self.process.wait_group_gone(GROUP_GONE_WAIT);
         let status = graceful_status.or_else(|| self.process.terminate(TERMINATE_GRACE));
+        // Браузер ушёл: слушатель консоли дописал всё, что успел получить.
+        if let Some(worker_console) = self.worker_console.take() {
+            worker_console.finish();
+        }
         Ok(BrowserExit {
             exit_code: status.and_then(|status| status.code()),
             graceful,
             stderr_log: self.stderr_log.clone(),
+            extension_notes_log: self.extension_notes_log.clone(),
         })
     }
 }

@@ -6,7 +6,9 @@
 //   (`subtitle_choice`), смену озвучки или качества на самой странице не по нашей команде;
 // - НЕ записывает: стартовое «по умолчанию» серии (первое увиденное — точка отсчёта), смену, которую сделала
 //   сама память, побочные смены сразу после любой команды выбора (сайт мог сбросить качество при смене
-//   озвучки), «Auto» качества сайта;
+//   озвучки) — и сразу после выбора человека на странице (16b3c4), «Auto» качества сайта;
+// - смену на странице признаёт выбором человека по ПРИЧИНЕ, а не по порядку донесений: пока фильм серии на
+//   экране — или если сайт пересоздал поток, а донесение о смене опоздало (решение 393, `FilmAbsence`);
 // - ПРИМЕНЯЕТ запомненное один раз на серию и не спорит со зрителем: что он выбрал в этой серии сам, память
 //   уже не трогает. Озвучка — только у начала серии, качество — в любой момент (решение 287), субтитры —
 //   подсказкой плееру `subtitle_preference` (протокол 1.7). В рекламе ничего не применяется (решение 283);
@@ -106,6 +108,35 @@ interface EpisodeState {
    * самим сайтом — YouTube, 15a): её смены выбора — точка отсчёта, а не выбор человека.
    */
   filmOnScreen: boolean;
+  /** Почему фильма серии сейчас нет на экране (пока он на экране — значение прошлого ухода, не читается). */
+  filmAbsence: FilmAbsence;
+}
+
+/**
+ * Почему фильма серии нет на экране (16b3c4, решение 393). От этого зависит, чья смена выбора на странице:
+ * - `not_shown_yet` — серия ещё не показала фильм: страница устраивается сама (реклама, язык по умолчанию,
+ *   перенос выбора сайтом — YouTube, 15a). Смены — не выбор человека;
+ * - `ad` — фильм ушёл на рекламу; и ожидание нового поколения сразу после рекламы остаётся `ad`;
+ * - `new_generation` — фильм шёл и ушёл на «жду новое поколение» без нашей команды и без уже засчитанного
+ *   выбора: так сайт пересоздаёт поток после нажатия человека. Донесение страницы о смене может прийти
+ *   позже часов «жду» (чтение страницы — не чаще раза в 250 мс): ОДНА смена в это ожидание — выбор человека;
+ * - `after_choice` — новое поколение — следствие уже засчитанного выбора (человека на странице, в нашем
+ *   меню или команды памяти): смены в это ожидание — следствие, а не выбор (сайт сбросил качество).
+ */
+type FilmAbsence = "not_shown_yet" | "ad" | "new_generation" | "after_choice";
+
+/** Причина отсутствия фильма словами — для журнала разработчика (16b3c4). */
+function describeFilmAbsence(absence: FilmAbsence): string {
+  switch (absence) {
+    case "not_shown_yet":
+      return "the player has not shown this episode's film yet";
+    case "ad":
+      return "the film left for an ad";
+    case "new_generation":
+      return "the player is waiting for a new stream generation";
+    case "after_choice":
+      return "the stream is restarting after a choice that was already taken";
+  }
 }
 
 /** Виды, которые память наблюдает и применяет как варианты; субтитры страницы (15a2) — не они. */
@@ -164,7 +195,7 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
   }
 
   function startEpisode(key: string | null, first: boolean): void {
-    episode = { key, first, startedAt: dependencies.now(), seen: {}, settled: new Set(), filmOnScreen: false };
+    episode = { key, first, startedAt: dependencies.now(), seen: {}, settled: new Set(), filmOnScreen: false, filmAbsence: "not_shown_yet" };
   }
 
   /** Где мы в серии для правила озвучки. Не первая серия сеанса открыта страницей с начала. */
@@ -187,7 +218,12 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       return;
     }
     void current.fingerprint
-      .then((fingerprint) => (fingerprint === undefined ? undefined : store.remember(fingerprint, patch).then(() => note(`choice remembered (${what})`))))
+      .then((fingerprint) =>
+        // Отпечатка нет: вкладка не веб-страница (сбой отпечатка уже отмечен в `startSeries`).
+        fingerprint === undefined
+          ? note(`choice not remembered (${what}): the series has no fingerprint`)
+          : store.remember(fingerprint, patch).then(() => note(`choice remembered (${what})`)),
+      )
       .catch((error: unknown) => note(`choice could not be remembered (${what}): ${String(error)}`));
   }
 
@@ -198,20 +234,47 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       if (selected === undefined) continue;
       const previous = current.seen[kind];
       current.seen[kind] = selected;
-      if (previous === undefined || previous.label === selected.label || pageIsSettling()) continue;
-      // Серия ещё устраивается (реклама, новое поколение не показано): так страница выбирает сама.
-      if (!current.filmOnScreen || dependencies.adOnScreen()) {
-        note(`page switched ${kind} before the episode's film was on screen: not remembered`);
+      if (previous === undefined) {
+        // Первое увиденное на серии — точка отсчёта, не выбор. Заметка — раз на вид и серию: если смена
+        // человека дошла до памяти уже первой (описание опоздало), в журнале видно, почему её не записали.
+        note(`page ${kind} first seen on this episode: taken as the starting point`);
+        continue;
+      }
+      if (previous.label === selected.label) continue;
+      if (pageIsSettling()) {
+        note(`page switched ${kind} while a selection command was settling: not remembered`);
+        continue;
+      }
+      // Серия ещё устраивается (реклама, новое поколение не показано): так страница выбирает сама. Кроме
+      // одного случая — сайт пересоздал поток после нажатия человека, а донесение опоздало (решение 393).
+      const absence = dependencies.adOnScreen() ? "ad" : current.filmAbsence;
+      if (!current.filmOnScreen && absence !== "new_generation") {
+        note(`page switched ${kind} before the episode's film was on screen (${describeFilmAbsence(absence)}): not remembered`);
         continue;
       }
       if (selected.automatic) {
         note(`page switched ${kind} to the site's automatic choice: not remembered`);
         continue;
       }
-      // Человек выбрал на странице: память на этой серии этот вид больше не трогает.
+      // Человек выбрал на странице: память на этой серии этот вид больше не трогает. Дальше страница
+      // перестраивается, как после команды: побочные смены (сброс качества) — следствие, не выбор.
+      if (!current.filmOnScreen) {
+        note(`page ${kind} switch reached the memory after the stream restarted: taken as the viewer's choice`);
+        current.filmAbsence = "after_choice";
+      }
+      settledAt = dependencies.now();
       current.settled.add(kind);
       rememberChoice({ [kind]: selected.label }, `${kind} chosen on the page`);
     }
+  }
+
+  /** Часы плеера: обновить «фильм на экране» и, если он только что ушёл, — почему (решение 393). */
+  function observeFilm(current: EpisodeState, state: ClockState): void {
+    const adOnScreen = dependencies.adOnScreen();
+    const onScreen = !adOnScreen && state !== "waiting";
+    if (adOnScreen) current.filmAbsence = "ad";
+    else if (current.filmOnScreen && !onScreen) current.filmAbsence = pageIsSettling() ? "after_choice" : "new_generation";
+    current.filmOnScreen = onScreen;
   }
 
   /** Применить запомненное, что ещё можно применить на этой серии. Повторный вызов безопасен. */
@@ -267,15 +330,20 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       // Меню пропало (сбой адаптера, фрейм замолчал) — это не новая серия и не выбор.
       if (page === null) return;
       if (page.seriesKey === null) {
+        // Заметка только на переходе: страница без сериала описывается много раз подряд.
+        if (series !== undefined) note("the page no longer describes a series: choice memory waits");
         series = undefined;
         return;
       }
+      // Новый сериал или серия сбрасывают «увиденное»: заметка показывает, если сброс пришёлся на выбор.
       if (series?.seriesKey !== page.seriesKey) {
         const firstEpisode = episode === undefined;
         series = startSeries(page.seriesKey);
         startEpisode(page.episodeKey, firstEpisode);
+        note("choice memory follows a new series");
       } else if (episode === undefined || (page.episodeKey !== null && page.episodeKey !== episode.key)) {
         startEpisode(page.episodeKey, episode === undefined);
+        note("choice memory follows a new episode");
       }
       if (episode !== undefined) observeSelections(page, episode);
       applyRemembered();
@@ -301,7 +369,7 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       if (dependencies.adOnScreen()) playerSecond = undefined;
       else if (state !== "waiting") playerSecond = Math.max(0, positionUs / 1_000_000);
       // Те же часы говорят, идёт ли фильм серии: смены на странице до этого — не выбор человека (15a).
-      if (episode !== undefined) episode.filmOnScreen = !dependencies.adOnScreen() && state !== "waiting";
+      if (episode !== undefined) observeFilm(episode, state);
       // Секунду помним и когда память молчит (страница ушла «сиротой», 11b2): вернувшейся странице она нужна сразу.
       if (!stopped) applyRemembered();
     },

@@ -587,6 +587,8 @@ impl BrowserUnderTest for Firefox {
             exit_code: status.and_then(|status| status.code()),
             graceful: graceful && status.is_some(),
             stderr_log: self.stderr_log.clone(),
+            // Firefox дублирует консоль фона в свой stdout: заметки — в том же журнале.
+            extension_notes_log: self.stderr_log.clone(),
         })
     }
 }

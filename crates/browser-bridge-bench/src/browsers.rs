@@ -11,10 +11,12 @@ mod devtools;
 mod error;
 mod firefox;
 mod hand_off;
+mod launch_log;
 mod marionette;
 mod popup_probe;
 mod support;
 mod toolbar_pin;
+mod worker_console;
 
 use std::path::{Path, PathBuf};
 
@@ -41,6 +43,16 @@ impl BrowserKind {
     /// читают сценарии (свидетельства посредника) — путь известен ещё до запуска.
     pub fn stderr_log_path(self, work_dir: &Path) -> PathBuf {
         work_dir.join(format!("{}.stderr.log", self.catalog_name()))
+    }
+
+    /// Журнал заметок экстеншена (`[fastiplayer] …`) одного запуска (16b3c4). Firefox дублирует
+    /// консоль фона в свой stdout, поэтому заметки лежат в журнале stderr; консоль служебного
+    /// воркера Chromium стенд слушает сам по CDP и пишет в отдельный файл.
+    pub fn extension_notes_log_path(self, work_dir: &Path) -> PathBuf {
+        match self {
+            Self::Firefox => self.stderr_log_path(work_dir),
+            Self::Chromium => work_dir.join(format!("{}.worker-console.log", self.catalog_name())),
+        }
     }
 
     /// Имя цели в каталоге установщика и исполняемого файла в `PATH`.
@@ -142,6 +154,8 @@ pub struct BrowserExit {
     pub graceful: bool,
     /// Журнал stderr браузера (и посредника).
     pub stderr_log: PathBuf,
+    /// Журнал заметок экстеншена этого запуска ([`BrowserKind::extension_notes_log_path`]).
+    pub extension_notes_log: PathBuf,
 }
 
 /// Браузер, которым управляет стенд.

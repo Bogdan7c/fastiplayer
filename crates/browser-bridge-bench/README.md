@@ -112,6 +112,17 @@ scripts/browser-bridge-bench.sh all                     # перед вехой 
 | `browser-bridge-host`, `browser-bridge-install` | `extension-status`, `smoke` |
 | Ядро плеера, декодеры, рендер (`player-core`, `video-*`, `render-*`, `audio*`) | `capture --page mse-av1 --page mse-muxed` |
 | Сам стенд (`crates/browser-bridge-bench`) | `cargo test -p browser-bridge-bench` и команды, чьи сценарии или судьи правились |
+| Стенд `src/browsers/` (запуск браузера, журналы запусков `launch_log.rs`, консоль воркера Chromium `worker_console.rs`) | `quick`, `series-memory` (строка `series-memory-restart` проверяет и канал заметок) |
+
+### Заметки экстеншена в журнале стенда (16b3c4)
+
+Фон экстеншена пишет заметки для разработчика: `console.debug("[fastiplayer] …")`. Например, память выбора отмечает каждое решение «записать или нет». Стенд их собирает:
+
+- **Firefox** дублирует консоль в свой stdout (`devtools.console.stdout.*` в `user.js`). Заметки лежат в журнале запуска `<work>/firefox.stderr.log`.
+- **Chromium** консоль служебного воркера в stderr не пишет. Стенд сам подключается по CDP: `Target.setAutoAttach` с фильтром `service_worker`, затем `Runtime.enable` в сеансе воркера `chrome-extension://…`, затем события `Runtime.consoleAPICalled`. Строки он пишет в `<work>/chromium.worker-console.log` с меткой `worker console:`. Вызовы консоли до подключения (самый старт фона) не повторяются.
+- **Журнал каждого запуска свой.** Перезапуск браузера в той же строке не затирает прошлый журнал: прошлый переименовывается в `<имя>.launch-<N>.log`, текущее имя остаётся за последним запуском. По текущему имени читаются улики посредника. Дописывать в тот же файл нельзя: пропуск прошлого запуска засчитался бы новому.
+- **В приговоре.** Строки `series-memory-*` при провале печатают заметки каждого сеанса (`--- <сеанс> session: extension notes ---`). Сеанс без заметок помечен явно. `series-memory-restart` ещё и требует заметку `choice remembered (audio chosen on the page)` в первом сеансе, поэтому сломанный канал роняет строку в тот же день.
+- Каталог прогона после прогона удаляется. Чтобы прочитать все заметки и прошедшей строки, запускайте с `--keep-work`.
 
 ## Что доказывает каждая команда
 

@@ -2,6 +2,7 @@
 //! посредника в stderr браузера.
 
 mod error;
+mod extension_notes;
 mod frame_growth;
 mod host_evidence;
 mod log_time;
@@ -15,6 +16,7 @@ mod summary_cadence;
 mod summary_digest;
 
 pub use error::ObserveError;
+pub use extension_notes::{EXTENSION_NOTE_MARKER, parse_extension_notes, read_extension_notes};
 pub use frame_growth::{FrameGrowth, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, find_frame_growth};
 pub use host_evidence::{HostLogEvidence, parse_host_evidence, read_host_evidence};
 pub use log_time::{PlayerLogTime, parse_log_time};

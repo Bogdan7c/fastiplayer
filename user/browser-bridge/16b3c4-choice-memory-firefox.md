@@ -1,6 +1,6 @@
 # Сессия 16b3c4: память выбора в Firefox на полном прогоне
 
-Отделена решением 392 (16b3c3). Идёт до [16b4](16b4-feed-live-acceptance.md). Задача 4 из [16b3c3](16b3c3-hls-start-seek-hang.md): там починили только зависание HLS.
+**Статус: DONE (21 ноября 2026), решение 393, [results/16b3c4.md](results/16b3c4.md).** Отделена решением 392 (16b3c3). Идёт до [16b4](16b4-feed-live-acceptance.md). Задача 4 из [16b3c3](16b3c3-hls-start-seek-hang.md): там починили только зависание HLS.
 
 > Выполни сессию 16b3c4 плана `user/browser-bridge/`: выведи заметки фона экстеншена в журнал стенда, найди, почему `series-memory-restart` в Firefox красная в полном прогоне, и принеси владельцу решение. Сначала прочитай `user/browser-bridge/README.md`, этот файл, `results/16b3c2.md` (раздел о `series-memory-restart`) и `results/16b3c3.md`.
 

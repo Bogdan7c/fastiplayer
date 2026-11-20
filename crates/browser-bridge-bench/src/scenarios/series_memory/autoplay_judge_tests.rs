@@ -34,6 +34,7 @@ fn record(generation_lines: &[&str]) -> SessionRecord {
         }),
         forbidden_player_lines: Vec::new(),
         page_log: String::new(),
+        extension_notes: Vec::new(),
     }
 }
 

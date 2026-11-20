@@ -121,21 +121,24 @@ impl Drop for ManagedProcess {
 
 pub use registry::{ForwardedChild, install_interrupt_cleanup};
 
+/// `kill_all_registered_groups` убивает ВСЕ группы реестра, в том числе чужих тестов,
+/// поэтому тесты, которые спавнят процессы (здесь и в `browsers::support`), идут строго по очереди.
+#[cfg(test)]
+static SPAWNING_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Замок очереди тестов, которые спавнят процессы стенда.
+#[cfg(test)]
+pub(crate) fn serialize_spawning_tests() -> std::sync::MutexGuard<'static, ()> {
+    // Отравленный замок (другой тест упал) не мешает: защищаемых данных в нём нет.
+    SPAWNING_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
-
-    /// `kill_all_registered_groups` убивает ВСЕ группы реестра, в том числе чужих тестов,
-    /// поэтому тесты, которые спавнят процессы, идут строго по очереди.
-    static SPAWNING_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn serialize_spawning_tests() -> std::sync::MutexGuard<'static, ()> {
-        // Отравленный замок (другой тест упал) не мешает: защищаемых данных в нём нет.
-        SPAWNING_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 
     /// Номер группы процесса стенда (он же pid лидера).
     fn group_of(process: &ManagedProcess) -> i32 {

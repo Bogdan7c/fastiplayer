@@ -29,6 +29,11 @@ pub(crate) fn spawn_browser(
     env_removed: &[OsString],
     stderr_log: &Path,
 ) -> Result<ManagedProcess, BrowserError> {
+    // Журнал прошлого запуска по тому же пути не затирается, а откладывается (16b3c4):
+    // строки с перезапуском браузера читают заметки экстеншена каждого запуска.
+    super::launch_log::set_aside_previous_launch_log(stderr_log).map_err(|source| {
+        BrowserError::io(format!("set aside {}", stderr_log.display()), source)
+    })?;
     let stderr = File::create(stderr_log)
         .map_err(|source| BrowserError::io(format!("create {}", stderr_log.display()), source))?;
     // Firefox дублирует консоль браузера (а с ней stderr посредника) в STDOUT, поэтому
@@ -141,6 +146,41 @@ mod tests {
         })
         .expect("finds the expected text");
         assert_eq!(text, "Connected to Fastiplayer");
+    }
+
+    /// Перезапуск браузера на том же пути журнала (16b3c4): заметка экстеншена первого запуска не
+    /// затёрта вторым, а текущий путь — у последнего запуска (по нему читают улики посредника).
+    #[test]
+    fn relaunch_keeps_the_first_launch_notes() {
+        let _serial = crate::environment::process::serialize_spawning_tests();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let log = dir.path().join("firefox.stderr.log");
+        for launch in ["first", "second"] {
+            let script = format!("echo '[fastiplayer] choice remembered ({launch} launch)' >&2");
+            let arguments = [OsString::from("-c"), OsString::from(script)];
+            let mut process =
+                spawn_browser(Path::new("sh"), &arguments, &[], &[], &log).expect("spawn sh");
+            let status = process
+                .wait_timeout(Duration::from_secs(5))
+                .expect("wait")
+                .expect("sh exits");
+            assert!(status.success());
+        }
+        let first = std::fs::read_to_string(dir.path().join("firefox.stderr.launch-1.log"))
+            .expect("the first launch log is kept");
+        let current = std::fs::read_to_string(&log).expect("current log");
+        assert!(
+            first.contains("choice remembered (first launch)"),
+            "{first}"
+        );
+        assert!(
+            current.contains("choice remembered (second launch)"),
+            "{current}"
+        );
+        assert!(
+            !current.contains("first launch"),
+            "the current log is this launch only: {current}"
+        );
     }
 
     #[test]

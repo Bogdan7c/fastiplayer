@@ -6,8 +6,9 @@
 //! stderr браузера с отметками посредника, журнал плеера. Здесь они собираются в одном месте и
 //! привязываются к ИМЕННО этому сеансу:
 //! - журнал страницы у каждого сеанса свой (номер прогона `RunId` уникален);
-//! - stderr браузера при новом запуске перезаписывается, поэтому отметки посредника читаются до
-//!   следующего запуска;
+//! - stderr браузера у каждого запуска свой: прошлый журнал при запуске откладывается
+//!   (`browsers::launch_log`, 16b3c4), а отметки посредника и заметки экстеншена читаются сразу после
+//!   закрытия браузера;
 //! - журнал плеера один на окружение и растёт: новый сеанс «забывает» прежнюю историю
 //!   (`skip_history`), а прежний плеер к этому моменту обязан уйти с шины (`wait_until_gone`),
 //!   иначе его сводки кадров засчитались бы новому сеансу.
@@ -24,7 +25,7 @@ use super::super::run_tweaks::RunTweaks;
 use super::super::series::open_and_hand_off;
 use crate::browsers::{BrowserKind, WindowPrivacy};
 use crate::environment::BenchEnvironment;
-use crate::observe::{HostLogEvidence, read_host_evidence};
+use crate::observe::{HostLogEvidence, read_extension_notes, read_host_evidence};
 use crate::player_control::PlayerControl;
 use crate::site::{PageReport, SiteError};
 
@@ -143,6 +144,9 @@ pub(super) struct SessionRecord {
     pub forbidden_player_lines: Vec<String>,
     /// Журнал страницы для сообщения о провале.
     pub page_log: String,
+    /// Заметки экстеншена ЭТОГО запуска (`[fastiplayer] …`): почему память записала или не записала
+    /// выбор. Firefox — консоль фона в журнале браузера, Chromium — консоль служебного воркера по CDP.
+    pub extension_notes: Vec<String>,
 }
 
 /// Закрывает сеанс: отчёт страницы, улики, браузер, уход окна плеера. Провалы закрытия — в
@@ -166,6 +170,7 @@ pub(super) fn end_session(
     Ok(SessionRecord {
         generation_lines,
         host: read_host_evidence(&exit.stderr_log)?,
+        extension_notes: read_extension_notes(&exit.extension_notes_log)?,
         page_report,
         forbidden_player_lines,
         page_log,

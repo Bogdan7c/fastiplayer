@@ -161,6 +161,102 @@ describe("что записывается", () => {
     await settle();
     assert.equal(noSeries.storage.state.writes + noSite.storage.state.writes, 0);
     assert.ok(noSeries.notes.some((note) => /no series/u.test(note)));
+    assert.ok(noSite.notes.some((note) => /has no fingerprint/u.test(note)), "отказ без отпечатка не немой (16b3c4)");
+  });
+
+  it("выбор озвучки на странице записан при любом порядке донесений: страница раньше часов «жду» и позже (16b3c4, решение 393)", async () => {
+    // Порядок 1: донесение страницы пришло, пока фильм ещё на экране; потом сайт пересоздал поток.
+    const pageFirst = harness();
+    pageFirst.memory.pageDescribed(page("Dub A", "360p"));
+    pageFirst.memory.playerClock(5_000_000, "playing");
+    pageFirst.memory.pageDescribed(page("Dub B", "360p"));
+    pageFirst.memory.playerClock(0, "waiting");
+    // Порядок 2 (ловля стенда 16b3c4): часы «жду новое поколение» обогнали донесение страницы.
+    const clockFirst = harness();
+    clockFirst.memory.pageDescribed(page("Dub A", "360p"));
+    clockFirst.memory.playerClock(5_000_000, "playing");
+    clockFirst.memory.playerClock(0, "waiting");
+    clockFirst.memory.pageDescribed(page("Dub B", "360p"));
+    await settle();
+    assert.deepEqual(pageFirst.stored(), { audio: "Dub B", used_at: 100_000 });
+    assert.deepEqual(clockFirst.stored(), { audio: "Dub B", used_at: 100_000 }, "тот же итог, что при обратном порядке");
+    assert.ok(clockFirst.notes.some((note) => /page audio switch reached the memory after the stream restarted/u.test(note)));
+  });
+
+  it("сброс качества сайтом вслед за выбором озвучки на странице не записан — при любом порядке (решение 393)", async () => {
+    // Часы раньше: озвучка и качество поменялись в одном донесении, во время ожидания нового потока.
+    const together = harness();
+    together.memory.pageDescribed(page("Dub A", "720p"));
+    together.memory.playerClock(5_000_000, "playing");
+    together.memory.playerClock(0, "waiting");
+    together.memory.pageDescribed(page("Dub B", "360p"));
+    // Часы раньше: качество сбросилось отдельным донесением позже, ожидание всё то же (и уже после 2 с).
+    const later = harness();
+    later.memory.pageDescribed(page("Dub A", "720p"));
+    later.memory.playerClock(5_000_000, "playing");
+    later.memory.playerClock(0, "waiting");
+    later.memory.pageDescribed(page("Dub B", "720p"));
+    later.afterSettle();
+    later.memory.pageDescribed(page("Dub B", "360p"));
+    // Страница раньше: озвучка при фильме на экране, поток пересоздан, качество сбросилось в ожидании.
+    const pageFirst = harness();
+    pageFirst.memory.pageDescribed(page("Dub A", "720p"));
+    pageFirst.memory.playerClock(5_000_000, "playing");
+    pageFirst.memory.pageDescribed(page("Dub B", "720p"));
+    pageFirst.memory.playerClock(0, "waiting");
+    pageFirst.afterSettle();
+    pageFirst.memory.pageDescribed(page("Dub B", "360p"));
+    await settle();
+    for (const world of [together, later, pageFirst]) {
+      assert.deepEqual(world.stored(), { audio: "Dub B", used_at: world.clock.now }, "записана только озвучка");
+    }
+    assert.ok(later.notes.some((note) => /restarting after a choice that was already taken\): not remembered/u.test(note)));
+  });
+
+  it("ожидание сразу после рекламы посреди серии и новый поток после команды памяти — смены не записываются (решение 393)", async () => {
+    // Реклама посреди серии: фильм ушёл на рекламу, после неё «жду» — это всё ещё уход на рекламу.
+    const afterAd = harness();
+    afterAd.memory.pageDescribed(page("Dub A", "360p"));
+    afterAd.memory.playerClock(5_000_000, "playing");
+    afterAd.ad.onScreen = true;
+    afterAd.memory.playerClock(1_000_000, "playing");
+    afterAd.ad.onScreen = false;
+    afterAd.memory.playerClock(0, "waiting");
+    afterAd.memory.pageDescribed(page("Dub C", "360p"));
+    // Команда памяти пересоздала поток: смена страницы в это ожидание — её следствие.
+    const afterCommand = harness();
+    afterCommand.memory.pageDescribed(page("Dub A", "360p"));
+    afterCommand.memory.playerClock(5_000_000, "playing");
+    afterCommand.memoryCommandDone("audio", "Dub B");
+    afterCommand.memory.playerClock(0, "waiting");
+    afterCommand.afterSettle();
+    afterCommand.memory.pageDescribed(page("Dub C", "360p"));
+    await settle();
+    assert.equal(afterAd.stored(), undefined);
+    assert.equal(afterCommand.stored(), undefined);
+    assert.ok(afterAd.notes.some((note) => /\(the film left for an ad\): not remembered/u.test(note)));
+  });
+
+  it("каждая не записанная смена страницы оставляет заметку: точка отсчёта, успокоение после команды, новая серия (16b3c4)", async () => {
+    const world = harness();
+    world.memory.pageDescribed(page("Dub B", "360p"));
+    world.memory.playerClock(5_000_000, "playing");
+    await settle();
+    // Смена человека дошла до памяти уже первой: это точка отсчёта, и журнал это говорит.
+    assert.ok(world.notes.some((note) => /page audio first seen on this episode: taken as the starting point/u.test(note)));
+    assert.ok(world.notes.some((note) => /follows a new series/u.test(note)));
+    // Смена во время успокоения после нашей команды — не записана, но и не молча.
+    world.memoryCommandDone("quality", "360p");
+    world.memory.pageDescribed(page("Dub C", "360p"));
+    await settle();
+    assert.ok(world.notes.some((note) => /page switched audio while a selection command was settling: not remembered/u.test(note)));
+    // Новая серия сбрасывает увиденное — это тоже видно.
+    world.afterSettle();
+    world.memory.pageDescribed(page("Dub C", "360p", "2"));
+    assert.ok(world.notes.some((note) => /follows a new episode/u.test(note)));
+    assert.equal(world.stored(), undefined, "ни одна из этих смен не записана");
+    // Заметки без подписей и ключей (журнал разработчика, 14b2).
+    assert.ok(world.notes.every((note) => !/Dub|some-show|example\.com/u.test(note)));
   });
 });
 
@@ -292,7 +388,9 @@ describe("что и когда применяется", () => {
     world.memory.pageDescribed(page("Dub C", "360p", "2"));
     await settle();
     assert.equal(world.stored()?.audio, "Dub B", "запомненное не перезаписано языком страницы по умолчанию");
-    assert.ok(world.notes.some((note) => /before the episode's film was on screen: not remembered/u.test(note)));
+    // Заметка называет причину (16b3c4): в рекламе — реклама, после неё — фильм новой серии ещё не показан.
+    assert.ok(world.notes.some((note) => /before the episode's film was on screen \(the film left for an ad\): not remembered/u.test(note)));
+    assert.ok(world.notes.some((note) => /before the episode's film was on screen \(the player has not shown this episode's film yet\)/u.test(note)));
     // Фильм серии показан — память ставит запомненное (серия не первая: с начала).
     world.memory.playerClock(1_000_000, "playing");
     assert.deepEqual(world.selects.slice(-1), [`audio:${idOf("audio", "Dub B")}`]);
