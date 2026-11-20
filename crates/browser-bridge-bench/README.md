@@ -103,6 +103,7 @@ scripts/browser-bridge-bench.sh all                     # перед вехой 
 | Экстеншен субтитры (`page/page-subtitles/`, `background/handoff/page-subtitles/`) | `page-subtitles` |
 | Плеер `app-egui/src/browser_session/session_media/` (поколения, часы страницы, перемотка) | `capture`, `player-commands`, `episodes`, `page-ends` |
 | Плеер `browser_session/window/` (кадр окна, концы, удержание кадра 380) | `page-ends`, `episodes`, `page-reload`, `quality` |
+| Ядро `player-core/src/session/` (перемотка, квитанции потока демуксера, чтение демуксера в такте) | быстрый набор, `capture --page m3u8-in-src --page hls-fmp4-abr`, `player-commands`, `hls-live`, `live-ends`, `hls-live-sleep`; плюс `cargo test -p player-core` и `-p app-egui` |
 | Плеер `browser_session/hls_bridge/` | `capture --page m3u8-in-src --page hls-fmp4-abr`, `hls-live`, `live-ends`, `hls-live-sleep` |
 | Плеер `browser_session/page_variants*`, `page_subtitles/` | `series`, `page-subtitles` |
 | Плеер `browser_session/journal*` (строки журнала — глаза стенда) | `cargo test -p browser-bridge-bench`, `smoke` |

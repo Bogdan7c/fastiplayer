@@ -421,6 +421,18 @@ impl PlayerSession {
             if pending.media_instance_id != self.snapshot.media_instance_id
                 || pending.generation != self.pipeline.seek_generation()
             {
+                // Запрос тот же, но поколение конвейера или медиа сменились без новой команды
+                // перемотки: такую квитанцию принять нельзя, и перемотку уже никто не завершит.
+                // Поведение прежнее (квитанция отброшена), но молча это больше не происходит:
+                // именно такой тихий сброс прятал зависание 16b3c3.
+                tracing::warn!(
+                    request_id = ?pending.request_id,
+                    pending_generation = pending.generation,
+                    pipeline_generation = self.pipeline.seek_generation(),
+                    pending_media_instance_id = ?pending.media_instance_id,
+                    media_instance_id = ?self.snapshot.media_instance_id,
+                    "Prepared demux seek receipt dropped: the pipeline moved on without a new seek"
+                );
                 continue;
             }
             // Worker уже переставил демуксер (успешно или нет): проход чтения новый.

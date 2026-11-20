@@ -11,6 +11,14 @@
 
 - Ordinary `PlayerCommandSender::try_send` не теряет команды при полной 128-очереди: упорядоченный резерв + слияние latest-value команд; receipt-команды при непустом резерве получают `Full`/`Backpressure`; shutdown обходит резерв. Owner `worker/command_queue.rs`, детали `mem:player-core/command-delivery-reserve-ux17`.
 
+## Чтение демуксера ждёт квитанцию перемотки — у единственного входа (16b3c3, 2026-11-20)
+
+- Инвариант: пока `PreparedDemuxSeekRuntime::receipt_pending()`, демуксер не читает НИКТО. Запрет стоит в `session/tick/demux_admission.rs::read_demux_packets` (единственный вход чтения; `handle_demux_track_list_update` вызывается только оттуда). Раньше его проверял лишь основной шаг `tick/mod.rs`, а adaptive catch-up (`presentation_scheduler.rs::run_adaptive_catch_up_pass`, включён и в `Seeking`) и fast-preroll читали в обход.
+- Корень бэклога п. 70 (родной HLS моста навсегда в `seeking`): worker публикует квитанцию и сразу маркер `TracksChanged` сегмента-якоря (`demux-api/src/progressive/worker.rs`); если квитанция легла после опроса такта, догоняющее чтение брало маркер первым → полный сброс с `begin_seek_generation` → квитанция «устаревшая» → перемотку никто не завершает. Окно — миллисекунды внутри такта.
+- `service_prepared_demux_seek_receipts`: квитанция своего запроса при сменившемся поколении/медиа отбрасывается по-прежнему, но с `warn!` «Prepared demux seek receipt dropped: the pipeline moved on without a new seek» (превращать в отказ перемотки — отдельное решение, не принято).
+- Тест: `session/tests/seek_receipt_read_gate.rs` (поддельный порт публикует квитанцию сразу после опроса такта; кадр цели показан, часы на цели, поколение не сменилось). Опыт на стенде с временной паузой в начале adaptive catch-up — в `user/browser-bridge/results/16b3c3.md` (пауза внутри такта съедает срок catch-up: он считается от `tick_context.now`).
+- Новый путь чтения демуксера в такте обязан идти через `read_demux_packets`, а не мимо него.
+
 ## Video one-shot worker-receipted routing (2026-08-24)
 
 - `PreparedDemuxSeekRuntime::routes_one_shot_seek_through_worker()` is the storage-hiding capability boundary used by `start_one_shot_seek_landing`.

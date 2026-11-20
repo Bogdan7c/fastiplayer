@@ -96,6 +96,7 @@ mod seek_audio_tail_at_eof;
 mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;
+mod seek_receipt_read_gate;
 mod seek_regressions;
 mod seek_resume_intent;
 mod seek_start;
