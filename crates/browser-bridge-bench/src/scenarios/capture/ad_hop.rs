@@ -18,13 +18,14 @@ use super::super::evidence::{
     FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, wait_for_session_granted,
 };
 use super::super::handoff_run::{ACK_TIMEOUT, ExtensionMode, HandoffRun, PageReadiness};
+use super::super::judge_window::FILM_WINDOW;
 use super::super::outcome::{StepResult, Verdict};
 use super::super::run_tweaks::RunTweaks;
 use super::decoys::{AD_FILE_PATH, count_fetches};
 use super::judge_early_report;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::{FrameGrowth, read_host_evidence};
+use crate::observe::{FrameGrowth, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, read_host_evidence};
 use crate::player_control::PlayerControl;
 use ad_mirror::{AdMirrorScript, follow_the_ad_mirror};
 use judge::{AdHopEvidence, AdHopExpectation, MIN_FILM_FRAMES_AFTER_START, judge_ad_hop};
@@ -46,7 +47,7 @@ const AD_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const FILM_STARTED_TIMEOUT: Duration = Duration::from_secs(120);
 /// Метка страницы: фильм запущен (`film-started play=<исход>`).
 const FILM_STARTED_MARKER: &str = "film-started";
-/// Сколько ждём две сводки плеера, между которыми кадры фильма выросли (сводки раз в 10 с).
+/// Предел ожидания роста кадров фильма после его запуска страницей.
 const FILM_GROWTH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Сколько ждём, пока плеер станет управляемым и сядет на рекламу, прежде чем её пропускать.
 const PLAYER_ON_AD_TIMEOUT: Duration = Duration::from_secs(45);
@@ -289,7 +290,7 @@ fn drive(
     let hand_off = run.hand_off().map_err(|error| error.to_string());
     let handed_off_at = Instant::now();
     let film_growth = if matches!(hand_off, Ok(HandOffOutcome::Started)) {
-        run.tell_page("handed-off");
+        run.announce_handed_off();
         follow_the_hop(&mut run, environment, &page)?
     } else {
         Err("not awaited: the ad was not handed off".to_owned())
@@ -363,14 +364,20 @@ fn follow_the_hop(
     if let Err(message) = run.wait_page_log_line(FILM_STARTED_MARKER, FILM_STARTED_TIMEOUT) {
         return Ok(Err(format!("the page never started the film: {message}")));
     }
+    let film_started_at = Instant::now();
     // Точка отсчёта — сводки ПОСЛЕ запуска фильма: кадры рекламы в счёт не идут.
     run.player_log.skip_history()?;
     Ok(run
         .player_log
-        .wait_for_frame_growth(MIN_FILM_FRAMES_AFTER_START, FILM_GROWTH_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FILM_FRAMES_AFTER_START, PLAYBACK_GROWTH_WINDOW),
+            FILM_GROWTH_TIMEOUT,
+        )
         .map_err(|error| {
             format!("player frames did not grow after the film started in the page: {error}")
-        }))
+        })
+        // Судья часов фильма верит окну не короче 8 с после `film-started`.
+        .inspect(|_| FILM_WINDOW.hold_until_judgeable(film_started_at)))
 }
 
 /// Пропуск рекламы: ждём, пока плеер играет рекламу (позиция ушла от начала), и шлём странице действие.

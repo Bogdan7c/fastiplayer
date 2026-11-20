@@ -91,7 +91,7 @@ pub(super) fn run_refusal(
     };
     // Окно «браузер играет сам» открываем ДО входа: человек входит медленнее, чем ролик DRM
     // (он короткий и не зациклен) успевает доиграть, и окно, начатое после отказа, осталось бы пустым.
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     ready.enter(entry)?;
     let mut failures = Vec::new();
     let shown = expect_notice(&mut ready, refusal.notice, &mut failures);

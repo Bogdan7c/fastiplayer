@@ -112,7 +112,7 @@ fn replace_steps(session: &mut Session<'_, '_>, first_run: &RunId) -> Option<Run
     };
     let replaced_after = marked_at.elapsed();
     session.record(handed)?;
-    session.run().tell_page("handed-off");
+    session.run().announce_handed_off();
     let second_plays = second_tab_presents_frames(session);
     session.record(second_plays);
     // A снова текущая и активная: её таймеры не душатся, наблюдение честное.

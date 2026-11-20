@@ -119,11 +119,12 @@ impl Drop for ManagedProcess {
     }
 }
 
-pub use registry::install_interrupt_cleanup;
+pub use registry::{ForwardedChild, install_interrupt_cleanup};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
 
     /// `kill_all_registered_groups` убивает ВСЕ группы реестра, в том числе чужих тестов,
     /// поэтому тесты, которые спавнят процессы, идут строго по очереди.
@@ -187,6 +188,38 @@ mod tests {
             wait_proc_gone(grandchild_pid),
             "grandchild died with the group"
         );
+    }
+
+    /// Уборка родителя пересылает ребёнку-части SIGTERM, а не SIGKILL: ребёнок успевает
+    /// выполнить свою уборку (здесь — ловушку `trap`) и выходит сам с кодом 0.
+    #[test]
+    fn forwarded_child_gets_a_catchable_terminate() {
+        let _serial = serialize_spawning_tests();
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "trap 'echo cleaned; exit 0' TERM; echo ready; while :; do sleep 0.05; done",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        let mut first = String::new();
+        stdout.read_line(&mut first).expect("ready line");
+        assert_eq!(first.trim(), "ready");
+        let forwarding = registry::ForwardedChild::register(child.id()).expect("registered");
+        let pid = i32::try_from(child.id()).expect("pid");
+        assert!(registry::forwarded_children().contains(&pid));
+
+        registry::forward_to_children();
+
+        let status = child.wait().expect("child exits");
+        let mut rest = String::new();
+        stdout.read_line(&mut rest).expect("cleanup line");
+        assert_eq!(rest.trim(), "cleaned", "the child's own cleanup ran");
+        assert!(status.success(), "the child exited by itself: {status:?}");
+        drop(forwarding);
+        assert!(!registry::forwarded_children().contains(&pid));
     }
 
     /// После `Drop` номер группы исчезает из реестра, пока живой процесс в нём присутствует.

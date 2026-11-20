@@ -241,7 +241,7 @@ fn drive(
     let outcome = run
         .hand_off_with_options(hand_off_options(case.consent))
         .map_err(|error| error.to_string());
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let verdict = if case.expected == ExpectedLocal::Started {
         judge_started_case(stand, run, &outcome, run_started_at, handed_off_at)?

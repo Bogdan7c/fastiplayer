@@ -81,9 +81,11 @@ use super::handoff_run::{ACK_TIMEOUT, HandoffRun};
 use super::outcome::{StepResult, Verdict};
 use super::page_filter::PageFilter;
 use super::player_commands::FRAMES_TIMEOUT;
+use super::row_filter::row_admitted_by_environment;
 use super::series::SERIES_PAGE;
 use crate::browsers::{BrowserKind, WindowPrivacy};
 use crate::environment::BenchEnvironment;
+use crate::observe::{FrameGrowthRule, PLAYBACK_GROWTH_WINDOW};
 
 /// Выбор зрителя на странице: Dub B через 1,5 с после команды робота.
 const PAGE_PICK: PagePick = PagePick {
@@ -106,7 +108,7 @@ const QUIET_WINDOW: Duration = Duration::from_secs(15);
 const PRIVATE_SETTLE: Duration = Duration::from_secs(6);
 /// Насколько кадры должны вырасти между двумя сводками.
 const MIN_FRAMES_GAINED: u64 = 30;
-/// Сколько ждём роста кадров (сводки раз в 10 с).
+/// Предел ожидания роста кадров.
 const GROWTH_TIMEOUT: Duration = Duration::from_secs(45);
 /// Давность подсаженной записи: заметно в прошлом (чтобы «обновили `used_at`» отличалось от «не тронули»),
 /// но не настолько, чтобы экстеншен выбросил её как просроченную.
@@ -122,40 +124,40 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
     if !filter.admits(SERIES_PAGE) {
         return Vec::new();
     }
-    let started = Instant::now();
-    let restart = stand.with_environment(|environment| drive_restart(stand, environment, browser));
-    let restart_elapsed = started.elapsed();
-    let started = Instant::now();
-    let incognito =
-        stand.with_environment(|environment| drive_incognito(stand, environment, browser));
-    let incognito_elapsed = started.elapsed();
-    let started = Instant::now();
-    let autoplay =
-        stand.with_environment(|environment| autoplay::drive_autoplay(stand, environment, browser));
-    vec![
-        StepResult::new(
-            "series-memory-restart",
-            browser,
-            SERIES_PAGE,
-            restart,
-            restart_elapsed,
-        ),
-        StepResult::new(
-            "series-memory-incognito",
-            browser,
-            SERIES_PAGE,
-            incognito,
-            incognito_elapsed,
-        ),
-        StepResult::new(
-            "series-memory-autoplay",
-            browser,
-            SERIES_PAGE,
-            autoplay,
-            started.elapsed(),
-        ),
-    ]
+    let rows: [(&'static str, SeriesMemoryDrive); 3] = [
+        (RESTART_ROW, drive_restart),
+        (INCOGNITO_ROW, drive_incognito),
+        (AUTOPLAY_ROW, autoplay::drive_autoplay),
+    ];
+    rows.into_iter()
+        .filter(|(label, _)| row_admitted_by_environment(ROW_FILTER_VARIABLE, label))
+        .map(|(label, drive)| {
+            let started = Instant::now();
+            let verdict = stand.with_environment(|environment| drive(stand, environment, browser));
+            StepResult::new(label, browser, SERIES_PAGE, verdict, started.elapsed())
+        })
+        .collect()
 }
+
+/// Имена всех строк, по которым судит отбор [`ROW_FILTER_VARIABLE`].
+pub(super) fn row_names() -> Vec<String> {
+    [RESTART_ROW, INCOGNITO_ROW, AUTOPLAY_ROW]
+        .map(str::to_owned)
+        .to_vec()
+}
+
+/// Ход одной строки памяти выбора в свежем окружении.
+type SeriesMemoryDrive =
+    fn(&Stand, &BenchEnvironment, BrowserKind) -> Result<Verdict, ScenarioError>;
+
+/// Строка «память пережила перезапуск браузера» (имя — колонка COMMAND таблицы).
+const RESTART_ROW: &str = "series-memory-restart";
+/// Строка «в приватном окне память читается, но не пишется».
+const INCOGNITO_ROW: &str = "series-memory-incognito";
+/// Строка «страница ставит следующую серию, память возвращает выбранную озвучку».
+const AUTOPLAY_ROW: &str = "series-memory-autoplay";
+/// Переменная отбора строк (часть имени строки: `restart`, `incognito`, `autoplay`).
+pub(super) const ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_SERIES_MEMORY_ROW";
 
 /// Отпечаток пары «сайт + сериал» этого прогона: сайт — хост сервера стенда.
 fn bench_fingerprint(stand: &Stand) -> String {
@@ -224,10 +226,10 @@ fn wait_for_first_frames(run: &mut HandoffRun<'_>, failed_steps: &mut Vec<String
 }
 
 fn wait_for_frame_growth(run: &mut HandoffRun<'_>, step: &str, failed_steps: &mut Vec<String>) {
-    if let Err(error) = run
-        .player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
-    {
+    if let Err(error) = run.player_log.wait_for_frame_growth(
+        FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+        GROWTH_TIMEOUT,
+    ) {
         failed_steps.push(format!("{step}: {error}"));
     }
 }

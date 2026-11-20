@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::browsers::BrowserKind;
+use crate::observe::{PLAYER_SUMMARY_INTERVAL_VARIABLE, player_summary_interval_value};
 
 pub use endpoint::DesktopEndpoint;
 pub use error::EnvironmentError;
@@ -31,7 +32,7 @@ pub use options::{
     DesktopInputPolicy, DesktopSetup, DisplayTarget, EnvironmentOptions, PlayerConfigProfile,
     PlayerTestVariables, ScreenSize,
 };
-pub use process::install_interrupt_cleanup;
+pub use process::{ForwardedChild, install_interrupt_cleanup};
 
 use bus::{BusSpec, PrivateBus};
 use display::VirtualDisplay;
@@ -274,6 +275,11 @@ impl BenchEnvironment {
         env.push((
             PLAYER_AUDIO_VARIABLE_NAME.into(),
             PLAYER_AUDIO_SIMULATED.into(),
+        ));
+        // Короткий шаг сводки (16b3c2): строка не ждёт 10 с ради одной строки журнала.
+        env.push((
+            PLAYER_SUMMARY_INTERVAL_VARIABLE.into(),
+            player_summary_interval_value().into(),
         ));
         // Тестовые переменные сценария (выборы вариантов страницы и т. п.): плеер наследует их от шины.
         env.extend(

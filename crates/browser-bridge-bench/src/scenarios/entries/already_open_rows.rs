@@ -70,7 +70,7 @@ pub(super) fn run_already_open(
     let mut failures = Vec::new();
     ready.enter_at(entry, spot_of_video(first_page))?;
     failures.extend(ready.wait_entry_started(entry));
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     let frames = ready.wait_frames()?;
     // Новое окно плеера забирает фокус (решение 216): ждём, пока активным станет не браузер, и запоминаем
     // класс окна плеера. Без этого проверка «окно не поднялось» ничего бы не доказывала.
@@ -115,7 +115,7 @@ pub(super) fn run_already_open(
     let class_after = ready.robot.active_window_class()?;
     if row == AlreadyOpenRow::OtherTab {
         // Видео второй страницы теперь в плеере: страница отчитывается о своём окне под тенью.
-        ready.run.tell_page("handed-off");
+        ready.run.announce_handed_off();
         std::thread::sleep(SECOND_PAGE_SHADOW_WINDOW);
     }
     if class_after == player_class {

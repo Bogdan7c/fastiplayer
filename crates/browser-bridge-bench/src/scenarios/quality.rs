@@ -22,8 +22,8 @@ use super::player_commands::{FRAMES_TIMEOUT, tell_and_wait};
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::observe::{
-    BROWSER_QUALITY_SHOWN_MARKER, BrowserQualityLine, PlayerLog, parse_browser_quality_shown,
-    read_host_evidence,
+    BROWSER_QUALITY_SHOWN_MARKER, BrowserQualityLine, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW,
+    PlayerLog, parse_browser_quality_shown, read_host_evidence,
 };
 
 /// Единственная страница сценария (её же гоняет `capture`).
@@ -32,9 +32,9 @@ const QUALITY_PAGE: &str = "mse-abr";
 const SWITCH_QUALITY_COMMAND: &str = "hook:switch-quality";
 /// Сколько ждём строку «качество показано» в журнале плеера.
 const QUALITY_LINE_TIMEOUT: Duration = Duration::from_secs(45);
-/// Сколько ждём роста кадров после смены (сводки раз в 10 с).
+/// Предел ожидания роста кадров после смены.
 const GROWTH_TIMEOUT: Duration = Duration::from_secs(45);
-/// На сколько кадров должен вырасти показ между двумя сводками после смены.
+/// На сколько кадров должен вырасти показ после смены (за `PLAYBACK_GROWTH_WINDOW`).
 const MIN_FRAMES_GAINED_AFTER_SWITCH: u64 = 30;
 
 /// Идентификаторы страниц команды (для проверки `--page` в командной строке).
@@ -102,7 +102,7 @@ fn drive(
             return Ok(Verdict::fail(format!("hand_off_tab: {other:?}\n{log}")));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut failed_steps: Vec<String> = Vec::new();
     let frames_after_switch =
@@ -160,7 +160,10 @@ fn switch_and_watch(
         .wait_for_line(&switched_marker, QUALITY_LINE_TIMEOUT)
         .map_err(|error| fail("window-shows-720p", error.to_string()))?;
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED_AFTER_SWITCH, GROWTH_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_GAINED_AFTER_SWITCH, PLAYBACK_GROWTH_WINDOW),
+            GROWTH_TIMEOUT,
+        )
         .map(|growth| growth.frames_gained())
         .map_err(|error| fail("frames-grow-after-switch", error.to_string()))
 }

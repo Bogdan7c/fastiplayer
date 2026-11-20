@@ -24,12 +24,13 @@ use player_core::{
 use tracing::{debug, warn};
 
 use super::super::journal::{
-    BROWSER_PLAYBACK_SUMMARY_INTERVAL, JournalNotice, PlaybackJournal, PlaybackSummary,
-    SummaryKind, log_playback_ended, log_playback_summary,
+    JournalNotice, PlaybackJournal, PlaybackSummary, SummaryKind, log_playback_ended,
+    log_playback_summary,
 };
 use super::super::playback::load_ledger::{CancelledInstall, LoadLedger};
 use super::super::playback::metered_audio::AudioMeter;
 use super::super::playback::{BrowserPlaybackFault, LoadStart, MediaLoadTicket};
+use super::super::summary_interval_override::summary_interval_from_environment;
 use super::remote::{LoadOrder, PlaybackDesk, RemoteCommand};
 use crate::downloaded_range::DownloadedRange;
 use crate::state::TappedPlayerEvents;
@@ -112,7 +113,7 @@ impl WindowPlaybackDriver {
         Self {
             desk,
             ledger: LoadLedger::default(),
-            journal: PlaybackJournal::new(now, BROWSER_PLAYBACK_SUMMARY_INTERVAL),
+            journal: PlaybackJournal::new(now, summary_interval_from_environment()),
             audio_meter,
             in_flight: None,
             waiting: None,

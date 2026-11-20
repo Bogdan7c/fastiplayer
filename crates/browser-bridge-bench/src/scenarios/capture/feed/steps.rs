@@ -8,8 +8,8 @@ use super::super::super::entries::return_hand::{PagePlace, ReturnHand};
 use super::judge::{FrameGrowthCheck, MIN_FRAMES_GAINED, ScrollRecord, StayRecord};
 use crate::desktop_input::{Point, WheelDirection};
 use crate::observe::{
-    FrameGrowth, STREAM_GENERATION_LOADED_MARKER, STREAM_SURFACE_RECONFIGURED_MARKER,
-    parse_stream_generation_loaded, parse_stream_surface_width,
+    FrameGrowth, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, STREAM_GENERATION_LOADED_MARKER,
+    STREAM_SURFACE_RECONFIGURED_MARKER, parse_stream_generation_loaded, parse_stream_surface_width,
 };
 use crate::site::RunId;
 
@@ -177,8 +177,11 @@ fn wheel_burst(
 pub(super) fn frame_growth_from_now(hand: &mut ReturnHand<'_, '_>) -> Result<FrameGrowth, String> {
     let log = &mut hand.run().player_log;
     log.skip_history().map_err(|error| error.to_string())?;
-    log.wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
-        .map_err(|error| error.to_string())
+    log.wait_for_frame_growth(
+        FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+        GROWTH_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Ждёт, пока число загрузок поколений в плеере станет больше `before`.

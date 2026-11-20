@@ -49,7 +49,7 @@ pub fn format_table(results: &[StepResult], setup: Duration, total: Duration) ->
         .iter()
         .map(|result| {
             [
-                result.command.to_owned(),
+                result.command.clone(),
                 format!("{:?}", result.browser).to_lowercase(),
                 result.subject.clone(),
                 outcome_label(result.outcome).to_owned(),
@@ -104,7 +104,7 @@ mod tests {
 
     fn result(outcome: Outcome, subject: &str, detail: &str) -> StepResult {
         StepResult {
-            command: "pages",
+            command: "pages".to_owned(),
             browser: BrowserKind::Firefox,
             subject: subject.to_owned(),
             outcome,

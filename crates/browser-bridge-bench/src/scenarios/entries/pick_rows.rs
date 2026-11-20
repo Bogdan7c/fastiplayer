@@ -82,7 +82,7 @@ pub(super) fn run_pick(
     let handed_off_at = Instant::now();
     ready.enter_at(row.entry, row.click)?;
     failures.extend(ready.wait_entry_started(row.entry));
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     // Видео, стоявшее на паузе, зритель запускает: плеер играет его, пока страница играет.
     ready.run.tell_page(RESUME_PAUSED_COMMAND);
     let frames = ready.wait_frames()?;

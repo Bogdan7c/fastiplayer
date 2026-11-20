@@ -4,14 +4,16 @@
 //! результаты, таблицу печатает `report`, аргументы разбирает `cli`.
 
 mod cli;
+mod fan_out;
 mod generate;
 mod report;
 
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use browser_bridge_bench::browsers::BrowserKind;
 use browser_bridge_bench::environment::install_interrupt_cleanup;
-use browser_bridge_bench::scenarios::{self, PageFilter, Stand, StepResult};
+use browser_bridge_bench::scenarios::{self, PageFilter, ReplayOptions, Stand, StepResult};
 
 use cli::{Command, Invocation, Parsed};
 
@@ -49,6 +51,8 @@ fn run(invocation: Invocation) -> ExitCode {
         settings,
         replay,
         generation,
+        jobs: invocation_jobs,
+        results_file,
     } = invocation;
     // Генератору нужны только ролики: сайт, окружение и браузеры не поднимаются.
     if let (Command::GenerateRecording, Some(options)) = (command, &generation) {
@@ -63,87 +67,31 @@ fn run(invocation: Invocation) -> ExitCode {
             }
         };
     }
-    let stand = match Stand::start(settings) {
-        Ok(stand) => stand,
-        Err(error) => {
-            eprintln!("error: cannot prepare the stand: {error}");
+    let in_parts = command == Command::Quick || invocation_jobs.is_parallel();
+    let run = if in_parts {
+        let parts = if command == Command::Quick {
+            fan_out::quick_parts(&browsers)
+        } else {
+            fan_out::plan_parts(&plan(command, &pages), &browsers, &pages)
+        };
+        fan_out::run_in_parts(&parts, invocation_jobs, &settings)
+            .map(|run| (run.results, run.setup))
+    } else {
+        run_in_this_process(settings, command, &browsers, &pages, replay.as_ref())
+    };
+    let (results, setup) = match run {
+        Ok(run) => run,
+        Err(message) => {
+            eprintln!("error: cannot prepare the stand: {message}");
             return ExitCode::from(EXIT_FAILURE);
         }
     };
-    let setup = started.elapsed();
-    let mut results: Vec<StepResult> = Vec::new();
-    for steps in plan(command, &pages) {
-        for &browser in &browsers {
-            eprintln!("running {steps:?} in {browser:?} ...");
-            match steps {
-                Command::Pages => results.extend(scenarios::run_pages(&stand, browser, &pages)),
-                Command::Smoke => results.push(scenarios::run_smoke(&stand, browser)),
-                Command::Capture => {
-                    results.extend(scenarios::run_capture(&stand, browser, &pages));
-                }
-                Command::PageEnds => {
-                    results.extend(scenarios::run_page_ends(&stand, browser, &pages));
-                }
-                Command::PlayerCommands => {
-                    results.extend(scenarios::run_player_commands(&stand, browser, &pages));
-                }
-                Command::ExtensionStatus => {
-                    results.push(scenarios::run_extension_status(&stand, browser));
-                }
-                Command::Codecs => results.extend(scenarios::run_codecs(&stand, browser)),
-                Command::Attacks => {
-                    results.extend(scenarios::run_attacks(&stand, browser, &pages));
-                }
-                Command::LocalAddress => {
-                    results.extend(scenarios::run_local_address(&stand, browser));
-                }
-                Command::HlsLive => results.push(scenarios::run_hls_live(&stand, browser)),
-                Command::LiveEnds => results.extend(scenarios::run_live_ends(&stand, browser)),
-                Command::HlsLiveSleep => {
-                    results.push(scenarios::run_hls_live_sleep(&stand, browser));
-                }
-                Command::PageSubtitles => {
-                    results.extend(scenarios::run_page_subtitles(&stand, browser, &pages));
-                }
-                Command::Quality => {
-                    results.extend(scenarios::run_quality(&stand, browser, &pages));
-                }
-                Command::Series => {
-                    results.extend(scenarios::run_series(&stand, browser, &pages));
-                }
-                Command::SeriesMemory => {
-                    results.extend(scenarios::run_series_memory(&stand, browser, &pages));
-                }
-                Command::Episodes => {
-                    results.extend(scenarios::run_episodes(&stand, browser, &pages));
-                }
-                Command::Entries => {
-                    results.extend(scenarios::run_entries(&stand, browser, &pages));
-                }
-                Command::PageReturn => {
-                    results.extend(scenarios::run_page_return(&stand, browser, &pages));
-                }
-                Command::TabReturn => {
-                    results.extend(scenarios::run_tab_return(&stand, browser, &pages));
-                }
-                Command::PageReload => {
-                    results.extend(scenarios::run_page_reload(&stand, browser, &pages));
-                }
-                Command::AutoHandoff => {
-                    results.extend(scenarios::run_auto_handoff(&stand, browser, &pages));
-                }
-                Command::BlockerMatrix => {
-                    results.extend(scenarios::run_blocker_matrix(&stand, browser));
-                }
-                Command::Replay => {
-                    if let Some(options) = &replay {
-                        results.push(scenarios::run_replay(&stand, browser, options));
-                    }
-                }
-                Command::GenerateRecording => {}
-                Command::All => {}
-            }
-        }
+    // Ребёнок параллельного прогона отдаёт строки родителю файлом (таблица — для человека).
+    if let Some(path) = &results_file
+        && let Err(error) = fan_out::write_results(path, &results)
+    {
+        eprintln!("error: {error}");
+        return ExitCode::from(EXIT_FAILURE);
     }
     print!(
         "{}",
@@ -153,6 +101,68 @@ fn run(invocation: Invocation) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(EXIT_FAILURE)
+    }
+}
+
+/// Прогон одним процессом, шаг за шагом (как до 16b3c2; так же гоняет свою часть ребёнок).
+/// Возвращает строки и время подготовки стенда.
+fn run_in_this_process(
+    settings: scenarios::RunSettings,
+    command: Command,
+    browsers: &[BrowserKind],
+    pages: &PageFilter,
+    replay: Option<&ReplayOptions>,
+) -> Result<(Vec<StepResult>, Duration), String> {
+    let started = Instant::now();
+    let stand = Stand::start(settings).map_err(|error| error.to_string())?;
+    let setup = started.elapsed();
+    let mut results: Vec<StepResult> = Vec::new();
+    for steps in plan(command, pages) {
+        for &browser in browsers {
+            eprintln!("running {steps:?} in {browser:?} ...");
+            results.extend(run_step(&stand, steps, browser, pages, replay));
+        }
+    }
+    Ok((results, setup))
+}
+
+/// Один шаг плана в одном браузере.
+fn run_step(
+    stand: &Stand,
+    steps: Command,
+    browser: BrowserKind,
+    pages: &PageFilter,
+    replay: Option<&ReplayOptions>,
+) -> Vec<StepResult> {
+    match steps {
+        Command::Pages => scenarios::run_pages(stand, browser, pages),
+        Command::Smoke => vec![scenarios::run_smoke(stand, browser)],
+        Command::Capture => scenarios::run_capture(stand, browser, pages),
+        Command::PageEnds => scenarios::run_page_ends(stand, browser, pages),
+        Command::PlayerCommands => scenarios::run_player_commands(stand, browser, pages),
+        Command::ExtensionStatus => vec![scenarios::run_extension_status(stand, browser)],
+        Command::Codecs => scenarios::run_codecs(stand, browser),
+        Command::Attacks => scenarios::run_attacks(stand, browser, pages),
+        Command::LocalAddress => scenarios::run_local_address(stand, browser),
+        Command::HlsLive => vec![scenarios::run_hls_live(stand, browser)],
+        Command::LiveEnds => scenarios::run_live_ends(stand, browser),
+        Command::HlsLiveSleep => vec![scenarios::run_hls_live_sleep(stand, browser)],
+        Command::PageSubtitles => scenarios::run_page_subtitles(stand, browser, pages),
+        Command::Quality => scenarios::run_quality(stand, browser, pages),
+        Command::Series => scenarios::run_series(stand, browser, pages),
+        Command::SeriesMemory => scenarios::run_series_memory(stand, browser, pages),
+        Command::Episodes => scenarios::run_episodes(stand, browser, pages),
+        Command::Entries => scenarios::run_entries(stand, browser, pages),
+        Command::PageReturn => scenarios::run_page_return(stand, browser, pages),
+        Command::TabReturn => scenarios::run_tab_return(stand, browser, pages),
+        Command::PageReload => scenarios::run_page_reload(stand, browser, pages),
+        Command::AutoHandoff => scenarios::run_auto_handoff(stand, browser, pages),
+        Command::BlockerMatrix => scenarios::run_blocker_matrix(stand, browser),
+        Command::Replay => replay
+            .map(|options| vec![scenarios::run_replay(stand, browser, options)])
+            .unwrap_or_default(),
+        // Раскладываются раньше: `all` — планом, `quick` — частями, генерация — в `run`.
+        Command::GenerateRecording | Command::Quick | Command::All => Vec::new(),
     }
 }
 

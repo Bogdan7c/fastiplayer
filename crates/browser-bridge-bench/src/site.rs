@@ -170,6 +170,17 @@ impl StandSite {
         self.shared.reports.wait_log_line(run, needle, timeout)
     }
 
+    /// Ждёт подтверждение последней отправки команды `command` странице прогона
+    /// (`ack <команда>` столько раз, сколько команда отправлена).
+    pub fn wait_command_ack(
+        &self,
+        run: &RunId,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<(), SiteError> {
+        self.shared.reports.wait_command_ack(run, command, timeout)
+    }
+
     /// Все строки журнала страницы с `needle` по порядку прихода (журнал не расходуется).
     /// Нужен, когда важна именно НОВАЯ строка: робот считает строки до действия и ждёт рост числа.
     pub fn log_lines_containing(&self, run: &RunId, needle: &str) -> Vec<String> {

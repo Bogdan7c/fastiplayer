@@ -16,7 +16,7 @@ use super::common::{
 use super::menu_entry::ClickSpot;
 use crate::browsers::BrowserKind;
 use crate::environment::BenchEnvironment;
-use crate::observe::{FrameEvidence, read_host_evidence};
+use crate::observe::{FrameEvidence, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, read_host_evidence};
 use crate::player_control::{PlayerControl, PlayerControlError};
 
 /// Сколько страница играет сама после готовности, прежде чем человек входит (T в задании).
@@ -37,6 +37,11 @@ const START_POSITION_TIMEOUT: Duration = Duration::from_secs(5);
 const START_POSITION_POLL: Duration = Duration::from_millis(50);
 /// Сколько ждём рост кадров после перемотки.
 const REWIND_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
+/// Сколько ждём, пока плеер после перемотки к началу снова уйдёт за позицию до неё (~12 с
+/// показа от начала ролика плюс запас).
+const CLOCK_CATCH_UP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Шаг опроса позиции плеера, пока часы догоняют отметку.
+const CLOCK_CATCH_UP_POLL: Duration = Duration::from_millis(200);
 
 /// Куда целится рука на странице с видео: во фрейм у страницы с iframe, иначе в `<video>`.
 pub(super) fn spot_of_video(page_id: &str) -> ClickSpot {
@@ -85,7 +90,7 @@ pub(super) fn run_start(
     let handed_off_at = Instant::now();
     ready.enter_at(entry, spot_of_video(page.id))?;
     let popup_problem = ready.wait_entry_started(entry);
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     let frames = ready.wait_frames()?;
     finish(
         stand,
@@ -126,7 +131,7 @@ pub(super) fn run_late_start(
     let handed_off_at = Instant::now();
     ready.enter(entry)?;
     let popup_problem = ready.wait_popup_closed();
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     // Позиция плеера сразу после пропуска, ДО ожидания кадров: он стартовал с текущей секунды
     // страницы, а не с нуля. Страница играла PLAY_BEFORE_ENTRY плюс время до готовности, а вход и
     // передача заняли ещё несколько секунд: верхняя граница с запасом отсекает «не туда».
@@ -223,10 +228,10 @@ fn check_stream_start_is_kept(
         Ok(_) => {}
         Err(error) => failures.push(format!("cannot read the position after the rewind: {error}")),
     }
-    let growth = ready
-        .run
-        .player_log
-        .wait_for_frame_growth(MIN_FRAMES_AFTER_REWIND, REWIND_FRAMES_TIMEOUT);
+    let growth = ready.run.player_log.wait_for_frame_growth(
+        FrameGrowthRule::frames_within(MIN_FRAMES_AFTER_REWIND, PLAYBACK_GROWTH_WINDOW),
+        REWIND_FRAMES_TIMEOUT,
+    );
     let growth_summary = match &growth {
         Ok(growth) => format!("frames +{} after the rewind", growth.frames_gained()),
         Err(error) => {
@@ -236,9 +241,38 @@ fn check_stream_start_is_kept(
             "no frame growth after the rewind".to_owned()
         }
     };
+    // Страница судит «часы идут под тенью» от своей отметки `handed-off`, а строка нарочно
+    // перемотала плеер к началу, то есть назад от отметки. Часы страницы снова за отметкой,
+    // только когда плеер ушёл дальше позиции до перемотки. Раньше это время неявно давало
+    // ожидание сводки плеера раз в 10 с (16b3c2); теперь строка ждёт этого явно.
+    if growth.is_ok()
+        && let Err(message) = wait_position_reaches(control, start_position_us)
+    {
+        failures.push(message);
+    }
     RewindCheck {
         failures,
         summary: format!("rewound from {start_position_us} us to {after:?}; {growth_summary}"),
+    }
+}
+
+/// Ждёт, пока позиция плеера дойдёт до `target_us` (не дольше [`CLOCK_CATCH_UP_TIMEOUT`]).
+fn wait_position_reaches(control: &PlayerControl, target_us: i64) -> Result<(), String> {
+    let deadline = Instant::now() + CLOCK_CATCH_UP_TIMEOUT;
+    let mut last: Option<i64> = None;
+    loop {
+        if let Ok(position) = control.position_micros() {
+            if position >= target_us {
+                return Ok(());
+            }
+            last = Some(position);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after the rewind the player did not get back to {target_us} us within {CLOCK_CATCH_UP_TIMEOUT:?} (last position {last:?})"
+            ));
+        }
+        std::thread::sleep(CLOCK_CATCH_UP_POLL);
     }
 }
 

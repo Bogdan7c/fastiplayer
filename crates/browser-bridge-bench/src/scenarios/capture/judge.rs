@@ -7,8 +7,8 @@ use super::super::outcome::Verdict;
 use crate::observe::{FrameEvidence, FrameGrowth, HostLogEvidence};
 use crate::site::{PageReport, SiteError};
 
-/// Самое короткое окно «под тенью», на котором счётчик браузера что-то доказывает, с.
-const MIN_SHADOW_WINDOW_S: f64 = 6.0;
+use super::super::judge_window::SHADOW_WINDOW;
+
 /// Потолок настоящих кадров браузера под тенью, кадров в секунду. В 00c браузер под тенью
 /// декодировал 0–116 кадров за 60 с (до ~2 к/с из-за перестановки кадров), обычное
 /// воспроизведение роликов стенда — 25 к/с. 5 к/с с запасом над худшим замеренным и в пять
@@ -62,9 +62,10 @@ pub(in crate::scenarios) fn browser_does_not_decode(report: &PageReport) -> Vec<
     if available < 1.0 {
         return vec!["the page could not read the real frame counter".to_owned()];
     }
-    if window_s < MIN_SHADOW_WINDOW_S {
+    let min_window_s = SHADOW_WINDOW.min_seconds();
+    if window_s < min_window_s {
         return vec![format!(
-            "the shadow window was {window_s:.1} s, too short to judge the browser decoder (need {MIN_SHADOW_WINDOW_S} s)"
+            "the shadow window was {window_s:.1} s, too short to judge the browser decoder (need {min_window_s} s)"
         )];
     }
     let allowed = max_real_frames(window_s);

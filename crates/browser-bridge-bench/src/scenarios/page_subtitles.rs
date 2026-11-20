@@ -41,7 +41,7 @@ use crate::observe::{
 const TRACKS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Сколько ждём замену растущей дорожки: экстеншен шлёт растущую дорожку не чаще раза в 5 с.
 const REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Сколько ждём сводку плеера с `subtitle_overlay_frames > 0` (сводки раз в 10 с).
+/// Предел ожидания сводки плеера с `subtitle_overlay_frames > 0`.
 const OVERLAY_TIMEOUT: Duration = Duration::from_secs(45);
 /// Шаг опроса журнала плеера.
 const POLL_STEP: Duration = Duration::from_millis(500);
@@ -226,7 +226,7 @@ fn drive(
             return Ok(Verdict::fail(format!("hand_off_tab: {other:?}\n{log}")));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut failed_steps: Vec<String> = Vec::new();
     let granted = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)?;

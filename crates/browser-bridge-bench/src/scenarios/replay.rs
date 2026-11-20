@@ -35,7 +35,7 @@ const TAIL_AFTER_RECORDING_MS: u64 = 8000;
 const PAGE_START_SLACK: Duration = Duration::from_secs(60);
 /// Запас на отчёт страницы сверх длительности записи (барьеры `updateend` могут растянуть повтор).
 const REPORT_SLACK: Duration = Duration::from_secs(90);
-/// Сколько ждать нужную сводку плеера после отчёта страницы (сводки раз в 10 с).
+/// Предел ожидания нужной сводки плеера после отчёта страницы.
 const FRAMES_AFTER_REPORT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Порог кадров по умолчанию: 2 с видео при 25 к/с (как у `capture`).
 pub const DEFAULT_MIN_FRAMES: u64 = 50;

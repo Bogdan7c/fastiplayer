@@ -34,13 +34,13 @@ use super::handoff_run::{ExtensionMode, HandoffRun, PageReadiness};
 use super::outcome::{StepResult, Verdict};
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::{PlayerLog, read_host_evidence};
+use crate::observe::{FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, PlayerLog, read_host_evidence};
 use crate::site::HLS_LIVE_SLEEP_SCHEDULE;
 
 /// Запас ожидания строки склейки сверх момента пробуждения сервера: плееру нужно дождаться
 /// очередного повтора (до 8 с), скачать плейлист и дочитать буфер до разрыва.
 const REJOIN_GRACE: Duration = Duration::from_secs(40);
-/// Сколько ждём рост кадров после склейки: две сводки по 10 с плюс запас.
+/// Предел ожидания роста кадров после склейки.
 const AFTER_REJOIN_WATCH: Duration = Duration::from_secs(35);
 
 /// Прогон сценария в свежем окружении.
@@ -95,7 +95,7 @@ fn drive(
         }
     }
     let handed_off_at = Instant::now();
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut steps: Vec<StepEvidence> = Vec::new();
     let mut first_frames_at: Option<Instant> = None;
@@ -174,7 +174,10 @@ fn run_steps(
         .map_err(|error| error.to_string())
         .and_then(|()| {
             run.player_log
-                .wait_for_frame_growth(MIN_FRAMES_AFTER_REJOIN, AFTER_REJOIN_WATCH)
+                .wait_for_frame_growth(
+                    FrameGrowthRule::frames_within(MIN_FRAMES_AFTER_REJOIN, PLAYBACK_GROWTH_WINDOW),
+                    AFTER_REJOIN_WATCH,
+                )
                 .map(|_| ())
                 .map_err(|error| format!("frames did not grow after the rejoin: {error}"))
         });

@@ -26,8 +26,27 @@ pub(super) mod refusals;
 pub(super) use ad_hop::AD_HOP_PAGES;
 pub(super) use ad_hop::AD_HOST;
 pub(super) use decoys::AD_FILE_PATH;
+/// Переменная отбора строк лент (`BRIDGE_BENCH_FEED_ROW`, часть `step_id`).
+pub(super) use feed::ROW_FILTER_VARIABLE as FEED_ROW_FILTER_VARIABLE;
 use judge::HookEvidence;
 pub(super) use judge::browser_does_not_decode;
+/// Переменная отбора строк «реклама → фильм» (часть `step_id`): у одной страницы бывает
+/// несколько вариантов (`ad-preroll` и `ad-preroll-unlisted`).
+pub(super) const AD_HOP_ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_AD_HOP_ROW";
+
+/// Имена всех строк лент (отбор [`FEED_ROW_FILTER_VARIABLE`]).
+pub(super) fn feed_row_names() -> Vec<String> {
+    feed::row_names()
+}
+
+/// Имена всех строк «реклама → фильм» (отбор [`AD_HOP_ROW_FILTER_VARIABLE`]).
+pub(super) fn ad_hop_row_names() -> Vec<String> {
+    ad_hop::AD_HOP_PAGES
+        .iter()
+        .map(|page| page.step_id.to_owned())
+        .collect()
+}
+
 /// Тот же потолок «браузер под тенью почти не декодирует» судит и вернувшуюся вкладку (`tab-return`, 11b2).
 pub(super) use judge::max_real_frames;
 pub(super) use judge::{CaptureEvidence, judge_capture};
@@ -43,19 +62,20 @@ use super::handoff_run::{
 use super::outcome::{StepResult, Verdict};
 use super::page_catalog::PAGE_SCENARIOS;
 use super::page_filter::PageFilter;
+use super::row_filter::row_admitted_by_environment;
 use super::run_tweaks::RunTweaks;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::{FrameGrowth, read_host_evidence};
+use crate::observe::{FrameGrowth, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, read_host_evidence};
 use crate::player_control::PlayerControl;
 use crate::site::{PageReport, PageStatus, SiteError};
 
 /// Сколько кадров должен показать плеер: 2 с видео при 25 к/с — «играет», а не «открылся».
 pub(super) const MIN_PRESENTED_FRAMES: u64 = 50;
-/// Сводки плеера приходят раз в 10 с, плюс запуск плеера и сеанса.
+/// Предел ожидания первых кадров: запуск плеера и сеанса плюс первые сводки.
 pub(super) const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
-/// На сколько должны вырасти кадры плеера между двумя сводками ПОСЛЕ действия страницы
-/// (интервал сводок 10 с, 25 к/с: целый интервал даёт ~250; берём меньше четверти).
+/// На сколько должны вырасти кадры плеера ПОСЛЕ действия страницы, за `PLAYBACK_GROWTH_WINDOW`
+/// (60 кадров — 2,4 с показа при 25 к/с).
 const MIN_FRAMES_GAINED_AFTER_HOOK: u64 = 60;
 /// Сколько ждать сводки после действия страницы: сводка-точка отсчёта и ещё одна.
 const HOOK_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
@@ -202,6 +222,7 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
         ad_hop::AD_HOP_PAGES
             .iter()
             .filter(|page| filter.admits(page.page_id))
+            .filter(|page| row_admitted_by_environment(AD_HOP_ROW_FILTER_VARIABLE, page.step_id))
             .map(|page| ad_hop::run(stand, browser, *page)),
     );
     // 16b2: окно идёт за лентой коротких видео (настоящее колесо мыши на невидимом экране).
@@ -256,7 +277,7 @@ fn run_decoder_control(stand: &Stand, browser: BrowserKind, page: CapturePage) -
         let readiness = run.wait_page_ready();
         let verdict = match readiness {
             PageReadiness::Ready => {
-                run.tell_page("handed-off");
+                run.announce_handed_off();
                 let hook = page.hook.map(|name| {
                     let command = format!("hook:{name}");
                     run.tell_page(&command);
@@ -402,7 +423,7 @@ fn drive(
     }
     // Для `<video src>`: с этого мига файл должен качать только фон (сервер это видит).
     let handed_off_at = Instant::now();
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     // Страница на паузе (главное видео `banner-with-main`): зритель «нажимает play» сразу,
     // иначе кадров в плеере не будет и ждать их бессмысленно.
     let early_hook = page
@@ -526,7 +547,10 @@ fn send_hook_and_wait_ack(run: &HandoffRun<'_>, name: &str) -> Result<(), String
 /// Ждёт, пока кадры плеера вырастут между двумя сводками (после действия страницы).
 fn wait_growth_after_hook(run: &mut HandoffRun<'_>) -> Result<FrameGrowth, String> {
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED_AFTER_HOOK, HOOK_FRAMES_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_GAINED_AFTER_HOOK, PLAYBACK_GROWTH_WINDOW),
+            HOOK_FRAMES_TIMEOUT,
+        )
         .map_err(|error| format!("player frames did not keep growing after the hook: {error}"))
 }
 

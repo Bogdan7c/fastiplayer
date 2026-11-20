@@ -197,7 +197,7 @@ pub(super) fn run(
     let granted = wait_for_session_granted(&ready.run.stderr_log, SESSION_GRANTED_TIMEOUT)?;
     if granted.is_ok() {
         // Страница отсчитывает «браузер не декодирует» от этой команды: пока сеанса нет, браузер играет сам.
-        ready.run.tell_page("handed-off");
+        ready.run.announce_handed_off();
     }
     // Плашка живёт секунды, а позиция плеера уходит вперёд: сначала плашка (при успехе она уже
     // показана), потом позиция старта, потом кадры.

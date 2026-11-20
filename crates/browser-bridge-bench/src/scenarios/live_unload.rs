@@ -40,7 +40,7 @@ pub(super) const LIVE_UNLOAD_PAGES: &[&str] =
     &["live-unload", "live-unload-new-ms", "live-unload-worker"];
 /// Сколько новых кадров плеер обязан показать после play зрителя: «эфир ожил», а не «один кадр».
 const MIN_FRAMES_AFTER_PLAY: u64 = 50;
-/// Сколько ждём эти кадры. Сводки плеера идут раз в 10 с, поэтому окно — две сводки с запасом.
+/// Предел ожидания этих кадров.
 const FRAMES_AFTER_PLAY_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Прогон страниц эфира, выбранных фильтром.
@@ -103,7 +103,7 @@ fn drive(
             return Ok(Verdict::fail(format!("hand_off_tab: {other:?}\n{log}")));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut steps: Vec<StepEvidence> = Vec::new();
     let mut frames: Option<FramesAroundPlay> = None;

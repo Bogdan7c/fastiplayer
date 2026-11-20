@@ -27,6 +27,75 @@ const CLEANUP_SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SI
 static REGISTERED_GROUPS: [AtomicI32; MAX_REGISTERED_GROUPS] =
     [const { AtomicI32::new(EMPTY_SLOT) }; MAX_REGISTERED_GROUPS];
 
+/// Сколько дочерних процессов стенда (части параллельного прогона, 16b3c2) можно держать
+/// одновременно. Частей сразу — не больше `--jobs`; запас большой.
+const MAX_FORWARDED_CHILDREN: usize = 64;
+
+/// Дочерние процессы стенда, которым обработчик ПЕРЕСЫЛАЕТ сигнал: у каждого свой
+/// обработчик и свои группы (kwin, шина, браузер), и убрать их может только он сам. SIGKILL
+/// ребёнку оставил бы его группы сиротами, поэтому ему — SIGTERM, а не `killpg`.
+static FORWARDED_CHILDREN: [AtomicI32; MAX_FORWARDED_CHILDREN] =
+    [const { AtomicI32::new(EMPTY_SLOT) }; MAX_FORWARDED_CHILDREN];
+
+/// Сигнал, который получает дочерний процесс стенда при уборке родителя.
+const CHILD_CLEANUP_SIGNAL: libc::c_int = libc::SIGTERM;
+
+/// Запись дочернего процесса стенда в реестре пересылки; снимается в `Drop` (после того как
+/// ребёнок подобран — номер больше не его).
+#[derive(Debug)]
+pub struct ForwardedChild {
+    slot: usize,
+}
+
+impl ForwardedChild {
+    /// Записывает номер процесса `pid` в первую свободную ячейку.
+    pub fn register(pid: u32) -> io::Result<Self> {
+        let pid = i32::try_from(pid)
+            .ok()
+            .filter(|pid| *pid > EMPTY_SLOT)
+            .ok_or_else(|| io::Error::other("process id is out of range"))?;
+        for (slot, cell) in FORWARDED_CHILDREN.iter().enumerate() {
+            if cell
+                .compare_exchange(EMPTY_SLOT, pid, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(Self { slot });
+            }
+        }
+        Err(io::Error::other("too many forwarded child processes"))
+    }
+}
+
+impl Drop for ForwardedChild {
+    fn drop(&mut self) {
+        FORWARDED_CHILDREN[self.slot].store(EMPTY_SLOT, Ordering::Release);
+    }
+}
+
+/// Номера дочерних процессов в реестре пересылки (для тестов).
+#[cfg(test)]
+pub(super) fn forwarded_children() -> Vec<i32> {
+    FORWARDED_CHILDREN
+        .iter()
+        .map(|cell| cell.load(Ordering::Acquire))
+        .filter(|pid| *pid != EMPTY_SLOT)
+        .collect()
+}
+
+/// Пересылает SIGTERM всем дочерним процессам стенда. Async-signal-safe: чтение атомиков и
+/// `kill`; ошибки «процесса уже нет» — желаемое состояние.
+pub(super) fn forward_to_children() {
+    for cell in &FORWARDED_CHILDREN {
+        let pid = cell.load(Ordering::Acquire);
+        if pid != EMPTY_SLOT {
+            // SAFETY: `kill` — простой системный вызов без указателей; номер положителен.
+            unsafe {
+                libc::kill(pid, CHILD_CLEANUP_SIGNAL);
+            }
+        }
+    }
+}
+
 /// Запись в реестре; освобождается через [`GroupRegistration::release`] (из `Drop` процесса).
 #[derive(Debug)]
 pub(super) struct GroupRegistration {
@@ -87,8 +156,11 @@ pub(crate) fn kill_all_registered_groups() {
     }
 }
 
-/// Обработчик SIGINT/SIGTERM/SIGHUP: добить группы, затем умереть по тому же сигналу.
+/// Обработчик SIGINT/SIGTERM/SIGHUP: переслать сигнал детям-частям, добить группы, затем
+/// умереть по тому же сигналу.
 extern "C" fn cleanup_and_die(signal: libc::c_int) {
+    // Сначала дети-части: каждый уберёт свои группы своим обработчиком.
+    forward_to_children();
     kill_all_registered_groups();
     // SA_RESETHAND уже вернул стандартное действие на входе в обработчик, а SA_NODEFER не
     // блокирует сигнал, поэтому повторная отправка завершает процесс сразу и статус выхода

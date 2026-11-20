@@ -41,10 +41,13 @@ use super::handoff_run::{
 use super::outcome::{StepResult, Verdict};
 use super::page_ends::start_of_session;
 use super::page_filter::PageFilter;
+use super::row_filter::row_admitted_by_environment;
 use super::series::wait_for_lines_anywhere;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::{BenchEnvironment, PlayerConfigProfile};
-use crate::observe::{EndNotice, ObserveError, PlayerLog, read_host_evidence};
+use crate::observe::{
+    EndNotice, FrameGrowthRule, ObserveError, PLAYBACK_GROWTH_WINDOW, PlayerLog, read_host_evidence,
+};
 use crate::player_control::PlayerControl;
 
 /// Страница с паузой между сериями (строки 1-3).
@@ -159,6 +162,15 @@ impl EpisodeRow {
     }
 }
 
+/// Переменная отбора строк (часть имени строки, например `delayed-next`): на одной странице
+/// пауз между сериями живёт пять строк.
+pub(super) const ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_EPISODES_ROW";
+
+/// Имена всех строк, по которым судит отбор [`ROW_FILTER_VARIABLE`].
+pub(super) fn row_names() -> Vec<String> {
+    ROWS.iter().map(|row| row.name.to_owned()).collect()
+}
+
 /// Идентификаторы страниц сценария (для проверки `--page` в командной строке).
 pub(super) fn page_ids() -> Vec<&'static str> {
     vec![GAP_PAGE, SPA_AWAY_PAGE]
@@ -168,6 +180,7 @@ pub(super) fn page_ids() -> Vec<&'static str> {
 pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) -> Vec<StepResult> {
     ROWS.iter()
         .filter(|row| filter.admits(row.page_id))
+        .filter(|row| row_admitted_by_environment(ROW_FILTER_VARIABLE, row.name))
         .map(|row| run_row(stand, browser, *row))
         .collect()
 }
@@ -221,7 +234,7 @@ fn open_and_hand_off<'a>(
             ))));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     Ok(Ok(run))
 }
 
@@ -370,7 +383,10 @@ fn walk_delayed_next(run: &mut HandoffRun<'_>, control: &PlayerControl) -> Resul
         .skip_history()
         .map_err(|error| format!("frames-after-episode-2: {error}"))?;
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+            GROWTH_TIMEOUT,
+        )
         .map_err(|error| format!("frames-after-episode-2: {error}"))?;
     Ok(())
 }
@@ -391,7 +407,10 @@ fn walk_instant_next(run: &mut HandoffRun<'_>, control: &PlayerControl) -> Resul
         .skip_history()
         .map_err(|error| format!("frames-after-episode-2: {error}"))?;
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+            GROWTH_TIMEOUT,
+        )
         .map_err(|error| format!("frames-after-episode-2: {error}"))?;
     Ok(())
 }

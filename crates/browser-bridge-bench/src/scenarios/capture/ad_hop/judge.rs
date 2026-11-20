@@ -14,6 +14,7 @@
 //!  * фон экстеншена скачал файлы рекламы (она ушла в плеер), а баннер остался у браузера.
 
 use super::super::super::evidence::{host_failures, page_failures, unexpected_player_lines};
+use super::super::super::judge_window::FILM_WINDOW;
 use super::super::super::outcome::Verdict;
 use super::super::decoys::FetchCounts;
 use super::super::judge::max_real_frames;
@@ -24,9 +25,7 @@ use crate::site::{PageReport, SiteError};
 /// На сколько должен вырасти показ кадров плеера после запуска фильма страницей: 60 кадров —
 /// 2,4 с видео при 25 к/с, «играет», а не «один кадр».
 pub(super) const MIN_FILM_FRAMES_AFTER_START: u64 = 60;
-/// Самое короткое окно, на котором часы фильма что-то доказывают, с (робот ждёт две сводки по 10 с).
-const MIN_FILM_WINDOW_S: f64 = 8.0;
-/// На сколько секунд часы фильма обязаны уйти вперёд за это окно.
+/// На сколько секунд часы фильма обязаны уйти вперёд за окно фильма (`FILM_WINDOW`).
 const MIN_FILM_CLOCK_ADVANCE_S: f64 = 1.0;
 /// Потолок настоящих кадров браузера у элемента фильма за всё окно (запас на момент перехода).
 const MAX_FILM_REAL_FRAMES: f64 = 15.0;
@@ -85,11 +84,12 @@ fn page_metric_failures(
     report: &PageReport,
     failures: &mut Vec<String>,
 ) {
+    let min_film_window_s = FILM_WINDOW.min_seconds();
     if let Some(window_s) = metric(report, "film_window_s", failures)
-        && window_s < MIN_FILM_WINDOW_S
+        && window_s < min_film_window_s
     {
         failures.push(format!(
-            "the film window was {window_s:.1} s, too short to judge the film clock (need {MIN_FILM_WINDOW_S} s)"
+            "the film window was {window_s:.1} s, too short to judge the film clock (need {min_film_window_s} s)"
         ));
     }
     if let Some(advance_s) = metric(report, "film_clock_advance_s", failures)

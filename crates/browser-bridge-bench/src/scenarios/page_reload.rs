@@ -36,9 +36,13 @@ use super::handoff_run::{
 use super::outcome::{StepResult, Verdict};
 use super::page_ends::start_of_session;
 use super::page_filter::PageFilter;
+use super::row_filter::row_admitted_by_environment;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::{BenchEnvironment, PlayerConfigProfile};
-use crate::observe::{ObserveError, PlayerLog, parse_end_notice, read_host_evidence};
+use crate::observe::{
+    FrameGrowthRule, ObserveError, PLAYBACK_GROWTH_WINDOW, PlayerLog, parse_end_notice,
+    read_host_evidence,
+};
 use crate::player_control::PlayerControl;
 
 /// Страница сценария (вкладка) и её помощник (плеер в iframe).
@@ -160,6 +164,15 @@ impl ReloadRow {
     }
 }
 
+/// Переменная отбора строк (часть имени строки, например `reload-same-url`): все строки
+/// живут на одной странице.
+pub(super) const ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_PAGE_RELOAD_ROW";
+
+/// Имена всех строк, по которым судит отбор [`ROW_FILTER_VARIABLE`].
+pub(super) fn row_names() -> Vec<String> {
+    ROWS.iter().map(|row| row.name.to_owned()).collect()
+}
+
 /// Идентификаторы страниц сценария (для проверки `--page` в командной строке).
 pub(super) fn page_ids() -> Vec<&'static str> {
     vec![PAGE]
@@ -171,6 +184,7 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
         return Vec::new();
     }
     ROWS.iter()
+        .filter(|row| row_admitted_by_environment(ROW_FILTER_VARIABLE, row.name))
         .map(|row| run_row(stand, browser, *row))
         .collect()
 }
@@ -222,7 +236,7 @@ fn open_and_hand_off<'a>(
         }
     }
     // По этой команде второй документ узнает себя (см. шапку `page-reload-kit.js`).
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     Ok(Ok(run))
 }
 
@@ -378,7 +392,13 @@ fn walk_replacement(
         .map_err(|error| error.to_string())
         .and_then(|()| {
             run.player_log
-                .wait_for_frame_growth(MIN_FRAMES_AFTER_REPLACEMENT, GROWTH_TIMEOUT)
+                .wait_for_frame_growth(
+                    FrameGrowthRule::frames_within(
+                        MIN_FRAMES_AFTER_REPLACEMENT,
+                        PLAYBACK_GROWTH_WINDOW,
+                    ),
+                    GROWTH_TIMEOUT,
+                )
                 .map(|growth| growth.frames_gained())
                 .map_err(|error| error.to_string())
         });

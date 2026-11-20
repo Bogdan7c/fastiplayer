@@ -15,8 +15,9 @@ pub enum Outcome {
 /// Один проверенный пункт: команда × браузер × предмет проверки.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepResult {
-    /// Команда: `pages`, `smoke`, `extension-status`.
-    pub command: &'static str,
+    /// Команда, как её пишет таблица: `pages`, `capture`, `series-memory-restart`. Строка, а
+    /// не `&'static str`: строки дочерних процессов параллельного прогона приходят из файла.
+    pub command: String,
     /// В каком браузере.
     pub browser: BrowserKind,
     /// Что проверяли: идентификатор страницы или короткое имя проверки.
@@ -39,7 +40,7 @@ impl StepResult {
         elapsed: Duration,
     ) -> Self {
         Self {
-            command,
+            command: command.to_owned(),
             browser,
             subject: subject.into(),
             outcome: verdict.outcome,

@@ -31,14 +31,18 @@ use super::outcome::{StepResult, Verdict};
 use super::player_commands::{CONTROLLABLE_TIMEOUT, FRAMES_TIMEOUT, tell_and_wait};
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::{FrameGrowth, read_host_evidence};
+use crate::observe::{FrameGrowth, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, read_host_evidence};
 use crate::player_control::PlayerControl;
 
 /// Страница сценария.
 pub(super) const HLS_LIVE_PAGE: &str = "hls-live";
-/// Сколько ждём рост кадров между двумя сводками плеера (сводки раз в 10 с): это и есть время,
-/// которое эфир идёт под тенью, пока окно уезжает от начального.
+/// Предел ожидания роста кадров под тенью эфира.
 const LIVE_WATCH: Duration = Duration::from_secs(25);
+/// Сколько эфир обязан идти под тенью от отметки страницы до проверки её окна: судья ждёт ≥ 3
+/// обновлений плейлиста фоном (раз в `#EXT-X-TARGETDURATION` = 2 с) и сегмент за начальным
+/// окном из 4. Пока сводка плеера шла раз в 10 с, это время неявно давали две сводки (~20 с);
+/// с коротким шагом (16b3c2) строка держит его явно.
+const LIVE_UNDER_SHADOW: Duration = Duration::from_secs(15);
 
 /// Прогон сценария в свежем окружении.
 pub(super) fn run(stand: &Stand, browser: BrowserKind) -> StepResult {
@@ -88,7 +92,7 @@ fn drive(
         }
     }
     let handed_off_at = Instant::now();
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut steps: Vec<StepEvidence> = Vec::new();
     let mut frame_growth: Result<FrameGrowth, String> =
@@ -148,6 +152,7 @@ fn run_live_steps(
     if !record("mark-live", tell_and_wait(run, "hook:mark-live")) {
         return;
     }
+    let marked_at = Instant::now();
     let presented = run
         .player_log
         .wait_for_presented_frames(MIN_PRESENTED_FRAMES, FRAMES_TIMEOUT)
@@ -162,7 +167,7 @@ fn run_live_steps(
     if !record("window-mpris-controllable", controllable) {
         return;
     }
-    // Эфир идёт под тенью: рост кадров между двумя сводками за LIVE_WATCH. Журнал до этого места
+    // Эфир идёт под тенью: рост кадров за PLAYBACK_GROWTH_WINDOW (ожидание — до LIVE_WATCH). Журнал до этого места
     // (первые кадры) в счёт не идёт: нужна именно непрерывная игра.
     *frame_growth = run
         .player_log
@@ -170,9 +175,17 @@ fn run_live_steps(
         .map_err(|error| format!("player log: {error}"))
         .and_then(|()| {
             run.player_log
-                .wait_for_frame_growth(MIN_FRAMES_WHILE_LIVE, LIVE_WATCH)
+                .wait_for_frame_growth(
+                    FrameGrowthRule::frames_within(MIN_FRAMES_WHILE_LIVE, PLAYBACK_GROWTH_WINDOW),
+                    LIVE_WATCH,
+                )
                 .map_err(|error| format!("player frames did not keep growing while live: {error}"))
         });
+    // Эфир идёт под тенью не меньше LIVE_UNDER_SHADOW, сколько бы быстро ни выросли кадры.
+    let under_shadow = marked_at.elapsed();
+    if under_shadow < LIVE_UNDER_SHADOW {
+        std::thread::sleep(LIVE_UNDER_SHADOW - under_shadow);
+    }
     // Страница под тенью видит эфир — проверяем и при провале кадров (разбор нужен весь).
     record(
         "page-sees-live-window",

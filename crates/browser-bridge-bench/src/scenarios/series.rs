@@ -40,7 +40,10 @@ use super::player_commands::FRAMES_TIMEOUT;
 use super::run_tweaks::RunTweaks;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::{BenchEnvironment, PlayerTestVariables};
-use crate::observe::{BROWSER_QUALITY_SHOWN_MARKER, PlayerLog, read_host_evidence};
+use crate::observe::{
+    BROWSER_QUALITY_SHOWN_MARKER, FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, PlayerLog,
+    read_host_evidence,
+};
 use crate::player_control::PlayerControl;
 
 /// Страница сценария.
@@ -79,7 +82,7 @@ const LINE_TIMEOUT: Duration = Duration::from_secs(45);
 const LINE_POLL: Duration = Duration::from_millis(100);
 /// Насколько кадры должны вырасти между двумя сводками после шага.
 const MIN_FRAMES_GAINED: u64 = 30;
-/// Сколько ждём роста кадров (сводки раз в 10 с).
+/// Предел ожидания роста кадров.
 const GROWTH_TIMEOUT: Duration = Duration::from_secs(45);
 /// Сколько ждём, пока окно плеера станет управляемым по MPRIS.
 const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -211,7 +214,7 @@ pub(super) fn open_and_hand_off<'a>(
             ))));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     Ok(Ok(run))
 }
 
@@ -312,7 +315,10 @@ fn walk_variants(
         .map_err(|error| fail("dub-position-read", error.to_string()))?;
     let position_after_dub = Duration::from_micros(u64::try_from(position).unwrap_or(0));
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+            GROWTH_TIMEOUT,
+        )
         .map_err(|error| fail("frames-after-dub", error.to_string()))?;
     // 4. Next: следующая серия в той же озвучке, кадры растут.
     control
@@ -329,7 +335,10 @@ fn walk_variants(
     wait_for_page_line(run, NEXT_GENERATION)
         .map_err(|error| fail("next-episode-on-page", error))?;
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+            GROWTH_TIMEOUT,
+        )
         .map_err(|error| fail("frames-after-next-episode", error.to_string()))?;
     Ok(position_after_dub)
 }

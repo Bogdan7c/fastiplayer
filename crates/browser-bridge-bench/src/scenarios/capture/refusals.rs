@@ -123,7 +123,7 @@ fn drive(
     }
     let outcome = run.hand_off().map_err(|error| error.to_string());
     // Отметка окна «браузер играет сам» — сразу после отказа.
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     std::thread::sleep(REFUSAL_WINDOW);
     let report = run.finish_page();
     let page_log = format_browser_log(&run.take_page_log());

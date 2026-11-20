@@ -57,10 +57,10 @@ pub(super) const CONTROLLABLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const FRAMES_TIMEOUT: Duration = Duration::from_secs(60);
 /// На сколько должны вырасти кадры плеера после перемотки между двумя сводками.
 const MIN_FRAMES_GAINED_AFTER_SEEK: u64 = 60;
-/// Сколько ждать две сводки плеера после перемотки.
+/// Предел ожидания кадров плеера после перемотки.
 const POST_SEEK_FRAMES_TIMEOUT: Duration = Duration::from_secs(45);
 /// Размер перемотки, микросекунды. Назад, если плеер уже далеко от начала: ролик стенда
-/// 30 с, а после перемотки нужно ещё ~20 с игры, чтобы получить две сводки плеера.
+/// 30 с, а после перемотки нужен запас игры, чтобы кадры успели вырасти.
 const SEEK_STEP_MICROS: i64 = 8_000_000;
 /// Дальше этой позиции перематываем назад, иначе вперёд.
 const SEEK_BACKWARD_FROM_MICROS: i64 = 8_000_000;
@@ -164,7 +164,7 @@ fn drive(
         }
     }
     let handed_off_at = Instant::now();
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut steps: Vec<StepEvidence> = Vec::new();
     let mut seek_growth: Result<FrameGrowth, String> = Err("the seek step did not run".to_owned());

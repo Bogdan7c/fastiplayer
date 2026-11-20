@@ -25,7 +25,9 @@ use super::settings::{SettingsPreset, read_stored_settings, site_key_of_origin, 
 use crate::browsers::BrowserKind;
 use crate::desktop_input::Point;
 use crate::environment::BenchEnvironment;
-use crate::observe::{HostLogEvidence, read_host_evidence};
+use crate::observe::{
+    FrameGrowthRule, HostLogEvidence, PLAYBACK_GROWTH_WINDOW, read_host_evidence,
+};
 use crate::player_control::PlayerControl;
 use crate::site::{PageReport, RunId, SiteError};
 
@@ -474,7 +476,12 @@ impl<'a> AutoSession<'a, '_> {
         } else {
             player_log
                 .skip_history()
-                .and_then(|()| player_log.wait_for_frame_growth(MIN_FRAMES_GROWTH, FRAMES_TIMEOUT))
+                .and_then(|()| {
+                    player_log.wait_for_frame_growth(
+                        FrameGrowthRule::frames_within(MIN_FRAMES_GROWTH, PLAYBACK_GROWTH_WINDOW),
+                        FRAMES_TIMEOUT,
+                    )
+                })
                 .map(|growth| {
                     format!(
                         "player frames grew by {} after session #{grants}",

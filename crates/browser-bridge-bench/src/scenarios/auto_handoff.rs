@@ -53,7 +53,7 @@ use crate::environment::{BenchEnvironment, DesktopSetup, PlayerConfigProfile};
 
 /// Переменная окружения для отладки: прогонять только строки, в подписи которых есть этот текст
 /// (`BRIDGE_BENCH_AUTO_HANDOFF_ROW=three-tabs`). Без неё идут все строки, отобранные `--page`.
-const SUBJECT_FILTER_VARIABLE: &str = "BRIDGE_BENCH_AUTO_HANDOFF_ROW";
+pub(super) const SUBJECT_FILTER_VARIABLE: &str = "BRIDGE_BENCH_AUTO_HANDOFF_ROW";
 /// Фильм 60 с со звуком и кнопками Play / Pause.
 const FILM_PAGE: &str = "auto-film";
 /// Ролик 30 с со звуком (MSE) и кнопка Play.
@@ -218,6 +218,11 @@ const ROWS: &[Row] = &[
 /// Подпись строки таблицы: правило и страница.
 fn subject(row: &Row) -> String {
     format!("{} x {}", row.kind.name(), row.page_id)
+}
+
+/// Имена всех строк, по которым судит отбор [`SUBJECT_FILTER_VARIABLE`].
+pub(super) fn row_names() -> Vec<String> {
+    ROWS.iter().map(subject).collect()
 }
 
 /// Идентификаторы страниц сценария (для проверки `--page` в командной строке).

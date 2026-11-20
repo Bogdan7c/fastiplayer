@@ -14,7 +14,16 @@ import { runScenario } from '../lib/bench-report.js';
 import { playNativeHlsAsset } from '../lib/native-hls-page.js';
 
 // HLS VOD (сессия 10a2): 40 с MPEG-TS — запас на паузу, перемотку и возврат в сценарии player-commands.
-await runScenario('hls-vod-long', (ctx) => playNativeHlsAsset(ctx, 'hls-ts-long'));
+await runScenario('hls-vod-long', (ctx) => playNativeHlsAsset(ctx, 'hls-ts-long', {
+  handoffOptions: {
+    // Под тенью `buffered` родного HLS VOD — вся запись (как у файла, решение 187): «буфер
+    // растёт» ему нечего доказывать, а после возврата это буфер заново загружаемого настоящего
+    // элемента, который наполняется постепенно. Пока сводка плеера шла раз в 10 с, возврат
+    // случался у конца записи, и проверка проходила случайно (16b3c2). Что сегменты идут,
+    // доказывает журнал сервера (фон качает сегменты у цели перемотки).
+    skipFinishChecks: ['page-buffer-keeps-filling'],
+  },
+}));
 </script>
 </body>
 </html>

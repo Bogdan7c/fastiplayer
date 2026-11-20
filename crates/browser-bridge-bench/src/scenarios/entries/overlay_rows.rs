@@ -183,7 +183,7 @@ fn run_plays(mut ready: ReadyRun<'_, '_>) -> Result<Verdict, ScenarioError> {
     let mut failures = Vec::new();
     ready.enter_at(Entry::OverlayButton, ClickSpot::VIDEO)?;
     failures.extend(ready.wait_entry_started(Entry::OverlayButton));
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     let frames = ready.wait_frames()?;
     let evidence = collect(ready, frames)?;
     failures.extend(evidence.failures(PAGE));

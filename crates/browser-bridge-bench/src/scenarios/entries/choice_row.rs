@@ -29,7 +29,7 @@ use super::robot::wait_for_settled_popup;
 use crate::browsers::{BrowserKind, PopupSnapshot};
 use crate::desktop_input::Key;
 use crate::environment::BenchEnvironment;
-use crate::observe::{PlayerLog, parse_loads, parse_summary, read_host_evidence};
+use crate::observe::{PlayerLog, parse_loads, read_host_evidence};
 use crate::player_control::PlayerControl;
 
 /// Сколько лишних нажатий Tab допускаем сверх номера строки (документ попапа, ссылка).
@@ -108,7 +108,7 @@ pub(super) fn run(
     ready.enter(entry)?;
     failures.extend(ready.wait_popup_closed());
     let first_hand_off_at = Instant::now();
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     // Главное стоит на паузе до действия зрителя: «нажимаем play» и ждём кадры плеера.
     ready.run.tell_page(RESUME_MAIN_COMMAND);
     if let Err(message) = ready.run.wait_ack(RESUME_MAIN_COMMAND, ACK_TIMEOUT) {
@@ -254,9 +254,8 @@ fn expect_popup_stays_with_switch_notice(ready: &mut ReadyRun<'_, '_>) -> Option
     }
 }
 
-/// Последняя сводка плеера до замены: сколько кадров показано и сколько раз плеер загружал видео.
+/// Последняя сводка плеера до замены: сколько раз плеер загружал видео.
 struct SummaryMark {
-    presented_frames: u64,
     loads: u64,
 }
 
@@ -265,15 +264,15 @@ fn last_summary(ready: &mut ReadyRun<'_, '_>) -> Result<Option<SummaryMark>, Sce
     let lines = ready.run.player_log.snapshot_summary_lines()?;
     Ok(lines.last().and_then(|line| {
         Some(SummaryMark {
-            presented_frames: parse_summary(line)?.presented_frames,
             loads: parse_loads(line)?,
         })
     }))
 }
 
-/// Новые кадры после замены: сводка, в которой показано заметно больше, чем в последней сводке до
-/// выбора, и счётчик загрузок вырос (плеер загрузил баннер заново). Баннер короткий и играет секунды,
-/// поэтому ждём не «рост между двумя сводками», а одну сводку после замены.
+/// Новые кадры после замены: сначала сводка, в которой счётчик загрузок вырос (плеер загрузил
+/// баннер), потом рост показа на `MIN_FRAMES_AFTER_REPLACE` кадров сверх неё — это кадры уже
+/// баннера. Порядок событий важен: пока сводка шла раз в 10 с, замена успевала случиться до
+/// первой же сводки, а с коротким шагом (16b3c2) первыми приходят кадры ещё главного видео.
 fn frames_after_replacement(
     ready: &mut ReadyRun<'_, '_>,
     before: Option<SummaryMark>,
@@ -281,18 +280,33 @@ fn frames_after_replacement(
     let Some(before) = before else {
         return Some("no player summary before the choice to compare with".to_owned());
     };
-    match ready.run.player_log.wait_for_presented_frames(
-        before.presented_frames + MIN_FRAMES_AFTER_REPLACE,
-        REPLACE_FRAMES_TIMEOUT,
-    ) {
-        Ok(after) if parse_loads(&after.summary_line).is_some_and(|loads| loads > before.loads) => {
-            None
+    let deadline = Instant::now() + REPLACE_FRAMES_TIMEOUT;
+    let loaded = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match ready.run.player_log.wait_for_presented_frames(0, left) {
+            Ok(summary)
+                if parse_loads(&summary.summary_line).is_some_and(|loads| loads > before.loads) =>
+            {
+                break summary;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Some(format!(
+                    "the player did not load a new video after the choice: {error}"
+                ));
+            }
         }
-        Ok(after) => Some(format!(
-            "frames grew after the choice but the player did not load a new video: {}",
-            after.summary_line
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    match ready
+        .run
+        .player_log
+        .wait_for_presented_frames(loaded.presented_frames + MIN_FRAMES_AFTER_REPLACE, left)
+    {
+        Ok(_) => None,
+        Err(error) => Some(format!(
+            "the player loaded the new video but showed no new frames: {error}"
         )),
-        Err(error) => Some(format!("no new frames after the replacement: {error}")),
     }
 }
 

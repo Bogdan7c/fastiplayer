@@ -66,7 +66,7 @@ use steps::WheelPlace;
 const REEL_STREAM_WIDTHS: &[u64] = &[640, 512, 384];
 /// Переменная окружения: гонять только строки, в имени шага которых есть эта подстрока (отладка одной
 /// строки: `BRIDGE_BENCH_FEED_ROW=pool`).
-const ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_FEED_ROW";
+pub(in crate::scenarios) const ROW_FILTER_VARIABLE: &str = "BRIDGE_BENCH_FEED_ROW";
 /// Строка журнала плеера: окно показало зрителю сообщение о конце сеанса.
 const END_NOTICE_MARKER: &str = "Browser session end notice shown";
 /// Строка журнала плеера: новое поколение прождало данных у цели весь срок и встало там, где данные есть.
@@ -261,6 +261,11 @@ pub(in crate::scenarios) fn page_ids() -> Vec<&'static str> {
     ids
 }
 
+/// Имена всех строк лент, по которым судит отбор [`ROW_FILTER_VARIABLE`].
+pub(in crate::scenarios) fn row_names() -> Vec<String> {
+    all_rows().map(|row| row.step_id.to_owned()).collect()
+}
+
 /// Все строки выбранных страниц одного браузера.
 pub(in crate::scenarios) fn run_all(
     stand: &Stand,
@@ -413,7 +418,7 @@ fn follow_the_feed(
     {
         return Ok(nothing_after(message));
     }
-    hand.run().tell_page("handed-off");
+    hand.run().announce_handed_off();
     let first_reel_frames = hand
         .run()
         .player_log

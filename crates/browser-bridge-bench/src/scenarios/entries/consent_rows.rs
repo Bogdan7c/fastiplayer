@@ -169,7 +169,7 @@ fn finish_allow(
     handed_off_at: Instant,
 ) -> Result<Verdict, ScenarioError> {
     let popup_problem = ready.wait_popup_closed();
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     let frames = ready.wait_frames()?;
     let page_report = ready.run.finish_page();
     let page_log = ready.run.take_page_log();
@@ -219,7 +219,7 @@ fn finish_deny(mut ready: ReadyRun<'_, '_>) -> Result<Verdict, ScenarioError> {
             None
         }
     };
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     std::thread::sleep(REFUSAL_WINDOW);
     let report = ready.run.finish_page();
     let page_log = format_browser_log(&ready.run.take_page_log());

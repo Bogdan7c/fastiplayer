@@ -55,7 +55,7 @@ pub(super) fn run_report(
     };
     prepare_entry(&mut ready, row.entry)?;
     // Окно «браузер играет сам» открываем ДО входа (как в строках отказов попапа).
-    ready.run.tell_page("handed-off");
+    ready.run.announce_handed_off();
     ready.enter_at(row.entry, row.click)?;
     let mut failures = Vec::new();
     if let Err(problem) = ready.wait_for_banner(row.banner, BANNER_TIMEOUT) {

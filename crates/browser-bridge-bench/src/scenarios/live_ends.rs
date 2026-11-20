@@ -37,8 +37,11 @@ use crate::observe::{PLAYBACK_ENDED_MARKER, PlayerLog, read_host_evidence};
 
 /// Строки таблицы в порядке прогона.
 const ROWS: [LiveEndsRow; 2] = [LiveEndsRow::MseLiveEnds, LiveEndsRow::HlsLiveEnds];
-/// Сколько ждём в журнале плеера строку перехода и строку конца записи после ответа страницы.
+/// Сколько ждём в журнале плеера строку конца записи после ответа страницы.
 const JOURNAL_LINE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Сколько ждём строку плеера «эфир стал записью»: у HLS сервер стенда дописывает `ENDLIST`
+/// через ~36 с от первого запроса плейлиста, у MSE конец делает страница сразу.
+const RECORDING_LINE_TIMEOUT: Duration = Duration::from_secs(50);
 
 /// Обе строки таблицы в одном браузере.
 pub(super) fn run(stand: &Stand, browser: BrowserKind) -> Vec<StepResult> {
@@ -93,7 +96,7 @@ fn drive(
             return Ok(Verdict::fail(format!("hand_off_tab: {other:?}\n{log}")));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let mut steps: Vec<StepEvidence> = Vec::new();
     let granted = wait_for_session_granted(&run.stderr_log, SESSION_GRANTED_TIMEOUT)?;
@@ -163,16 +166,19 @@ fn run_steps(
     {
         return;
     }
+    // Сначала плеер: эфир стал записью (строка журнала). Только потом вопрос странице — у неё
+    // своё ожидание конечной длины (30 с), и задавать его раньше, чем эфир кончился у сервера,
+    // значит мерить расписание стенда, а не мост. Раньше этот порядок неявно держало ожидание
+    // сводки плеера раз в 10 с (сессия 16b3c2). Страницу спрашиваем и без строки плеера: так в
+    // разборе видно, что она увидела.
+    record(
+        "player-logs-the-recording",
+        log_line_within(whole_log, RECORDING_MARKER, RECORDING_LINE_TIMEOUT),
+    );
     // Страница ждёт конечную длину и `ended`; ответ приходит, когда оба факта наблюдены.
     let recording = tell_and_wait(run, "hook:expect-recording");
     let page_saw_the_end = recording.is_ok();
     record("page-sees-the-recording-and-its-end", recording);
-    // Строки журнала плеера: переход и конец записи (ждём, даже если страница не дошла: так в
-    // разборе видно, что сделал плеер).
-    record(
-        "player-logs-the-recording",
-        wait_for_journal_line(whole_log, RECORDING_MARKER),
-    );
     if page_saw_the_end {
         record(
             "player-plays-to-the-end",
@@ -181,9 +187,14 @@ fn run_steps(
     }
 }
 
-/// Ждёт в журнале плеера строку с `marker`; ошибка — текст для шага.
+/// Ждёт в журнале плеера строку с `marker` (до [`JOURNAL_LINE_TIMEOUT`]); ошибка — текст для шага.
 fn wait_for_journal_line(log: &mut PlayerLog, marker: &str) -> Result<(), String> {
-    log.wait_for_line(marker, JOURNAL_LINE_TIMEOUT)
+    log_line_within(log, marker, JOURNAL_LINE_TIMEOUT)
+}
+
+/// Ждёт в журнале плеера строку с `marker` не дольше `timeout`.
+fn log_line_within(log: &mut PlayerLog, marker: &str, timeout: Duration) -> Result<(), String> {
+    log.wait_for_line(marker, timeout)
         .map(|_| ())
         .map_err(|error| format!("no '{marker}' line in the player log: {error}"))
 }

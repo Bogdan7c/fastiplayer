@@ -2,7 +2,7 @@
 //! (`after-return`), три вкладки подряд (`three-tabs`). Каждая — несколько действий человека подряд на
 //! настоящей мыши и приговор по уликам КАЖДОГО звена.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::facts::PAUSE_CLICKED_LINE;
 use super::judge::{
@@ -13,9 +13,11 @@ use super::settings::SettingsPreset;
 use super::steps::{AutoSession, Begun, begin, verdict};
 use crate::browsers::BrowserKind;
 use crate::environment::BenchEnvironment;
+use crate::observe::{FrameGrowthRule, PLAYBACK_GROWTH_WINDOW};
 use crate::scenarios::capture::FRAMES_TIMEOUT;
 use crate::scenarios::context::{ScenarioError, Stand};
 use crate::scenarios::handoff_run::{HANDOFF_MODE_QUERY, PageReadiness};
+use crate::scenarios::judge_window::FILM_WINDOW;
 use crate::scenarios::outcome::Verdict;
 use crate::site::RunId;
 
@@ -113,13 +115,16 @@ fn preroll_steps(session: &mut AutoSession<'_, '_>) {
     if session.record(film).is_none() {
         return;
     }
+    let film_started_at = Instant::now();
     // Точка отсчёта — сводки ПОСЛЕ запуска фильма страницей: кадры рекламы в счёт не идут.
     let growth = session.run().player_log.skip_history().and_then(|()| {
-        session
-            .run()
-            .player_log
-            .wait_for_frame_growth(60, FRAMES_TIMEOUT)
+        session.run().player_log.wait_for_frame_growth(
+            FrameGrowthRule::frames_within(60, PLAYBACK_GROWTH_WINDOW),
+            FRAMES_TIMEOUT,
+        )
     });
+    // Судья часов фильма верит окну не короче FILM_WINDOW после `film-started`.
+    FILM_WINDOW.hold_until_judgeable(film_started_at);
     match growth {
         Ok(found) => session.notes.push(format!(
             "film frames grew by {} in the player after the ad",

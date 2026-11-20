@@ -10,6 +10,7 @@
 use super::super::capture::max_real_frames;
 use super::super::entries::return_hand::PlaceholderView;
 use super::super::evidence::host_failures;
+use super::super::judge_window::FILM_WINDOW;
 use super::facts::{PageDuration, StateFacts, WindowFacts, has_user_click};
 use crate::observe::HostLogEvidence;
 use crate::site::PageReport;
@@ -228,8 +229,6 @@ pub(super) fn hover_reached_page_failures(hover_lines: &[String]) -> Vec<String>
 
 // --- реклама перед фильмом по клику (строка `preroll`) ------------------------------------------
 
-/// Самое короткое окно фильма, на котором часы что-то доказывают, с.
-const MIN_FILM_WINDOW_S: f64 = 8.0;
 /// Потолок настоящих кадров браузера у элемента фильма за всё окно (запас на момент перехода).
 const MAX_FILM_REAL_FRAMES: f64 = 15.0;
 /// На сколько секунд часы фильма обязаны уйти вперёд за окно.
@@ -247,11 +246,12 @@ fn metric(report: &PageReport, name: &str, failures: &mut Vec<String>) -> Option
 /// Метрики страницы «реклама → фильм по клику»: реклама ушла под тень, фильм идёт под тенью.
 pub(super) fn preroll_metric_failures(report: &PageReport) -> Vec<String> {
     let mut failures = Vec::new();
+    let min_film_window_s = FILM_WINDOW.min_seconds();
     if metric(report, "film_window_s", &mut failures)
-        .is_some_and(|window| window < MIN_FILM_WINDOW_S)
+        .is_some_and(|window| window < min_film_window_s)
     {
         failures.push(format!(
-            "the film window was shorter than {MIN_FILM_WINDOW_S} s, too short to judge its clock"
+            "the film window was shorter than {min_film_window_s} s, too short to judge its clock"
         ));
     }
     if metric(report, "film_clock_advance_s", &mut failures)

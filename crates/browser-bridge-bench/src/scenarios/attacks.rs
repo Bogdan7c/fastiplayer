@@ -33,7 +33,8 @@ use super::page_filter::PageFilter;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::observe::{
-    EndNotice, FrameEvidence, HostLogEvidence, ObserveError, parse_end_notice, read_host_evidence,
+    EndNotice, FrameEvidence, FrameGrowthRule, HostLogEvidence, ObserveError,
+    PLAYBACK_GROWTH_WINDOW, parse_end_notice, read_host_evidence,
 };
 use crate::player_control::PlayerControl;
 use crate::site::{PageReport, SiteError};
@@ -214,7 +215,7 @@ fn drive(
             return Ok(Verdict::fail(format!("hand_off_tab: {other:?}\n{log}")));
         }
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     let control = PlayerControl::on_bus(environment.bus_address()?);
     let start = start_of_session(&mut run, &control)?;
 
@@ -350,7 +351,13 @@ fn observe_absorption(run: &mut HandoffRun<'_>) -> Result<ObservedEnd, String> {
         Err(error) => return Err(format!("cannot read the player log: {error}")),
     }
     run.player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED_AFTER_ABSORBED_ATTACK, FRAMES_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(
+                MIN_FRAMES_GAINED_AFTER_ABSORBED_ATTACK,
+                PLAYBACK_GROWTH_WINDOW,
+            ),
+            FRAMES_TIMEOUT,
+        )
         .map(|growth| ObservedEnd::Absorbed {
             frames_gained: growth.frames_gained(),
         })
@@ -420,7 +427,7 @@ fn drive_follow_up(
         run.tell_page("finish");
         return Ok(unreached(reason));
     }
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     let frames = match wait_for_new_grant(run, grants_before)? {
         Ok(()) => run
             .player_log

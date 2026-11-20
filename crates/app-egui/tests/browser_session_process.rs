@@ -974,3 +974,8 @@ mod hls_live_rejoin;
 // Сессия 16d3: HLS-эфир под мостом ждёт сеть посреди просмотра, а не падает (решение 334).
 #[path = "browser_session_process/hls_live_network_outage.rs"]
 mod hls_live_network_outage;
+
+// Сессия 16b3c2: короткий шаг сводки журнала для стенда моста — тестовая переменная
+// процесса, сводки идут с её шагом (решение 386).
+#[path = "browser_session_process/summary_interval.rs"]
+mod summary_interval;

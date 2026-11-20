@@ -29,13 +29,13 @@ use super::page_ends::start_of_session;
 use super::page_filter::PageFilter;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
-use crate::observe::read_host_evidence;
+use crate::observe::{FrameGrowthRule, PLAYBACK_GROWTH_WINDOW, read_host_evidence};
 use crate::player_control::PlayerControl;
 
 /// Страница сценария.
 const TAB_RETURN_PAGE: &str = "tab-return";
 /// Переменная окружения для отладки: только строки, в подписи которых есть этот текст.
-const SUBJECT_FILTER_VARIABLE: &str = "BRIDGE_BENCH_TAB_RETURN_ROW";
+pub(super) const SUBJECT_FILTER_VARIABLE: &str = "BRIDGE_BENCH_TAB_RETURN_ROW";
 
 /// Строки журнала плеера, по которым идёт сценарий (session_media/page_reopen.rs, translator/page_link.rs).
 /// Главный цикл отдал новость о связи со страницей машине выхода (`runtime::follow_page_link_notices`).
@@ -60,7 +60,7 @@ const PAGE_CAME_BACK_TIMEOUT: Duration = Duration::from_secs(40);
 const PAGE_NOT_BACK_TIMEOUT: Duration = Duration::from_secs(50);
 /// Через сколько после «вернулась» читать позицию: окно успевает применить начало нового поколения.
 const POSITION_SETTLE: Duration = Duration::from_secs(1);
-/// Сколько новых кадров рендера после возврата доказывают, что поток идёт (сводка — раз в 10 с).
+/// Сколько новых кадров рендера после возврата доказывают, что поток идёт.
 const FRAMES_AFTER_RETURN: u64 = 50;
 const FRAMES_AFTER_RETURN_TIMEOUT: Duration = Duration::from_secs(25);
 /// Сколько вернувшийся документ живёт под тенью, прежде чем судить его декодер (порог — 6 с строк).
@@ -151,6 +151,11 @@ fn subject(row: TabReturnRow) -> String {
     format!("{} x {TAB_RETURN_PAGE}", row.name())
 }
 
+/// Имена всех строк, по которым судит отбор [`SUBJECT_FILTER_VARIABLE`].
+pub(super) fn row_names() -> Vec<String> {
+    ROWS.iter().map(|row| subject(*row)).collect()
+}
+
 /// Идентификаторы страниц сценария (для проверки `--page`).
 pub(super) fn page_ids() -> Vec<&'static str> {
     vec![TAB_RETURN_PAGE]
@@ -234,7 +239,7 @@ fn drive(
         other => return finish_early(run, format!("hand_off_tab: {other:?}")),
     }
     // По этой команде второй документ узнает себя (см. шапку страницы).
-    run.tell_page("handed-off");
+    run.announce_handed_off();
     let control = PlayerControl::on_bus(environment.bus_address()?);
     if let Err(message) = start_of_session(&mut run, &control)? {
         return finish_early(run, message);
@@ -329,7 +334,10 @@ fn follow_return(
     notes.record(position);
     let frames = run
         .player_log
-        .wait_for_frame_growth(FRAMES_AFTER_RETURN, FRAMES_AFTER_RETURN_TIMEOUT)
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(FRAMES_AFTER_RETURN, PLAYBACK_GROWTH_WINDOW),
+            FRAMES_AFTER_RETURN_TIMEOUT,
+        )
         .map(|growth| {
             format!(
                 "{} new frames in render after the return",

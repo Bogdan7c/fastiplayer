@@ -24,6 +24,7 @@ mod extension_status;
 mod handoff_run;
 mod hls_live;
 mod hls_live_sleep;
+mod judge_window;
 mod live_ends;
 mod live_unload;
 mod outcome;
@@ -37,6 +38,7 @@ mod pages;
 mod player_commands;
 mod quality;
 mod replay;
+mod row_filter;
 mod run_tweaks;
 mod series;
 mod series_memory;
@@ -49,6 +51,7 @@ pub use page_catalog::{PAGE_SCENARIOS, PageScenario};
 pub use page_ends::end_page_ids;
 pub use page_filter::PageFilter;
 pub use replay::{DEFAULT_MIN_FRAMES, ReplayOptions};
+pub use row_filter::RowFilter;
 
 use crate::browsers::BrowserKind;
 

@@ -116,7 +116,7 @@ fn drive(
     }
     let handed_off_at = Instant::now();
     let outcome = run.hand_off().map_err(|error| error.to_string());
-    run.tell_page("handed-off");
+    run.announce_handed_off();
 
     let honest_end = match &outcome {
         Ok(HandOffOutcome::Started) => {

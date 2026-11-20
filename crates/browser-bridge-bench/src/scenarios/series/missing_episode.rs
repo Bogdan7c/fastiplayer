@@ -26,7 +26,9 @@ use super::{
 };
 use crate::browsers::BrowserKind;
 use crate::environment::BenchEnvironment;
-use crate::observe::{HostLogEvidence, read_host_evidence};
+use crate::observe::{
+    FrameGrowthRule, HostLogEvidence, PLAYBACK_GROWTH_WINDOW, read_host_evidence,
+};
 use crate::site::{BrowserLogLine, PageReport, SiteError};
 
 /// Хвост адреса: у Dub B только серии 2 и 3, смотрим серию 1.
@@ -125,10 +127,10 @@ fn walk_missing_episode(run: &mut HandoffRun<'_>, failed_steps: &mut Vec<String>
             return;
         }
     }
-    if let Err(error) = run
-        .player_log
-        .wait_for_frame_growth(MIN_FRAMES_GAINED, GROWTH_TIMEOUT)
-    {
+    if let Err(error) = run.player_log.wait_for_frame_growth(
+        FrameGrowthRule::frames_within(MIN_FRAMES_GAINED, PLAYBACK_GROWTH_WINDOW),
+        GROWTH_TIMEOUT,
+    ) {
         failed_steps.push(format!("frames-after-the-refusal: {error}"));
     }
 }

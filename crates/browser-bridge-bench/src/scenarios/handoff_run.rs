@@ -5,10 +5,12 @@
 //! открывает страницу с `mode=handoff`, ждёт её `handoff-ready`, «отдаёт вкладку» роботом
 //! (решение 175) и дальше даёт сценарию команды странице и ожидания по ней.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::context::{ScenarioError, Stand};
+use super::judge_window::SHADOW_WINDOW;
 use super::pages::page_url;
 use super::run_tweaks::{RunTweaks, RuntimeInstall};
 use crate::browsers::{
@@ -32,6 +34,8 @@ pub(super) const FINAL_REPORT_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_MARKER: &str = "handoff-ready";
 /// Параметр адреса: страница стенда работает под командой робота.
 pub(super) const HANDOFF_MODE_QUERY: &str = "&mode=handoff";
+/// Команда странице «вкладка отдана плееру» ([`HandoffRun::announce_handed_off`]).
+const HANDED_OFF_COMMAND: &str = "handed-off";
 
 /// Адрес страницы стенда под заданным адресом сервера (`report_origin` остаётся настоящим
 /// `127.0.0.1`: отчёты и журнал страницы идут на сервер стенда, а не на «публичное» имя).
@@ -135,6 +139,9 @@ pub(super) struct HandoffRun<'a> {
     page_origin: String,
     pub(super) player_log: PlayerLog,
     pub(super) stderr_log: PathBuf,
+    /// Когда странице сказано «handed-off» (последний раз): от этого мига страница меряет
+    /// окно под тенью, и итог раньше пригодного для судьи окна не просится.
+    handed_off_at: Cell<Option<Instant>>,
 }
 
 impl<'a> HandoffRun<'a> {
@@ -233,6 +240,7 @@ impl<'a> HandoffRun<'a> {
             page_origin,
             player_log,
             stderr_log: browser_kind.stderr_log_path(environment.work_dir()),
+            handed_off_at: Cell::new(None),
         })
     }
 
@@ -404,6 +412,13 @@ impl<'a> HandoffRun<'a> {
             .map_err(|error| error.to_string())
     }
 
+    /// Сообщает странице, что вкладка отдана плееру (`handed-off`): с этого мига она меряет
+    /// окно под тенью — сколько настоящих кадров браузер декодировал мимо тени.
+    pub(super) fn announce_handed_off(&self) {
+        self.tell_page(HANDED_OFF_COMMAND);
+        self.handed_off_at.set(Some(Instant::now()));
+    }
+
     /// Команда странице (она заберёт её опросом).
     pub(super) fn tell_page(&self, command: &str) {
         self.stand.site.send_command(&self.run, command);
@@ -421,8 +436,10 @@ impl<'a> HandoffRun<'a> {
         command: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        self.wait_page_log_line_of(run, &format!("ack {command}"), timeout)
-            .map(|_| ())
+        self.stand
+            .site
+            .wait_command_ack(run, command, timeout)
+            .map_err(|error| error.to_string())
     }
 
     /// Просит страницу другого прогона подвести итог и ждёт её отчёт.
@@ -431,12 +448,12 @@ impl<'a> HandoffRun<'a> {
         self.stand.site.wait_report(run, FINAL_REPORT_TIMEOUT)
     }
 
-    /// Ждёт, пока страница подтвердит команду (`ack <команда>` в её журнале).
+    /// Ждёт, пока страница подтвердит ПОСЛЕДНЮЮ отправку команды (`ack <команда>` в её
+    /// журнале столько раз, сколько команда отправлена).
     pub(super) fn wait_ack(&self, command: &str, timeout: Duration) -> Result<(), String> {
         self.stand
             .site
-            .wait_log_line(&self.run, &format!("ack {command}"), timeout)
-            .map(|_| ())
+            .wait_command_ack(&self.run, command, timeout)
             .map_err(|error| error.to_string())
     }
 
@@ -457,8 +474,14 @@ impl<'a> HandoffRun<'a> {
         self.stand.site.wait_report(&self.run, timeout)
     }
 
-    /// Просит страницу подвести итог и ждёт её отчёт.
+    /// Просит страницу подвести итог и ждёт её отчёт. Если странице сказано «handed-off»,
+    /// итог просится не раньше, чем окно под тенью станет пригодным для судьи
+    /// ([`SHADOW_WINDOW`]): короче — счётчик браузера ничего не доказывает. Раньше это время
+    /// неявно давало ожидание сводки плеера раз в 10 с (сессия 16b3c2).
     pub(super) fn finish_page(&self) -> Result<PageReport, SiteError> {
+        if let Some(handed_off_at) = self.handed_off_at.get() {
+            SHADOW_WINDOW.hold_until_judgeable(handed_off_at);
+        }
         self.tell_page("finish");
         self.stand.site.wait_report(&self.run, FINAL_REPORT_TIMEOUT)
     }

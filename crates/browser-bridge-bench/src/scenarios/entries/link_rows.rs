@@ -340,10 +340,9 @@ fn withdraw_and_check_tab_stays(
 ) -> String {
     const WITHDRAW: &str = "hook:withdraw-source";
     stand.site.send_command(target_run, WITHDRAW);
-    if let Err(error) =
-        stand
-            .site
-            .wait_log_line(target_run, &format!("ack {WITHDRAW}"), ACK_TIMEOUT)
+    if let Err(error) = stand
+        .site
+        .wait_command_ack(target_run, WITHDRAW, ACK_TIMEOUT)
     {
         failures.push(format!(
             "the page did not confirm taking the video back: {error}"

@@ -84,7 +84,7 @@ pub(super) fn begin<'a, 'env>(
         Ok(HandOffOutcome::Started) => {}
         other => return abort(hand, format!("hand_off_tab: {other:?}")).map(Begun::Finished),
     }
-    hand.run().tell_page("handed-off");
+    hand.run().announce_handed_off();
     let control = PlayerControl::on_bus(environment.bus_address()?);
     if let Err(message) = start_of_session(hand.run(), &control)? {
         return abort(hand, message).map(Begun::Finished);

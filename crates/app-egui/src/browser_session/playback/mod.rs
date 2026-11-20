@@ -69,10 +69,11 @@ use self::video_output::{
 use super::hls_bridge::capabilities::{BrowserDecodeCapabilities, DecodeCapabilitiesAnswer};
 use super::inbox::BrowserSessionWake;
 use super::journal::{
-    BROWSER_PLAYBACK_SUMMARY_INTERVAL, JournalNotice, PlaybackJournal, PlaybackSummary,
-    SummaryKind, log_playback_ended, log_playback_summary,
+    JournalNotice, PlaybackJournal, PlaybackSummary, SummaryKind, log_playback_ended,
+    log_playback_summary,
 };
 use super::session_config::BrowserSessionSettings;
+use super::summary_interval_override::summary_interval_from_environment;
 
 /// Сколько ждать завершения потока плеера при выходе процесса.
 ///
@@ -421,7 +422,7 @@ impl BrowserPlayback {
             worker,
             video_output,
             audio_meter,
-            journal: PlaybackJournal::new(now, BROWSER_PLAYBACK_SUMMARY_INTERVAL),
+            journal: PlaybackJournal::new(now, summary_interval_from_environment()),
             ledger: LoadLedger::default(),
             pending_install: None,
             load_tickets: MediaLoadTicketIssuer::default(),

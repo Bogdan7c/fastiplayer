@@ -19,6 +19,98 @@ scripts/browser-bridge-bench.sh all
 провалом), `1` — что-то провалилось, `2` — ошибка в аргументах. В конце печатается таблица и
 время каждого шага.
 
+## Быстро: `quick`, `--jobs` и «проверяем только задетое» (сессия 16b3c2, решение 386)
+
+Полный прогон `all` шёл больше двух часов. Теперь по умолчанию гоняется **быстрый набор и
+то, что задела правка**; `all` — только перед вехой.
+
+```bash
+scripts/browser-bridge-bench.sh quick                  # быстрый набор, оба браузера (~2 мин)
+scripts/browser-bridge-bench.sh capture --page feed     # задетое по таблице ниже
+scripts/browser-bridge-bench.sh all                     # перед вехой (частями, --jobs по умолчанию)
+```
+
+Что сделало стенд быстрым:
+
+- **Короткая сводка плеера.** Стенд ставит плееру тестовую переменную
+  `FASTIPLAYER_TEST_BROWSER_SUMMARY_INTERVAL_MS=1000`: сводка `Browser playback summary` идёт
+  раз в 1 с вместо 10 (обычный плеер — прежние 10 с; плеер принимает 250 мс … 10 с). Судьи
+  роста кадров не считают сводки: правило — «не меньше N кадров не дольше чем за 10 с по
+  часам плеера» (`observe/frame_growth.rs`, время — отметки самих строк журнала).
+- **Части в отдельных процессах.** `--jobs N` гонит до N частей сразу (часть — команда ×
+  браузер × страница); каждая часть — дочерний процесс стенда со своим сайтом, журналом
+  запросов сервера и песочницей, поэтому улики соседей в неё не попадают. По умолчанию
+  N = процессоры / 2, не больше 8; с `--display real` — 1. Таблица — в порядке частей,
+  прогресс `[k/n]` — в stderr, журнал упавшей части остаётся в
+  `target/browser-bridge-bench/work/jobs-*/`. Ctrl-C родителя пересылается детям (SIGTERM),
+  и каждый убирает свои KWin, шину и браузер.
+- **Плеер для стенда — release.** Скрипт собирает плеер и посредника с оптимизацией (под
+  нагрузкой параллельных частей отладочный плеер опаздывает); отладочный —
+  `BRIDGE_BENCH_PLAYER_PROFILE=debug`.
+
+### Быстрый набор `quick`
+
+Список утвердил владелец (16 строк × 2 браузера). Каждая строка — своя часть; где на странице
+несколько строк, часть выбирает одну отбором `BRIDGE_BENCH_*_ROW`, и часть обязана выдать
+ровно ожидаемые строки (иначе FAIL «the part was expected to run …»).
+
+| # | Что | Команда и строка |
+|---|---|---|
+| 1 | MSE fMP4 (H.264, как YouTube) + контроль линейки | `capture` `mse-fmp4` |
+| 2 | MSE WebM (VP9/Opus, как YouTube) | `capture` `mse-webm` |
+| 3 | Смена качества на ходу + контроль | `capture` `mse-abr` |
+| 4 | Реклама → фильм в том же элементе (как YouTube) | `capture` `ad-film-same-element` |
+| 5 | Реклама отдельным роликом → фильм | `capture` `ad-preroll` |
+| 6 | Пауза, play, перемотка в буфер и за буфер, закрытие окна | `player-commands` `mse-fmp4` |
+| 7 | Файл `<video src>` | `capture` `video-src` |
+| 8 | Родной HLS в `src` (в Firefox — unsupported) | `capture` `m3u8-in-src` |
+| 9 | Следующая серия на той же странице | `episodes` `delayed-next` |
+| 10 | Следующая серия в запомненной озвучке | `series-memory-autoplay` |
+| 11 | Перезагрузка страницы → то же окно | `page-reload` `reload-same-url` |
+| 12 | Возврат закрытой вкладки в тот же сеанс | `tab-return` `return-mse` |
+| 13 | Режим 2: клик по видео — и оно в плеере | `auto-handoff` `click-hands-off` |
+| 14–16 | Ленты: много `<video>`, пул из двух, один переносимый элемент | `capture` `feed-many`, `feed-pool`, `feed-moved` |
+
+Отбор одной строки руками (то же делает `quick`): `BRIDGE_BENCH_FEED_ROW`,
+`BRIDGE_BENCH_AUTO_HANDOFF_ROW`, `BRIDGE_BENCH_TAB_RETURN_ROW`, `BRIDGE_BENCH_RETURN_ROW`,
+`BRIDGE_BENCH_ENTRY_ROW` — часть имени строки; `BRIDGE_BENCH_EPISODES_ROW`,
+`BRIDGE_BENCH_PAGE_RELOAD_ROW`, `BRIDGE_BENCH_SERIES_MEMORY_ROW`, `BRIDGE_BENCH_AD_HOP_ROW` —
+часть имени или точное имя через `=` (`=delayed-next` не возьмёт `delayed-next-hidden`).
+
+### Протокол «только задетое»
+
+Перед коммитом: юнит-тесты задетого (`npm run check` в `extensions/browser`, `cargo test` по
+задетым crate-ам), **быстрый набор** и команды из таблицы по задетым путям. Полный `all` —
+только перед вехой. Путь не нашёлся в таблице — быстрый набор плюс команда, чей сценарий
+проверяет задетое поведение, а строка в таблицу дописывается.
+
+| Что правил | Что гонять сверх `quick` |
+|---|---|
+| Экстеншен `src/page/` (перехват MSE, `mse-hook`, «память без копий» `journal/`, `segment-scanner/`) | `capture`, `page-ends`, `attacks` |
+| Экстеншен `src/page/shadow/` (тень, часы, `shadow-assembly.ts`) | `capture`, `page-ends`, `player-commands`, `page-return`, `tab-return`; эфир — ещё `hls-live`, `live-ends` |
+| Экстеншен `src/page/next-video-guard.ts`, `background/handoff/video-relocation.ts` (переезд) | `capture --page ad-preroll --page ad-chain --page ad-film-same-element --page feed`, `episodes` |
+| Экстеншен `background/handoff/feed/`, строки лент | `capture --page feed --page feed-hover` и остальные `feed-*`, `auto-handoff --page auto-feed` |
+| Экстеншен `background/handoff/` (сеанс, `session-*.ts`, `frame-survey.ts`, `hand-off-command.ts`) | `entries`, `page-reload`, `tab-return`, `page-ends` |
+| Экстеншен `background/handoff/hls/`, `range-fetcher.ts`, `file-*` | `capture --page m3u8-in-src --page hls-fmp4-abr --page hls-aes128 --page video-src-cdn --page video-src-referer`, `player-commands`, `hls-live`, `local-address` |
+| Экстеншен `background/handoff/episode-change/`, `session-page-reload.ts` | `episodes`, `page-reload` |
+| Экстеншен `background/handoff/page-return/`, `page-tab-reveal*` | `tab-return`, `page-return` |
+| Экстеншен `background/auto-handoff/`, `page/auto-handoff/`, `content/auto-handoff-watch*` | `auto-handoff` |
+| Экстеншен `adapters/` (сайты, руки, меню), `background/choice-memory/` | `series`, `series-memory`, `episodes`; `adapters/capabilities/ad-organs/` — `capture --page ad-skip` (все три варианта пропуска) |
+| Экстеншен `background/tab-model/`, `local-address-block-rules.ts` | `local-address`, `attacks` |
+| Экстеншен `background/entries/`, `popup/`, `content/page-ui/` | `entries`, `extension-status`, `page-return` |
+| Экстеншен `background/codec-policy/`, `page/codec-policy/` | `codecs` |
+| Экстеншен субтитры (`page/page-subtitles/`, `background/handoff/page-subtitles/`) | `page-subtitles` |
+| Плеер `app-egui/src/browser_session/session_media/` (поколения, часы страницы, перемотка) | `capture`, `player-commands`, `episodes`, `page-ends` |
+| Плеер `browser_session/window/` (кадр окна, концы, удержание кадра 380) | `page-ends`, `episodes`, `page-reload`, `quality` |
+| Плеер `browser_session/hls_bridge/` | `capture --page m3u8-in-src --page hls-fmp4-abr`, `hls-live`, `live-ends`, `hls-live-sleep` |
+| Плеер `browser_session/page_variants*`, `page_subtitles/` | `series`, `page-subtitles` |
+| Плеер `browser_session/journal*` (строки журнала — глаза стенда) | `cargo test -p browser-bridge-bench`, `smoke` |
+| `pushed-media-source` | `capture`, `player-commands`, `attacks` |
+| `browser-bridge-protocol`, `browser-bridge-session` | `attacks`, `extension-status`, `page-ends` |
+| `browser-bridge-host`, `browser-bridge-install` | `extension-status`, `smoke` |
+| Ядро плеера, декодеры, рендер (`player-core`, `video-*`, `render-*`, `audio*`) | `capture --page mse-av1 --page mse-muxed` |
+| Сам стенд (`crates/browser-bridge-bench`) | `cargo test -p browser-bridge-bench` и команды, чьи сценарии или судьи правились |
+
 ## Что доказывает каждая команда
 
 | Команда | Что делает | Что доказывает |
@@ -335,10 +427,12 @@ scripts/browser-bridge-bench.sh pages --browser firefox --extra-extension /пу�
 
 ## Известные ограничения
 
-- Каждая страница `capture` идёт в свежем окружении (свой экран, шина, плеер, браузер): около
-  25–40 секунд на страницу, зато журналы и счётчики не перемешиваются между страницами.
-- Сводки плеера приходят раз в 10 секунд, поэтому проверки роста кадров после действия
-  страницы или перемотки берут две сводки подряд (до ~20 секунд).
+- Каждая строка идёт в свежем окружении (свой экран, шина, плеер, браузер): около 10–25 секунд
+  на строку, зато журналы и счётчики не перемешиваются между строками.
+- Нижний предел строки задают окна судей, а не сводки: тень держится ≥ 6 с, фильм после
+  рекламы ≥ 8 с, эфир HLS ≥ 15 с, серия в `episodes` ждёт следующую в реальном времени.
+- Плеер стенда — release: отладочные проверки (`debug_assert`) в нём не срабатывают. Их
+  ловят юнит- и процессные тесты `cargo test`.
 - «Кадр с T» после перемотки проверяется ростом кадров и позицией плеера, а не выжженным
   номером кадра (фикстуры с выжженным номером — отдельная работа 12b).
 - Команды плеера идут по MPRIS (`busctl` на частной шине); внутрь плеера стенд не лезет.

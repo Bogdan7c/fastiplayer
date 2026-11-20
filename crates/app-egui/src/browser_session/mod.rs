@@ -84,6 +84,7 @@ mod session_end;
 mod session_media;
 mod stream_intake;
 mod stream_queue;
+mod summary_interval_override;
 #[cfg(test)]
 mod test_log_capture;
 mod translator;

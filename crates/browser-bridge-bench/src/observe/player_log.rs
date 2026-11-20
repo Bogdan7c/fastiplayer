@@ -1,6 +1,7 @@
 //! Журнал плеера: инкрементальное чтение и разбор сводок воспроизведения.
 //!
-//! Плеер раз в 10 с (и в конце) пишет строку
+//! Плеер раз в шаг сводки (10 с, на стенде короче — [`super::PLAYER_SUMMARY_INTERVAL`]) и в
+//! конце пишет строку
 //! `Browser playback summary kind=periodic|final presented_frames=N … position_regressions=N …`.
 //! `presented_frames` — кадры, дошедшие до показа в окне: критерий «видео реально играет».
 //!
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::ObserveError;
+use super::frame_growth::{FrameGrowth, FrameGrowthRule, find_frame_growth};
 
 /// Начало строки сводки.
 const SUMMARY_MARKER: &str = "Browser playback summary";
@@ -43,24 +45,6 @@ pub struct EndNotice {
     pub end: String,
     /// Строка журнала целиком.
     pub line: String,
-}
-
-/// Две сводки, между которыми показ кадров вырос на нужную величину.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameGrowth {
-    /// Сводка-точка отсчёта.
-    pub before: FrameEvidence,
-    /// Сводка, в которой кадров уже достаточно больше.
-    pub after: FrameEvidence,
-}
-
-impl FrameGrowth {
-    /// На сколько выросло число показанных кадров.
-    pub fn frames_gained(&self) -> u64 {
-        self.after
-            .presented_frames
-            .saturating_sub(self.before.presented_frames)
-    }
 }
 
 /// Читает файл журнала по мере роста; помнит, до какой строки уже «дочитал» ожидающий.
@@ -216,46 +200,35 @@ impl PlayerLog {
         Ok(())
     }
 
-    /// Доказывает, что показ кадров ИДЁТ ПРЯМО СЕЙЧАС: берёт первую новую сводку как точку
-    /// отсчёта и ждёт следующую, в которой `presented_frames` выросло не меньше чем на
-    /// `at_least_more`. Одной сводки мало: она накопительная и могла вобрать кадры,
+    /// Доказывает, что показ кадров ИДЁТ ПРЯМО СЕЙЧАС: среди сводок, пришедших после вызова,
+    /// ждёт пару, выполняющую `rule` — не меньше N кадров за T по часам плеера
+    /// ([`find_frame_growth`]). Одной сводки мало: она накопительная и могла вобрать кадры,
     /// показанные до события, которое проверяем (перемотка, смена качества, смена поколения).
+    /// `timeout` — предел ожидания по часам стенда, `rule` — сам приговор.
     pub fn wait_for_frame_growth(
         &mut self,
-        at_least_more: u64,
+        rule: FrameGrowthRule,
         timeout: Duration,
     ) -> Result<FrameGrowth, ObserveError> {
         let deadline = Instant::now() + timeout;
-        let mut baseline: Option<FrameEvidence> = None;
+        let mut summaries: Vec<FrameEvidence> = Vec::new();
         loop {
             self.refresh()?;
             while self.cursor < self.lines.len() {
                 let line = &self.lines[self.cursor];
                 self.cursor += 1;
-                let Some(evidence) = parse_summary(line) else {
-                    continue;
-                };
-                match &baseline {
-                    None => baseline = Some(evidence),
-                    Some(first)
-                        if evidence.presented_frames
-                            >= first.presented_frames.saturating_add(at_least_more) =>
-                    {
-                        return Ok(FrameGrowth {
-                            before: first.clone(),
-                            after: evidence,
-                        });
-                    }
-                    Some(_) => {}
+                if let Some(evidence) = parse_summary(line) {
+                    summaries.push(evidence);
                 }
+            }
+            if let Some(growth) = find_frame_growth(&summaries, rule) {
+                return Ok(growth);
             }
             if Instant::now() >= deadline {
                 return Err(ObserveError::Timeout {
-                    what: format!(
-                        "presented_frames to grow by at least {at_least_more} between two summaries"
-                    ),
+                    what: rule.describe(),
                     waited: timeout,
-                    last_seen: baseline.map(|first| first.summary_line),
+                    last_seen: summaries.last().map(|last| last.summary_line.clone()),
                 });
             }
             std::thread::sleep(POLL_STEP);
@@ -618,7 +591,10 @@ mod tests {
             }
         });
         let growth = log
-            .wait_for_frame_growth(100, Duration::from_secs(5))
+            .wait_for_frame_growth(
+                FrameGrowthRule::frames_within(100, Duration::from_secs(10)),
+                Duration::from_secs(5),
+            )
             .expect("grows by 100 between 100 and 260");
         writer.join().expect("writer thread");
         assert_eq!(growth.before.presented_frames, 100);
@@ -634,15 +610,18 @@ mod tests {
         append(&path, &summary_with(103));
         let mut log = PlayerLog::open(&path);
         let error = log
-            .wait_for_frame_growth(50, Duration::from_millis(400))
+            .wait_for_frame_growth(
+                FrameGrowthRule::frames_within(50, Duration::from_secs(10)),
+                Duration::from_millis(400),
+            )
             .expect_err("only 3 more frames were presented");
         let ObserveError::Timeout { last_seen, .. } = error else {
             panic!("expected a timeout, got {error:?}");
         };
         assert!(
             last_seen
-                .expect("baseline")
-                .contains("presented_frames=100")
+                .expect("the last summary")
+                .contains("presented_frames=103")
         );
     }
 
