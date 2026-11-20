@@ -43,6 +43,12 @@ export const CHOICE_MEMORY_POLICY = {
    * пришёл чуть раньше донесения о новой серии (донесения сливаются раз в 250 мс и дольше).
    */
   episodeTrackGraceMs: 3_000,
+  /**
+   * После засчитанного выбора (решение 393) сайт может пересоздать поток не сразу. Ближайший уход фильма на
+   * «жду новое поколение» в этот срок — следствие выбора, а не новый выбор человека. Срок щедрый: сайт, который
+   * поток вовсе не пересоздаёт, только отложит признание следующей поздней смены.
+   */
+  restartAfterChoiceMs: 10_000,
 } as const;
 
 /** Можно ли писать в память в этом сеансе. */
@@ -153,6 +159,14 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
   let playerSecond: number | undefined;
   let commandsInFlight = 0;
   let settledAt = Number.NEGATIVE_INFINITY;
+  /** До какого момента ближайший перезапуск потока — следствие уже засчитанного выбора (решение 393). */
+  let choiceRestartExpectedUntil = Number.NEGATIVE_INFINITY;
+
+  /** Засчитан выбор: страница перестраивается (2 с), а ближайший перезапуск потока — его следствие. */
+  function choiceTaken(): void {
+    settledAt = dependencies.now();
+    choiceRestartExpectedUntil = settledAt + CHOICE_MEMORY_POLICY.restartAfterChoiceMs;
+  }
 
   /** Команда выбора в пути или только что кончилась: смены на странице — её следствие. */
   function pageIsSettling(): boolean {
@@ -247,9 +261,14 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       }
       // Серия ещё устраивается (реклама, новое поколение не показано): так страница выбирает сама. Кроме
       // одного случая — сайт пересоздал поток после нажатия человека, а донесение опоздало (решение 393).
+      // Без ключа серии «та же серия» не отличить от следующей, поставленной сайтом: там правило прежнее.
       const absence = dependencies.adOnScreen() ? "ad" : current.filmAbsence;
       if (!current.filmOnScreen && absence !== "new_generation") {
         note(`page switched ${kind} before the episode's film was on screen (${describeFilmAbsence(absence)}): not remembered`);
+        continue;
+      }
+      if (!current.filmOnScreen && current.key === null) {
+        note(`page switched ${kind} while the stream restarted on a page that names no episode: not remembered`);
         continue;
       }
       if (selected.automatic) {
@@ -261,8 +280,10 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
       if (!current.filmOnScreen) {
         note(`page ${kind} switch reached the memory after the stream restarted: taken as the viewer's choice`);
         current.filmAbsence = "after_choice";
+        settledAt = dependencies.now(); // перезапуск этого выбора уже идёт: ждать следующий не нужно
+      } else {
+        choiceTaken();
       }
-      settledAt = dependencies.now();
       current.settled.add(kind);
       rememberChoice({ [kind]: selected.label }, `${kind} chosen on the page`);
     }
@@ -273,7 +294,12 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
     const adOnScreen = dependencies.adOnScreen();
     const onScreen = !adOnScreen && state !== "waiting";
     if (adOnScreen) current.filmAbsence = "ad";
-    else if (current.filmOnScreen && !onScreen) current.filmAbsence = pageIsSettling() ? "after_choice" : "new_generation";
+    else if (current.filmOnScreen && !onScreen) {
+      const causedByChoice = pageIsSettling() || dependencies.now() < choiceRestartExpectedUntil;
+      current.filmAbsence = causedByChoice ? "after_choice" : "new_generation";
+      // Один выбор — один перезапуск: следующий уход фильма уже судится заново.
+      if (causedByChoice) choiceRestartExpectedUntil = Number.NEGATIVE_INFINITY;
+    }
     current.filmOnScreen = onScreen;
   }
 
@@ -353,7 +379,8 @@ export function createSessionChoiceMemory(dependencies: SessionChoiceMemoryDepen
     },
     selectionFinished(kind: PageVariantKind, origin: VariantSelectionOrigin, outcome: VariantActionOutcome, label: string) {
       commandsInFlight = Math.max(0, commandsInFlight - 1);
-      settledAt = dependencies.now();
+      // Любая команда выбора (зрителя или памяти) могла запустить перезапуск потока сайтом.
+      choiceTaken();
       if (stopped || origin !== "viewer" || outcome !== "done") return;
       // Выбор языка субтитров страницы (15a2) в память не пишется как вариант: когда документ придёт дорожкой,
       // запомнит его `viewerSubtitleChoice` (по языку и подписи, 14b2).
