@@ -14,6 +14,7 @@ use tracing::{error, warn};
 use super::input_snapshot::AppFrameInputTimings;
 use super::sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
 use super::submit::{FrameSubmission, account_render_frame_outcome, submit_render_frame};
+use super::timing::VideoPrepareTimings;
 use super::timing::{
     AppRenderFrameTimings, FrameWorkTrace, SurfaceFrameCounters, log_render_frame_timings,
 };
@@ -24,6 +25,9 @@ use crate::state::{
     classify_rejected_switch,
 };
 use crate::telemetry::Telemetry;
+
+/// Имя состояния выбора кадра в трассе, когда рисуется удержанный кадр прежнего медиа.
+const MEDIA_SWITCH_HOLD_STATE: &str = "media_switch_hold";
 
 /// Тайминги стадий до показа, которые нужны строке трассы показанного кадра.
 pub(super) struct PresentedFrameTimings {
@@ -96,6 +100,10 @@ pub(super) fn present_frame_for_plan(
             },
         }
     }
+    // Учёт смены медиа (замер решения 380): что показывает этот кадр — решается до submit,
+    // засчитывается только если кадр правда ушёл на экран.
+    let media_switch_content =
+        app_state.media_switch_frame_content(prepared_video_frame.renderable_frame.as_ref());
     let mut video_prepare_timings = prepared_video_frame.timings;
     video_prepare_timings.total = stage_started_at.elapsed();
     let video_acquisition_state = prepared_video_frame.acquisition_state;
@@ -119,6 +127,7 @@ pub(super) fn present_frame_for_plan(
         .elapsed()
         .saturating_sub(video_prepare_timings.total);
     if renderer_timing.is_some() {
+        app_state.note_media_switch_frame_presented(media_switch_content);
         // Только после настоящего показа: при свёрнутом окне/потерянной surface follow-up
         // крутил бы redraw вхолостую. Итог нужен лишь диагностике решения, не управлению.
         let _follow_up = app_state
@@ -197,4 +206,26 @@ fn log_frame_without_surface(
         surface_frame_counters,
         renderer_timing,
     );
+}
+
+/// Обычный путь выбора кадра не дал кадра (`acquisition_state` — его итог): на смене медиа окна
+/// браузерного режима — удержанный кадр прежнего медиа (решение 380, владелец —
+/// `state::present_frame_cache::media_switch_frame_hold`), иначе пустое поле, как раньше.
+///
+/// Это запасной путь, а не ворота перед выбором кадра: обычный путь (`acquire` → `materialize`)
+/// идёт первым, и любой готовый кадр — нового медиа или ещё играющего прежнего — главнее
+/// удержанного. Так конец удержания не зависит от того, успел ли снимок плеера сменить поколение.
+pub(super) fn prepared_frame_without_current_video(
+    app_state: &mut AppState,
+    player_snapshot: &player_core::PlayerSnapshot,
+    acquisition_state: &'static str,
+    timings: VideoPrepareTimings,
+) -> PreparedVideoFrame {
+    match app_state.media_switch_frame_for_empty_video(player_snapshot) {
+        Some(held_frame) => PreparedVideoFrame::ready(held_frame, MEDIA_SWITCH_HOLD_STATE)
+            .with_diagnostics(MEDIA_SWITCH_HOLD_STATE, timings),
+        None => {
+            PreparedVideoFrame::empty(acquisition_state).with_diagnostics("not_requested", timings)
+        }
+    }
 }

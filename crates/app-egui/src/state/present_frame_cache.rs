@@ -4,6 +4,12 @@ use super::redraw_runtime::WaitingPresentFrameFollowUp;
 
 use super::*;
 
+mod media_switch_frame_hold;
+
+pub(super) use media_switch_frame_hold::{
+    HoldReleaseCause, MediaSwitchFrameHold, MediaSwitchFramePolicy,
+};
+
 /// Явный результат получения frame lease-а для render boundary.
 pub enum PresentFrameAcquisition {
     /// Worker ещё не публиковал zero-copy frame для текущей media session.
@@ -116,6 +122,9 @@ pub(crate) enum PresentFrameChange {
 pub(super) enum CachedPresentFrameDiscardReason {
     /// Пользователь или shell начинает открывать другой media source.
     MediaOpenBoundary,
+
+    /// Установленное медиа снято без замены (точный release, `clear_released_installed_media_source`).
+    InstalledMediaReleased,
 
     /// Runtime с window/surface уничтожается целиком.
     RuntimeDrop,
@@ -562,7 +571,10 @@ impl AppState {
         if self.cached_renderable_present_frame.is_some() {
             debug!(?reason, "Clearing cached present frame");
         }
-        self.cached_renderable_present_frame = None;
+        // Внутри смены медиа окна браузерного режима кадр может остаться на экране до первого
+        // кадра нового медиа (решение 380, `media_switch_frame_hold`); иначе он отпускается здесь.
+        let discarded = self.cached_renderable_present_frame.take();
+        self.hand_discarded_frame_to_media_switch(discarded, reason);
     }
 
     /// Освобождает cached frame перед уничтожением app/window runtime.
@@ -601,6 +613,10 @@ impl AppState {
         renderable_frame: RenderablePresentFrame,
         player_snapshot: &PlayerSnapshot,
     ) {
+        // Кадр нового медиа готов: удержанный на смене медиа кадр прежнего больше не нужен.
+        let _handover = self
+            .media_switch_frame_hold
+            .note_frame_ready(&renderable_frame);
         self.cached_renderable_present_frame = Some(CachedRenderablePresentFrame {
             renderable_frame,
             source_label: player_snapshot.source_label.clone(),

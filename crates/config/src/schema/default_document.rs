@@ -430,6 +430,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "media_switch_frame_hold_ms = 3000",
+        "# Сколько мс окно держит последний кадр прежнего ролика до первого кадра нового (0..=10000; 0 — пустое поле между роликами). Действует со следующего окна.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[browser_session.window]",
         "# Запоминаемое окно браузерного режима: окно само пишет размер и полноэкранность (в окне настроек нет).",
     );

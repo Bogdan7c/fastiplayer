@@ -9,7 +9,7 @@ use crate::{
     LEGACY_SCHEMA_VERSION_22, LEGACY_SCHEMA_VERSION_23, LEGACY_SCHEMA_VERSION_24,
     LEGACY_SCHEMA_VERSION_25, LEGACY_SCHEMA_VERSION_26, LEGACY_SCHEMA_VERSION_27,
     LEGACY_SCHEMA_VERSION_28, LEGACY_SCHEMA_VERSION_29, LEGACY_SCHEMA_VERSION_30,
-    LEGACY_SCHEMA_VERSION_31,
+    LEGACY_SCHEMA_VERSION_31, LEGACY_SCHEMA_VERSION_32,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -127,6 +127,10 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             // секунду после смены варианта, 14a); старый файл без него получает 120 через
             // `serde(default)`, переписывать нечего.
             | LEGACY_SCHEMA_VERSION_31
+            // v32 -> v33: добавлен `browser_session.media_switch_frame_hold_ms` (удержание кадра
+            // прежнего ролика на смене медиа, 16b3c); старый файл без него получает 3000 через
+            // `serde(default)`, переписывать нечего.
+            | LEGACY_SCHEMA_VERSION_32
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }

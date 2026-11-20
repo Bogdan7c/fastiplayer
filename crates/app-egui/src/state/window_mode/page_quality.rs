@@ -154,7 +154,8 @@ mod tests {
         assert!(!standard.note_page_quality(facts(PageViewOffer::Available)));
         assert_eq!(standard.page_quality, PageQualityFacts::default());
 
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         assert!(browser.note_page_quality(facts(PageViewOffer::Available)));
         assert!(!browser.note_page_quality(facts(PageViewOffer::Available)));
         assert_eq!(browser.page_quality.page_view, PageViewOffer::Available);
@@ -165,7 +166,8 @@ mod tests {
     /// ящик пуст.
     #[test]
     fn the_request_is_queued_only_when_the_page_view_is_available() {
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         assert_eq!(
             browser.request_page_view(),
             PageViewRequestOutcome::NotAvailable(PageViewOffer::NotAttached),
@@ -200,7 +202,8 @@ mod tests {
         standard.apply_quality_control_action(QualityControlAction::ShowPage);
         assert_eq!(drained_intents(&mut standard), vec![]);
 
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         browser.apply_quality_control_action(QualityControlAction::ShowPage);
         assert_eq!(
             drained_intents(&mut browser),

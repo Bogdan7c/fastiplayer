@@ -57,6 +57,10 @@ impl WindowPlayer for AppStateWindowPlayer<'_> {
             ActiveMediaSource::BrowserStream,
             SafeMediaLabel::from_service_safe_label(BROWSER_STREAM_LABEL),
         );
+        // Смена медиа окна (решение 380): замер «сколько кадров без видео до первого кадра
+        // нового медиа» и удержание прежнего кадра начинаются ДО установки — после неё снимок
+        // плеера уже несёт поколение нового медиа.
+        self.app_state.begin_media_switch_frame_watch();
         match self.app_state.begin_prepared_media_strong(
             self.playlist_runtime,
             self.renderer,
@@ -67,6 +71,7 @@ impl WindowPlayer for AppStateWindowPlayer<'_> {
             Err(error) => {
                 // Текст ошибки открытия не несёт данных страницы (метка нейтральная).
                 warn!(%error, "The browser window could not start installing the media");
+                self.app_state.abandon_media_switch_after_refused_load();
                 BeginLoad::Refused(fault_for_open_failure(&error).unwrap_or(
                     BrowserPlaybackFault::PlaybackFailed(PlayerErrorKind::RuntimeError),
                 ))
@@ -118,6 +123,7 @@ impl WindowPlayer for AppStateWindowPlayer<'_> {
                 None => LoadPoll::Cancelled,
                 Some(fault) => {
                     warn!(%error, "The browser window media install failed");
+                    self.app_state.abandon_media_switch_after_failed_load();
                     LoadPoll::Failed(fault)
                 }
             },

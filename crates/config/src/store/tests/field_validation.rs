@@ -298,7 +298,7 @@ fn a_v30_file_without_the_live_source_stall_timeout_gets_the_default() {
     fs::write(
         &config_path,
         r#"
-schema_version = 32
+schema_version = 33
 
 [player.seek]
 commit_timeout_ms = 10000

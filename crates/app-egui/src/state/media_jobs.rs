@@ -98,7 +98,7 @@ impl AppState {
         {
             return;
         }
-        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::InstalledMediaReleased);
         self.current_local_file = None;
         self.active_media_source = None;
         self.clear_subtitles_for_released_media();

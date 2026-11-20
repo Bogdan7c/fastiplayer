@@ -57,14 +57,16 @@ fn only_the_page_led_window_keeps_the_variant_facts() {
     assert!(!standard.note_page_variants(facts(NextEpisodeOffer::Offered)));
     assert_eq!(standard.page_variants, PageVariantFacts::default());
 
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     assert!(browser.note_page_variants(facts(NextEpisodeOffer::Offered)));
     assert!(!browser.note_page_variants(facts(NextEpisodeOffer::Offered)));
 }
 
 #[test]
 fn a_choice_against_the_current_menu_reaches_the_outbox() {
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     browser.note_page_variants(facts(NextEpisodeOffer::PageSaysUnavailable));
     assert_eq!(
         browser.select_page_variant(dub_choice(3)),
@@ -78,7 +80,8 @@ fn a_choice_against_the_current_menu_reaches_the_outbox() {
 
 #[test]
 fn a_stale_absent_or_out_of_range_choice_stays_in_the_window() {
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     assert_eq!(
         browser.select_page_variant(dub_choice(3)),
         PageVariantSelectOutcome::NoMenu
@@ -107,7 +110,8 @@ fn a_stale_absent_or_out_of_range_choice_stays_in_the_window() {
 
 #[test]
 fn during_an_ad_the_selection_is_refused_and_nothing_is_queued() {
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     browser.note_page_variants(facts(NextEpisodeOffer::Offered));
     browser.note_ad_plate(Some(ad_plate(AdSkipOffer::Nothing)));
     assert_eq!(
@@ -119,7 +123,8 @@ fn during_an_ad_the_selection_is_refused_and_nothing_is_queued() {
 
 #[test]
 fn next_episode_is_offered_only_when_the_page_says_so_and_no_ad_is_on_screen() {
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     assert!(!browser.next_episode_offered(), "nothing said yet");
     for refused in [
         NextEpisodeOffer::PageSaysUnavailable,
@@ -148,7 +153,8 @@ fn next_episode_is_offered_only_when_the_page_says_so_and_no_ad_is_on_screen() {
 /// предлагается), вне рекламы → следующая серия, без серии → ничего (как раньше).
 #[test]
 fn next_presses_the_ad_offer_first_then_asks_for_the_next_episode() {
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     browser.note_page_variants(facts(NextEpisodeOffer::Offered));
 
     browser.note_ad_plate(Some(ad_plate(AdSkipOffer::Skip)));

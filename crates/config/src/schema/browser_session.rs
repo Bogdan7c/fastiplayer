@@ -1,7 +1,8 @@
 //! Настройки браузерного режима `[browser_session]` (схема v28, окно — v29, потолок памяти — v30,
-//! срок возврата на секунду после смены варианта — v32): сколько
-//! медиа источник «байты от страницы» держит вперёд, потолок его памяти и
-//! запоминаемое окно браузерного режима `[browser_session.window]`.
+//! срок возврата на секунду после смены варианта — v32, удержание кадра на смене медиа — v33):
+//! сколько медиа источник «байты от страницы» держит вперёд, потолок его памяти, сколько окно
+//! держит кадр прежнего ролика до первого кадра нового и запоминаемое окно браузерного режима
+//! `[browser_session.window]`.
 //!
 //! Браузерный режим делит config с обычным плеером (решение 46); с 04c обе копии пишут
 //! его как «общую доску» под замком (решение 135, `store/shared_file.rs`). Источник копит полученные от страницы коробки fMP4/WebM:
@@ -48,6 +49,16 @@ pub const MIN_BROWSER_VARIANT_RETURN_WINDOW_S: u16 = 10;
 /// Максимум срока возврата: 10 минут. Дольше возврат мог бы перенести позицию на видео,
 /// которое к выбору зрителя уже не относится.
 pub const MAX_BROWSER_VARIANT_RETURN_WINDOW_S: u16 = 600;
+/// Сколько миллисекунд окно браузерного режима держит последний кадр прежнего ролика, пока
+/// новый не показал свой первый кадр (решение 380, сессия 16b3c моста). 3 с — с большим
+/// запасом на установку нового поколения (на стенде — десятки миллисекунд, на слабой машине с
+/// аппаратным декодером — до секунды) и всё же коротко: застывший кадр дольше выглядел бы
+/// зависанием, а удержанный кадр держит память прежнего декодера.
+pub const DEFAULT_BROWSER_MEDIA_SWITCH_FRAME_HOLD_MS: u16 = 3000;
+/// Минимум: 0 — удержание выключено, между роликами пустое поле, как до 16b3c.
+pub const MIN_BROWSER_MEDIA_SWITCH_FRAME_HOLD_MS: u16 = 0;
+/// Максимум: 10 с. Дольше застывший кадр прежнего ролика уже обманывает зрителя.
+pub const MAX_BROWSER_MEDIA_SWITCH_FRAME_HOLD_MS: u16 = 10_000;
 /// Байт в мебибайте (перевод `max_held_mb` в байты).
 const BYTES_PER_MIB: usize = 1024 * 1024;
 
@@ -133,6 +144,29 @@ pub struct BrowserSessionConfig {
     )]
     pub variant_return_window_s: u16,
 
+    /// Предел удержания последнего кадра прежнего ролика на смене медиа, мс (схема v33,
+    /// решение 380): 0 — не держать. Читается при открытии окна браузерного режима.
+    #[setting(
+        id = "browser_session.media_switch_frame_hold_ms",
+        path = "browser_session.media_switch_frame_hold_ms",
+        section = "browser_mode",
+        group = "video",
+        surface = "main-settings-window",
+        label_id = "settings.browser_session.media_switch_frame_hold_ms.label",
+        label_ru = "Keep last frame between videos",
+        description_id = "settings.browser_session.media_switch_frame_hold_ms.description",
+        description_ru = "When the page moves to the next video, the window keeps showing the last frame of the previous one until the new video shows its first frame, but no longer than this. 0 shows a black picture in between. Takes effect with the next browser window.",
+        help_id = "settings.browser_session.media_switch_frame_hold_ms.help",
+        help_ru = "Set it to 0 if a frozen frame between videos bothers you.",
+        editor = "integer",
+        min = crate::MIN_BROWSER_MEDIA_SWITCH_FRAME_HOLD_MS,
+        max = crate::MAX_BROWSER_MEDIA_SWITCH_FRAME_HOLD_MS,
+        step = 500,
+        unit = "ms",
+        apply = "browser_session.apply"
+    )]
+    pub media_switch_frame_hold_ms: u16,
+
     /// Запоминаемое окно браузерного режима (схема v29): размер и полноэкранность.
     #[serde(default)]
     #[setting(nested)]
@@ -155,16 +189,25 @@ impl BrowserSessionConfig {
     pub fn variant_return_window(&self) -> Duration {
         Duration::from_secs(u64::from(self.variant_return_window_s))
     }
+
+    /// Удержание кадра прежнего ролика на смене медиа (`media_switch_frame_hold_ms`).
+    pub fn media_switch_frame_hold(&self) -> BrowserMediaSwitchFrameHold {
+        match self.media_switch_frame_hold_ms {
+            0 => BrowserMediaSwitchFrameHold::Disabled,
+            hold_ms => BrowserMediaSwitchFrameHold::UpTo(Duration::from_millis(u64::from(hold_ms))),
+        }
+    }
 }
 
 impl Default for BrowserSessionConfig {
-    /// Значения по умолчанию — константы выше (120 с вперёд, 320 МиБ потолок, 120 с возврата)
-    /// и окно 1280×720.
+    /// Значения по умолчанию — константы выше (120 с вперёд, 320 МиБ потолок, 120 с возврата,
+    /// 3 с удержания кадра) и окно 1280×720.
     fn default() -> Self {
         Self {
             buffer_ahead_s: DEFAULT_BROWSER_BUFFER_AHEAD_S,
             max_held_mb: DEFAULT_BROWSER_MAX_HELD_MB,
             variant_return_window_s: DEFAULT_BROWSER_VARIANT_RETURN_WINDOW_S,
+            media_switch_frame_hold_ms: DEFAULT_BROWSER_MEDIA_SWITCH_FRAME_HOLD_MS,
             window: BrowserWindowConfig::default(),
         }
     }
@@ -193,4 +236,15 @@ impl BrowserSessionBufferWindow {
     pub fn max_held_bytes(&self) -> usize {
         self.max_held_bytes
     }
+}
+
+/// Держит ли окно браузерного режима кадр прежнего ролика на смене медиа и сколько.
+///
+/// Значимый тип вместо «0 = выключено» на месте вызова.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserMediaSwitchFrameHold {
+    /// Не держать: между роликами пустое поле.
+    Disabled,
+    /// Держать до первого кадра нового ролика, но не дольше этого.
+    UpTo(Duration),
 }

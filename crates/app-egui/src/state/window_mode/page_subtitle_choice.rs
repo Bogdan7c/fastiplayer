@@ -88,7 +88,8 @@ mod tests {
     #[test]
     fn the_page_led_window_queues_the_viewer_choice_and_the_standard_one_drops_it() {
         let choice = PageSubtitleViewerChoice::PageTrack(PageSubtitleTrackNumber::new(2));
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         assert_eq!(
             browser.report_subtitle_choice(choice),
             SubtitleChoiceWindowOutcome::Queued
@@ -110,7 +111,8 @@ mod tests {
     fn the_page_preference_is_ignored_outside_the_page_led_window() {
         let preference = PageSubtitlePreference::Off;
         assert_eq!(
-            WindowMode::browser_session().page_subtitle_preference(preference),
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled)
+                .page_subtitle_preference(preference),
             preference
         );
         assert_eq!(

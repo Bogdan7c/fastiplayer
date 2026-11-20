@@ -84,10 +84,21 @@ impl AppStateStartupContext {
     }
 
     /// Режим окна для нового `AppState`.
-    pub(super) fn window_mode(&self) -> super::window_mode::WindowMode {
+    ///
+    /// Окно браузерного режима берёт удержание кадра на смене медиа из настроек один раз,
+    /// при открытии (как срок возврата на секунду, 14a): живое окно его не меняет.
+    pub(super) fn window_mode(
+        &self,
+        committed_config: &super::CommittedConfigSnapshot,
+    ) -> super::window_mode::WindowMode {
         match self.window_kind {
             WindowKind::Standard => super::window_mode::WindowMode::standard(),
-            WindowKind::BrowserSession => super::window_mode::WindowMode::browser_session(),
+            WindowKind::BrowserSession => super::window_mode::WindowMode::browser_session(
+                committed_config
+                    .as_config()
+                    .browser_session
+                    .media_switch_frame_hold(),
+            ),
         }
     }
 

@@ -89,7 +89,10 @@ pub(super) fn decide_frame_work(
         retained_ui_unavailable,
         forced: triggers.full_pass_forced,
     };
-    let present_reasons = app_state.present_reasons(player_snapshot);
+    let mut present_reasons = app_state.present_reasons(player_snapshot);
+    // Срок удержания кадра на смене медиа вышел на этом пробуждении: показ нарисует пустое
+    // поле (и отпущенный кадр больше не держит декодер прежнего медиа).
+    present_reasons.media_switch_hold_expired = app_state.expire_due_media_switch_hold(now);
 
     FrameDecision {
         plan: plan_frame_work(ui_reasons, present_reasons),

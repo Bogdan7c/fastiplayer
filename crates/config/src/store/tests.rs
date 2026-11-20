@@ -9,6 +9,7 @@ use crate::{
 };
 
 mod browser_bridge_settings;
+mod browser_media_switch_hold_settings;
 mod browser_session_settings;
 mod field_validation;
 mod frame_server;

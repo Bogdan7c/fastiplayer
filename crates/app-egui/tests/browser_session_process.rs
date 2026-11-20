@@ -800,6 +800,10 @@ mod session_ends;
 #[path = "browser_session_process/generation_switch.rs"]
 mod generation_switch;
 
+// Кадр окна на смене медиа (16b3c, решение 380): прежний кадр до первого кадра нового.
+#[path = "browser_session_process/media_switch_frame.rs"]
+mod media_switch_frame;
+
 // «Помним, пока помнит страница» (04a): перемотка назад дальше окна «назад» — с полки.
 #[path = "browser_session_process/seek_back_on_shelf.rs"]
 mod seek_back_on_shelf;
@@ -847,6 +851,11 @@ mod drain_cut;
 // данных у цели, страница может перемотаться сама, заменённое кончается обрывом.
 #[path = "browser_session_process/generation_switch_clicks.rs"]
 mod generation_switch_clicks;
+
+// Клик во время смены поколения на VP9 (04d, решения 146–149, 313): оба порядка «второй возврат
+// страницы» против «конец медиа» закреплены отдельно (16b3c).
+#[path = "browser_session_process/generation_switch_click_vp9.rs"]
+mod generation_switch_click_vp9;
 
 // Перемотка ждёт медленную страницу дольше срока перемотки (решение 150, пакет F 04d):
 // спиннер, без «Seeking timed out», кадры цели на показе, позиция не возвращается назад.

@@ -132,13 +132,21 @@ pub(crate) struct PresentReasons {
     pub(crate) seek_or_scrub_activity: bool,
     /// Живая смена backend-а держит замороженный кадр: видео-стадия сама решает, что показать.
     pub(crate) backend_swap_hold: bool,
+    /// Срок удержания кадра прежнего медиа на смене медиа только что вышел (решение 380):
+    /// один показ рисует пустое поле вместо застывшего кадра. Само удержание показа не
+    /// требует: каждый показ на нём ждал бы vsync и задерживал главный поток окна (шаг сеанса
+    /// браузерного режима), а картинка на экране и так прежний кадр.
+    pub(crate) media_switch_hold_expired: bool,
 }
 
 impl PresentReasons {
     /// Хотя бы одна причина показать кадр.
     #[must_use]
     pub(crate) const fn any(self) -> bool {
-        self.video_frame_changed || self.seek_or_scrub_activity || self.backend_swap_hold
+        self.video_frame_changed
+            || self.seek_or_scrub_activity
+            || self.backend_swap_hold
+            || self.media_switch_hold_expired
     }
 
     /// Первая по приоритету причина — для трассы кадра (`present_reason`).
@@ -150,6 +158,8 @@ impl PresentReasons {
             "seek_or_scrub_activity"
         } else if self.backend_swap_hold {
             "backend_swap_hold"
+        } else if self.media_switch_hold_expired {
+            "media_switch_hold_expired"
         } else {
             "none"
         }
@@ -261,7 +271,8 @@ mod tests {
         }
     }
 
-    /// Seek/scrub и живая смена backend-а показывают кадр, даже если identity слота та же.
+    /// Seek/scrub, живая смена backend-а и конец срока удержания кадра на смене медиа
+    /// показывают кадр, даже если identity слота та же.
     #[test]
     fn seek_scrub_and_backend_swap_present_without_ui_pass() {
         for present in [
@@ -271,6 +282,10 @@ mod tests {
             },
             PresentReasons {
                 backend_swap_hold: true,
+                ..PresentReasons::default()
+            },
+            PresentReasons {
+                media_switch_hold_expired: true,
                 ..PresentReasons::default()
             },
         ] {

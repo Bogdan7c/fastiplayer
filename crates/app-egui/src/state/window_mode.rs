@@ -19,11 +19,13 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
+use fastiplayer_config::BrowserMediaSwitchFrameHold;
 use player_core::{PlaybackState, PlayerCommand, PlayerWorkerSendError};
 
 use self::ad_gate::{AdTransportGate, GateVerdict};
 use self::quality_menu::QualityLabelJournal;
 use super::AppState;
+use super::present_frame_cache::MediaSwitchFramePolicy;
 use crate::ad_plate::{AdActionProgress, AdPlate, AdPlateAction};
 use crate::downloaded_range::DownloadedRange;
 use crate::page_label::PageLabel;
@@ -65,6 +67,16 @@ pub(crate) struct WindowMode {
     quality_journal: QualityLabelJournal,
     /// Факты сеанса о вариантах страницы: меню озвучек и качеств, следующая серия (14a).
     page_variants: PageVariantFacts,
+    /// Что делать с кадром прежнего медиа на смене медиа (решение 380): обычное окно — сразу
+    /// отпускать, окно браузерного режима — держать до первого кадра нового (по настройке).
+    media_switch_frames: MediaSwitchFramePolicy,
+}
+
+impl Default for MediaSwitchFramePolicy {
+    /// Обычное окно: кадр прежнего медиа уходит сразу, как до 16b3c.
+    fn default() -> Self {
+        Self::ClearImmediately
+    }
 }
 
 impl WindowMode {
@@ -74,8 +86,9 @@ impl WindowMode {
     }
 
     /// Окно браузерного режима: интерфейс без очереди и открытия, транспорт ведёт
-    /// медиа-часть сеанса (плеер + страница).
-    pub(crate) fn browser_session() -> Self {
+    /// медиа-часть сеанса (плеер + страница). `frame_hold` — удержание кадра прежнего ролика
+    /// на смене медиа из настроек (`[browser_session] media_switch_frame_hold_ms`).
+    pub(crate) fn browser_session(frame_hold: BrowserMediaSwitchFrameHold) -> Self {
         Self {
             view: WindowViewProfile::BrowserSession,
             transport: TransportRoute::PageLed(ViewerTransportOutbox::default()),
@@ -85,7 +98,18 @@ impl WindowMode {
             page_quality: PageQualityFacts::default(),
             quality_journal: QualityLabelJournal::default(),
             page_variants: PageVariantFacts::default(),
+            media_switch_frames: match frame_hold {
+                BrowserMediaSwitchFrameHold::Disabled => MediaSwitchFramePolicy::ClearImmediately,
+                BrowserMediaSwitchFrameHold::UpTo(max_hold) => {
+                    MediaSwitchFramePolicy::HoldUntilFirstNewFrame { max_hold }
+                }
+            },
         }
+    }
+
+    /// Что делать с кадром прежнего медиа на смене медиа (см. поле `media_switch_frames`).
+    pub(super) const fn media_switch_frame_policy(&self) -> MediaSwitchFramePolicy {
+        self.media_switch_frames
     }
 
     /// Слово о рекламе от того, кто ведёт транспорт; обычное окно его не берёт.
@@ -386,7 +410,8 @@ mod tests {
     /// обычное окно (даже если ему назвали страницу) — название приложения.
     #[test]
     fn the_chrome_title_follows_the_page_only_in_the_browser_window() {
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         assert_eq!(browser.chrome_title(), "Fastiplayer");
         browser.note_page(PageLabel::new("Cats", "video.example"));
         assert_eq!(browser.chrome_title(), "Cats — video.example");
@@ -413,7 +438,8 @@ mod tests {
         standard.note_page(PageLabel::new("T", "a.example"));
         assert_eq!(standard.page, None);
 
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         assert_eq!(browser.page, None);
         browser.note_page(PageLabel::new("First", "a.example"));
         browser.note_page(PageLabel::new("Second", "b.example"));
@@ -438,7 +464,8 @@ mod tests {
     /// порядке действий; плеер их напрямую не получает. Громкость — плееру как была.
     #[test]
     fn the_browser_window_turns_transport_into_viewer_intents() {
-        let mut mode = WindowMode::browser_session();
+        let mut mode =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         let rate = PlaybackRate::new(1.25).expect("valid rate");
         for command in [
             PlayerCommand::TogglePlayback,
@@ -481,10 +508,35 @@ mod tests {
         standard.note_downloaded_range(range.clone());
         assert!(!standard.downloaded_range.is_known());
 
-        let mut browser = WindowMode::browser_session();
+        let mut browser =
+            WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
         browser.note_downloaded_range(range);
         assert!(browser.downloaded_range.covers(Duration::from_secs(1)));
         browser.note_downloaded_range(DownloadedRange::Unknown);
         assert!(!browser.downloaded_range.is_known());
+    }
+
+    /// Кадр прежнего медиа на смене медиа держит только окно браузерного режима и только
+    /// при включённой настройке (решение 380); обычное окно отпускает его сразу, как раньше.
+    #[test]
+    fn only_the_browser_window_holds_the_previous_frame_and_only_when_enabled() {
+        use fastiplayer_config::BrowserMediaSwitchFrameHold;
+
+        assert_eq!(
+            WindowMode::standard().media_switch_frame_policy(),
+            MediaSwitchFramePolicy::ClearImmediately
+        );
+        assert_eq!(
+            WindowMode::browser_session(BrowserMediaSwitchFrameHold::UpTo(Duration::from_secs(3)))
+                .media_switch_frame_policy(),
+            MediaSwitchFramePolicy::HoldUntilFirstNewFrame {
+                max_hold: Duration::from_secs(3)
+            }
+        );
+        assert_eq!(
+            WindowMode::browser_session(BrowserMediaSwitchFrameHold::Disabled)
+                .media_switch_frame_policy(),
+            MediaSwitchFramePolicy::ClearImmediately
+        );
     }
 }

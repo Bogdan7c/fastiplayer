@@ -477,8 +477,13 @@ fn prepare_video_frame(
 
     let Some(present_frame) = present_frame_acquisition.into_present_frame() else {
         timings.total = video_prepare_started_at.elapsed();
-        return PreparedVideoFrame::empty(acquisition_state)
-            .with_diagnostics("not_requested", timings);
+        // На смене медиа окна браузерного режима — удержанный прежний кадр вместо пустого поля.
+        return present::prepared_frame_without_current_video(
+            app_state,
+            player_snapshot,
+            acquisition_state,
+            timings,
+        );
     };
 
     let stage_started_at = Instant::now();
@@ -1074,6 +1079,7 @@ pub(crate) fn render_frame(
             app_state.next_notification_wake_deadline(),
             app_state.fullscreen_chrome_wake_deadline(),
             app_state.timeline_inline_status_wake_deadline(),
+            app_state.media_switch_hold_wake_deadline(),
             app_state.next_telemetry_refresh_deadline(),
             egui_request.deadline,
             settings_preview_deadline,

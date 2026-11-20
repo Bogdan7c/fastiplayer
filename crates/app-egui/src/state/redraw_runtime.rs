@@ -422,6 +422,8 @@ impl AppState {
             video_frame_changed,
             seek_or_scrub_activity,
             backend_swap_hold: self.backend_swap_from_generation.is_some(),
+            // Конец срока удержания решает `decide_frame_work` (ему нужен «сейчас»).
+            media_switch_hold_expired: false,
         }
     }
 

@@ -48,7 +48,8 @@ fn is_refused(route: &CommandRoute) -> bool {
 
 #[test]
 fn seek_and_speed_from_every_input_are_refused_and_nothing_reaches_the_session() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     assert!(mode.note_ad_plate(Some(countdown_plate())));
     // Клик по таймлайну и перетаскивание без живого скраба, стрелки, колесо, MPRIS Seek /
     // SetPosition — все это `PlayerCommand::Seek`; кнопки и хоткеи скорости —
@@ -70,7 +71,8 @@ fn seek_and_speed_from_every_input_are_refused_and_nothing_reaches_the_session()
 
 #[test]
 fn pause_play_toggle_and_volume_work_during_an_ad() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     mode.note_ad_plate(Some(countdown_plate()));
     for command in [
         PlayerCommand::Pause,
@@ -96,7 +98,8 @@ fn pause_play_toggle_and_volume_work_during_an_ad() {
 
 #[test]
 fn seek_and_speed_work_again_when_the_ad_is_gone() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     mode.note_ad_plate(Some(countdown_plate()));
     assert!(mode.note_ad_plate(None), "the plate disappeared: a change");
     assert!(matches!(
@@ -121,7 +124,8 @@ fn seek_and_speed_work_again_when_the_ad_is_gone() {
 
 #[test]
 fn a_scrub_started_during_an_ad_is_refused_whole_even_if_the_ad_ends_mid_gesture() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     mode.note_ad_plate(Some(countdown_plate()));
     let target = SeekRequest::absolute(Duration::from_secs(9).into());
     assert!(is_refused(&route(&mut mode, PlayerCommand::begin_scrub())));
@@ -153,7 +157,8 @@ fn a_scrub_started_during_an_ad_is_refused_whole_even_if_the_ad_ends_mid_gesture
 
 #[test]
 fn a_plate_past_its_lock_limit_keeps_showing_but_lets_the_viewer_seek() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     let mut expired = countdown_plate();
     expired.locks_transport = false;
     mode.note_ad_plate(Some(expired));
@@ -168,7 +173,8 @@ fn a_plate_past_its_lock_limit_keeps_showing_but_lets_the_viewer_seek() {
 
 #[test]
 fn a_scrub_started_before_the_ad_is_finished_so_the_player_is_not_left_scrubbing() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     let target = SeekRequest::absolute(Duration::from_secs(9).into());
     assert!(matches!(
         route(&mut mode, PlayerCommand::begin_scrub()),
@@ -213,7 +219,8 @@ fn the_standard_window_ignores_the_ad_plate_and_keeps_its_transport() {
 
 #[test]
 fn next_presses_the_offered_button_and_only_when_it_is_free() {
-    let mut mode = WindowMode::browser_session();
+    let mut mode =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     assert_eq!(mode.activate_ad_offer(), AdOfferActivation::NothingOffered);
     mode.note_ad_plate(Some(countdown_plate()));
     assert_eq!(mode.activate_ad_offer(), AdOfferActivation::NothingOffered);

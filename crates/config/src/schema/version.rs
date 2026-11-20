@@ -1,5 +1,5 @@
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 32;
+pub const CURRENT_SCHEMA_VERSION: u32 = 33;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
@@ -196,14 +196,23 @@ pub(crate) const LEGACY_SCHEMA_VERSION_30: u32 = 30;
 /// ключ битым файлом, а с bump-ом видит «схема новее» и файл не трогает.
 pub(crate) const LEGACY_SCHEMA_VERSION_31: u32 = 31;
 
+/// Последняя схема до ключа `browser_session.media_switch_frame_hold_ms` (сессия 16b3c моста).
+///
+/// Решение 380: окно браузерного режима держит последний кадр прежнего ролика до первого кадра
+/// нового (по умолчанию не дольше 3 с). Переписывать нечего, миграция v32 -> v33 только
+/// поднимает версию (старый файл без ключа получает default). Bump нужен ради выпущенных
+/// бинарей (v0.2.0 со схемой v32): их строгий парсер счёл бы незнакомый ключ битым файлом
+/// (`.bak` + defaults), а с bump-ом видит «схема новее» и файл не трогает.
+pub(crate) const LEGACY_SCHEMA_VERSION_32: u32 = 32;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Текущая схема v32 и полная цепочка поддерживаемых legacy-версий v2..v31.
+    /// Текущая схема v33 и полная цепочка поддерживаемых legacy-версий v2..v32.
     #[test]
-    fn schema_v32_and_supported_legacy_versions_are_stable() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 32);
+    fn schema_v33_and_supported_legacy_versions_are_stable() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 33);
         assert_eq!(
             [
                 LEGACY_SCHEMA_VERSION_2,
@@ -236,10 +245,11 @@ mod tests {
                 LEGACY_SCHEMA_VERSION_29,
                 LEGACY_SCHEMA_VERSION_30,
                 LEGACY_SCHEMA_VERSION_31,
+                LEGACY_SCHEMA_VERSION_32,
             ],
             [
                 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                25, 26, 27, 28, 29, 30, 31
+                25, 26, 27, 28, 29, 30, 31, 32
             ]
         );
     }

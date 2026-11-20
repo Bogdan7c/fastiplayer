@@ -55,7 +55,8 @@ fn drained_intents(mode: &mut WindowMode) -> Vec<ViewerTransportIntent> {
 
 /// Окно браузерного режима, где есть что показать в кнопке качества.
 fn browser_window() -> WindowMode {
-    let mut browser = WindowMode::browser_session();
+    let mut browser =
+        WindowMode::browser_session(fastiplayer_config::BrowserMediaSwitchFrameHold::Disabled);
     browser.note_page_quality(PageQualityFacts {
         bitrate: None,
         page_view: PageViewOffer::Available,

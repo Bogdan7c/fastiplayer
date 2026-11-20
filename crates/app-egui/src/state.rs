@@ -170,7 +170,7 @@ pub(crate) use video_backend::{
 };
 
 use main_visual_override::MainVisualOverrideState;
-use present_frame_cache::CachedRenderablePresentFrame;
+use present_frame_cache::{CachedRenderablePresentFrame, MediaSwitchFrameHold};
 use sidebar_controller::SidebarController;
 pub(crate) use sidebar_controller::{
     ContentSlideDirection, SidebarContentTransition, SidebarSection,
@@ -263,6 +263,8 @@ pub struct AppState {
     /// render generation на момент свапа; пока snapshot его не превысил, worker ещё не
     /// переключился, и кадры старого backend-а нельзя материализовать новым materializer-ом.
     backend_swap_from_generation: Option<u64>,
+    /// Кадр прежнего медиа на смене медиа и замер смены (решение 380, `media_switch_frame_hold`).
+    media_switch_frame_hold: MediaSwitchFrameHold<RenderablePresentFrame>,
     /// Exactly-once policy state runtime DMA-BUF -> software fallback-а.
     dma_buf_runtime_fallback: DmaBufRuntimeFallbackController,
     /// Layout rejection, ожидающая обработки на app composition boundary.
@@ -390,7 +392,7 @@ impl AppState {
                 audio_decoder_factory.as_ref(),
             );
         let player_event_tap = startup_context.player_event_tap();
-        let window_mode = startup_context.window_mode();
+        let window_mode = startup_context.window_mode(&committed_config_snapshot);
         let redraw = redraw_runtime::RedrawRuntime::new(&egui_ctx, &player_timeline_wake_port);
         let timeline_activity_wake = player_timeline_wake_bridge(player_timeline_wake_port);
         let worker_config = PlayerWorkerConfig::from_app_config(
@@ -461,6 +463,7 @@ impl AppState {
                 video_stream_requirement::ActiveVideoStreamRequirement::default(),
             backend_swap_frozen_frame: None,
             backend_swap_from_generation: None,
+            media_switch_frame_hold: MediaSwitchFrameHold::default(),
             dma_buf_runtime_fallback: DmaBufRuntimeFallbackController::default(),
             pending_dma_buf_fallback: None,
             current_local_file: None,

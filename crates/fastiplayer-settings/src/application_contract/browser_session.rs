@@ -40,7 +40,12 @@ pub(super) fn browser_session_contract(setting_name: &str) -> Option<SettingAppl
         // лету и их окно настроек не показывает устаревшее число. Группа маршрута — общая с
         // окном буфера (`group_for_setting`): владелец буфера получает те же значения, видимого
         // эффекта нет.
-        "browser_session.variant_return_window_s" => SettingApplicationContract::new(
+        // Удержание кадра на смене медиа (16b3c, решение 380) — тем же порядком: политику берёт
+        // окно браузерного режима при открытии (`WindowMode::browser_session`), живое окно свою
+        // не меняет. Владелец строки — тот же, что у соседнего срока: отдельного владельца ради
+        // числа без живого эффекта не заводим.
+        "browser_session.variant_return_window_s"
+        | "browser_session.media_switch_frame_hold_ms" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::BrowserSession,
             SettingStateOwner::BrowserSessionSourcePolicy,
@@ -116,6 +121,25 @@ mod tests {
                     .contains(&SettingApplyTestScenario::EffectOnNextNaturalEvent)
             );
         }
+    }
+
+    /// Удержание кадра на смене медиа действует со следующего окна браузерного режима.
+    #[test]
+    fn media_switch_frame_hold_applies_with_the_next_browser_window() {
+        let contract = setting_application_contract(&SettingId::from(
+            "browser_session.media_switch_frame_hold_ms",
+        ))
+        .expect("frame hold contract exists");
+
+        assert_eq!(contract.route, AppRuntimeRoute::BrowserSession);
+        assert_eq!(
+            contract.mechanism,
+            SettingApplyMechanism::AppliesAfterRestart
+        );
+        assert_eq!(
+            contract.state_owner,
+            SettingStateOwner::BrowserSessionSourcePolicy
+        );
     }
 
     /// Ключи окна — запоминаемое состояние, которое живьём не применяется.

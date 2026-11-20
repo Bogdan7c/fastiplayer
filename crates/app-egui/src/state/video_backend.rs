@@ -1,6 +1,7 @@
 use codec_core::VideoDecodeRequirement;
 use fastiplayer_config::VideoBackendPreference;
 
+use super::present_frame_cache::HoldReleaseCause;
 use super::*;
 use crate::video_pipeline_candidate::{DecoderRendererLink, start_decoder_backend};
 
@@ -516,6 +517,7 @@ impl AppState {
     ) {
         self.backend_swap_from_generation = Some(checkpoint.from_generation);
         self.backend_swap_frozen_frame = checkpoint.frozen_frame;
+        self.release_media_switch_frame_hold(HoldReleaseCause::BackendSwap);
     }
 
     /// Завершает заморозку: новый backend выдал кадр или источник сменился.
