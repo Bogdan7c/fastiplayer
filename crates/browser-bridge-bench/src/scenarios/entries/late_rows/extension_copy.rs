@@ -20,7 +20,17 @@ pub(super) fn copy_into_run_directory(
     build: &Path,
     run_directory: &Path,
 ) -> Result<PathBuf, ScenarioError> {
-    let copy = run_directory.join(COPY_DIRECTORY);
+    copy_build_as(build, run_directory, COPY_DIRECTORY)
+}
+
+/// Копирует каталог сборки в `<каталог прогона>/<имя копии>` и возвращает путь копии. Общий кирпич:
+/// им же пользуются строки, которым нужна своя правка сборки (prelude «чужого кода раньше нашего»).
+pub(in crate::scenarios) fn copy_build_as(
+    build: &Path,
+    run_directory: &Path,
+    copy_name: &str,
+) -> Result<PathBuf, ScenarioError> {
+    let copy = run_directory.join(copy_name);
     copy_directory(build, &copy).map_err(|error| {
         io_problem(
             &format!("copy the extension build to {}", copy.display()),

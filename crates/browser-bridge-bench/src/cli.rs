@@ -215,7 +215,7 @@ Options:
   --extra-extension <PATH>            extra extension (unpacked dir, .xpi or .zip) in every
                                       browser launch; repeatable (ad blocker mechanism)
   --page <ID>                         only this page (pages, capture, page-ends,
-                                      player-commands, attacks, episodes, entries, page-return, tab-return, page-reload, auto-handoff, all);
+                                      player-commands, attacks, episodes, entries, page-return, tab-return, page-reload, page-subtitles, auto-handoff, all);
                                       repeatable; ids are the names in site/pages
   --recording <FILE>                  replay: the .fprec file to replay
   --min-frames <N>                    replay: presented frames the player must reach (default: 50)

@@ -103,3 +103,26 @@ fn a_filter_selects_pages_by_id() {
         .collect();
     assert_eq!(admitted, ["subtitles-xhr"]);
 }
+
+/// Близнец `subtitles-xhr` обязан качать те же документы в том же порядке, ждать то же и
+/// проверять предусловие подмены; а prelude получает ТОЛЬКО он (остальные страницы чистые).
+#[test]
+fn the_subclass_twin_expects_what_the_plain_xhr_page_does_and_alone_gets_the_prelude() {
+    let twin = page_source("subtitles-xhr-subclass");
+    assert!(twin.find("xhr.srt").expect("srt") < twin.find("xhr.json3").expect("json3"));
+    assert!(twin.contains("checkXhrSubclassedBeforeTheExtension(ctx)"));
+    let check = std::fs::read_to_string(site_dir().join("lib/xhr-subclass-check.js")).expect("kit");
+    assert!(check.contains("'xhr-subclassed-before-the-extension'"));
+    assert!(check.contains("__benchXhrSubclass"));
+
+    let find = |id: &str| PAGES.iter().find(|page| page.id == id).expect("page");
+    let (plain, subclass) = (find("subtitles-xhr"), find("subtitles-xhr-subclass"));
+    assert_eq!(plain.expectation.documents, subclass.expectation.documents);
+    assert_eq!(plain.expectation.selected, subclass.expectation.selected);
+    let with_prelude: Vec<&str> = PAGES
+        .iter()
+        .filter(|page| page.prelude != ExtensionPrelude::Absent)
+        .map(|page| page.id)
+        .collect();
+    assert_eq!(with_prelude, ["subtitles-xhr-subclass"]);
+}

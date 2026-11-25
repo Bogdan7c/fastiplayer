@@ -1,9 +1,11 @@
 //! Сценарий `page-subtitles` (сессия 13b2): субтитры, которые страница берёт САМА, доходят до плеера.
 //!
-//! Четыре страницы — четыре способа, которыми настоящие сайты получают субтитры:
+//! Пять страниц — пять способов, которыми настоящие сайты получают субтитры:
 //!   - `subtitles-track`: `<video src>` с `<track default>` (en) и выключенной `<track>` (uk);
 //!   - `subtitles-fetch`: MSE-плеер качает `.vtt` через `fetch` со ВТОРОГО origin;
 //!   - `subtitles-xhr`: MSE-плеер качает `.srt` (XHR текстом) и json3 (XHR как JSON);
+//!   - `subtitles-xhr-subclass`: то же, но чужой код (блокировщик рекламы YouTube) уже подменил
+//!     `XMLHttpRequest` подклассом ДО скрипта экстеншена (prelude стенда в копии сборки);
 //!   - `subtitles-text-track`: как hls.js — `addTextTrack` и реплики без файла; после передачи
 //!     дорожка растёт, плеер получает замену документа.
 //!
@@ -25,10 +27,12 @@ use super::context::{ScenarioError, Stand};
 use super::evidence::{
     FORBIDDEN_PLAYER_LINES, SESSION_GRANTED_TIMEOUT, format_browser_log, wait_for_session_granted,
 };
-use super::handoff_run::{ExtensionMode, HandoffRun, PageReadiness};
+use super::extension_prelude::ExtensionPrelude;
+use super::handoff_run::{ExtensionMode, HANDOFF_MODE_QUERY, HandoffRun, PageReadiness};
 use super::outcome::{StepResult, Verdict};
 use super::page_filter::PageFilter;
 use super::player_commands::{FRAMES_TIMEOUT, tell_and_wait};
+use super::run_tweaks::RunTweaks;
 use crate::browsers::{BrowserKind, HandOffOutcome};
 use crate::environment::BenchEnvironment;
 use crate::observe::{
@@ -88,6 +92,8 @@ const SELECTED_JSON3: ExpectedSelected = ExpectedSelected {
 struct SubtitlePage {
     id: &'static str,
     expectation: PageExpectation,
+    /// Чужой код, который стенд ставит в страницу раньше скрипта экстеншена.
+    prelude: ExtensionPrelude,
 }
 
 const PAGES: &[SubtitlePage] = &[
@@ -98,6 +104,7 @@ const PAGES: &[SubtitlePage] = &[
             selected: SELECTED_ENGLISH_VTT,
             growing_track: false,
         },
+        prelude: ExtensionPrelude::Absent,
     },
     SubtitlePage {
         id: "subtitles-fetch",
@@ -106,6 +113,7 @@ const PAGES: &[SubtitlePage] = &[
             selected: SELECTED_UNNAMED_VTT,
             growing_track: false,
         },
+        prelude: ExtensionPrelude::Absent,
     },
     SubtitlePage {
         id: "subtitles-xhr",
@@ -114,6 +122,17 @@ const PAGES: &[SubtitlePage] = &[
             selected: SELECTED_JSON3,
             growing_track: false,
         },
+        prelude: ExtensionPrelude::Absent,
+    },
+    SubtitlePage {
+        // Те же документы, но `XMLHttpRequest` подменён подклассом РАНЬШЕ скрипта экстеншена.
+        id: "subtitles-xhr-subclass",
+        expectation: PageExpectation {
+            documents: &[SRT_NOT_SHOWING, JSON3_SHOWING],
+            selected: SELECTED_JSON3,
+            growing_track: false,
+        },
+        prelude: ExtensionPrelude::XhrSubclass,
     },
     SubtitlePage {
         id: "subtitles-text-track",
@@ -122,6 +141,7 @@ const PAGES: &[SubtitlePage] = &[
             selected: SELECTED_ENGLISH_VTT,
             growing_track: true,
         },
+        prelude: ExtensionPrelude::Absent,
     },
 ];
 
@@ -198,13 +218,19 @@ fn drive(
     browser_kind: BrowserKind,
     page: &SubtitlePage,
 ) -> Result<Verdict, ScenarioError> {
-    let mut run = HandoffRun::open(
+    let tweaks = RunTweaks {
+        extension_prelude: page.prelude,
+        ..RunTweaks::default()
+    };
+    let mut run = HandoffRun::open_tweaked(
         stand,
         environment,
         browser_kind,
         page.id,
         "pagesubs",
         ExtensionMode::Real,
+        HANDOFF_MODE_QUERY,
+        &tweaks,
     )?;
     match run.wait_page_ready() {
         PageReadiness::Ready => {}

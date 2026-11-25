@@ -26,7 +26,7 @@ mod disabled_rows;
 mod entry_evidence;
 /// Зонды экстеншена (вкладки, слой страницы); вкладки читает и `tab-return` (11b2).
 pub(in crate::scenarios) mod extension_probe;
-mod late_rows;
+pub(in crate::scenarios) mod late_rows;
 mod link_rows;
 mod menu_entry;
 mod menu_matrix;
@@ -37,7 +37,7 @@ mod pick_rows;
 mod refusal_rows;
 mod report_rows;
 pub(super) mod return_hand;
-mod robot;
+pub(in crate::scenarios) mod robot;
 mod start_rows;
 mod viewer_offer_probe;
 

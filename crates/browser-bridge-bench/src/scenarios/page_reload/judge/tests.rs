@@ -65,6 +65,7 @@ fn replacement_evidence() -> ReloadEvidence {
         states: shadowed_second_document(),
         frame_growth: Some(Ok(60)),
         end: None,
+        popup: None,
         host: healthy_host(),
         forbidden_player_lines: Vec::new(),
         page_log: "page log".to_owned(),
@@ -410,5 +411,93 @@ fn another_site_ends_at_once_and_the_browser_plays_by_itself() {
         judge_other(&silent)
             .detail
             .contains("did not play the other-site video itself")
+    );
+}
+
+/// Доказательства «замена по значку на паузе»: другой origin, те же два сеанса, попап открывался и
+/// не сказал `in_player`; профиль обычный (без запомненного полного экрана), второй документ до
+/// клика играл в браузере сам, поэтому его счётчик кадров большой, и это законно.
+fn toolbar_button_evidence() -> ReloadEvidence {
+    let mut evidence = replacement_evidence();
+    evidence.journal.fullscreen_changes.clear();
+    evidence.loads = loads(&[
+        load(false, "film", "1", "http://127.0.0.1:1"),
+        load(true, "film", "1", "http://localhost:2"),
+    ]);
+    evidence.states = (0..10_u32)
+        .map(|second| state(true, f64::from(second), u64::from(30 * (second + 1))))
+        .collect();
+    evidence.popup = Some(PopupObservation::Notice("started".to_owned()));
+    evidence
+}
+
+fn verdict_toolbar_button(evidence: &ReloadEvidence) -> Verdict {
+    judge(
+        Expectation::ReplacementByToolbarButton,
+        &[FILM],
+        true,
+        evidence,
+    )
+}
+
+#[test]
+fn a_replacement_by_the_toolbar_button_passes_even_if_the_popup_closed_before_the_snapshot() {
+    let verdict = verdict_toolbar_button(&toolbar_button_evidence());
+    assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+    let mut closed_early = toolbar_button_evidence();
+    closed_early.popup = Some(PopupObservation::NotSeen("no popup is open".to_owned()));
+    let verdict = verdict_toolbar_button(&closed_early);
+    assert_eq!(verdict.outcome, Outcome::Pass, "{}", verdict.detail);
+}
+
+#[test]
+fn the_in_player_popup_without_a_replacement_names_the_real_cause() {
+    // Старый экстеншен: попап «Playing in Fastiplayer», второго сеанса нет, кадры не пошли.
+    let mut evidence = toolbar_button_evidence();
+    evidence.popup = Some(PopupObservation::Notice(IN_PLAYER_NOTICE.to_owned()));
+    evidence.journal.session_opened.truncate(1);
+    evidence.frame_growth = None;
+    let verdict = verdict_toolbar_button(&evidence);
+    assert_eq!(verdict.outcome, Outcome::Fail);
+    assert!(
+        verdict.detail.contains("said `in_player`"),
+        "{}",
+        verdict.detail
+    );
+    assert!(
+        verdict.detail.contains("ReplacedPrevious"),
+        "{}",
+        verdict.detail
+    );
+}
+
+#[test]
+fn in_player_alone_fails_even_when_a_replacement_somehow_exists() {
+    let mut evidence = toolbar_button_evidence();
+    evidence.popup = Some(PopupObservation::Notice(IN_PLAYER_NOTICE.to_owned()));
+    let verdict = verdict_toolbar_button(&evidence);
+    assert_eq!(verdict.outcome, Outcome::Fail);
+    assert!(
+        verdict.detail.contains("said `in_player`"),
+        "{}",
+        verdict.detail
+    );
+}
+
+#[test]
+fn a_toolbar_row_that_never_clicked_or_never_got_frames_fails() {
+    let mut no_click = toolbar_button_evidence();
+    no_click.popup = None;
+    assert!(
+        verdict_toolbar_button(&no_click)
+            .detail
+            .contains("never clicked the toolbar button")
+    );
+    let mut no_frames = toolbar_button_evidence();
+    no_frames.frame_growth = Some(Ok(3));
+    assert!(
+        verdict_toolbar_button(&no_frames)
+            .detail
+            .contains("only 3 new frames")
     );
 }

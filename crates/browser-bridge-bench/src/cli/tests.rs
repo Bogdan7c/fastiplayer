@@ -159,6 +159,9 @@ fn page_subtitles_takes_its_own_pages_in_the_page_filter() {
     let run = invocation(&["page-subtitles", "--page", "subtitles-xhr"]);
     assert_eq!(run.command, Command::PageSubtitles);
     assert_eq!(run.pages.ids(), ["subtitles-xhr"]);
+    // Страница с подменённым XHR принадлежит той же команде, а не какой-то другой.
+    let twin = invocation(&["page-subtitles", "--page", "subtitles-xhr-subclass"]);
+    assert_eq!(twin.pages.ids(), ["subtitles-xhr-subclass"]);
     let error = parse_words(&["page-subtitles", "--page", "mse-fmp4"]).expect_err("foreign page");
     assert!(
         error.to_string().contains("is a page of the PageSubtitles"),

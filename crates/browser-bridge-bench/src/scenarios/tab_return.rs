@@ -21,7 +21,8 @@ use self::judge::{judge_return_position, judge_second_document_decoding, parse_s
 use super::context::{ScenarioError, Stand};
 use super::entries::extension_probe::read_tabs;
 use super::evidence::{
-    FORBIDDEN_PLAYER_LINES, format_browser_log, host_failures, unexpected_player_lines,
+    FORBIDDEN_PLAYER_LINES, PAGE_LINK_CHANGED_LINE, PAGE_LINK_LEFT, format_browser_log,
+    host_failures, unexpected_player_lines,
 };
 use super::handoff_run::{ExtensionMode, HANDOFF_MODE_QUERY, HandoffRun, PageReadiness};
 use super::outcome::{StepResult, Verdict};
@@ -38,8 +39,6 @@ const TAB_RETURN_PAGE: &str = "tab-return";
 pub(super) const SUBJECT_FILTER_VARIABLE: &str = "BRIDGE_BENCH_TAB_RETURN_ROW";
 
 /// Строки журнала плеера, по которым идёт сценарий (session_media/page_reopen.rs, translator/page_link.rs).
-/// Главный цикл отдал новость о связи со страницей машине выхода (`runtime::follow_page_link_notices`).
-const PAGE_LINK_CHANGED_LINE: &str = "followed the page link change=";
 const REOPEN_ASKED_LINE: &str = "Asking the extension to bring the page back";
 const PAGE_CAME_BACK_LINE: &str = "The page came back; the session continues";
 const PAGE_NOT_BACK_LINE: &str = "The page could not be brought back";
@@ -281,7 +280,7 @@ fn close_tab_and_ask_return(
         .player_log
         .wait_for_line(PAGE_LINK_CHANGED_LINE, PAGE_LEFT_TIMEOUT)
         .map_err(|error| format!("the player never heard that the page left: {error}"))?;
-    if !left.contains("change=Left") {
+    if !left.contains(PAGE_LINK_LEFT) {
         return Err(format!("the page link changed, but not to «left»: {left}"));
     }
     std::thread::sleep(ORPHAN_PAUSE);

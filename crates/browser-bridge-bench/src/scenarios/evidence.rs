@@ -13,6 +13,11 @@ use crate::site::{BrowserLogLine, PageReport, PageStatus, SiteError};
 
 /// Сколько ждать пропуск на сеанс от посредника: запуск браузера, шина будит плеер, hello.
 pub(super) const SESSION_GRANTED_TIMEOUT: Duration = Duration::from_secs(45);
+/// Строка журнала плеера: главный цикл отдал машине выхода новость о связи со страницей
+/// (`runtime::follow_page_link_notices`). За `change=` идёт вид перемены.
+pub(super) const PAGE_LINK_CHANGED_LINE: &str = "followed the page link change=";
+/// Вид перемены связи в такой строке: страница ушла (сеанс «сирота»).
+pub(super) const PAGE_LINK_LEFT: &str = "change=Left";
 /// Шаг опроса журнала браузера.
 const SESSION_POLL_STEP: Duration = Duration::from_millis(200);
 /// Подстроки журнала плеера, которых быть не должно.

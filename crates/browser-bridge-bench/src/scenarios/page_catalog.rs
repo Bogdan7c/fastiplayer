@@ -153,6 +153,8 @@ pub const PAGE_SCENARIOS: &[PageScenario] = &[
     page("subtitles-track"),
     page("subtitles-fetch"),
     page("subtitles-xhr"),
+    // Решение 396: то же, но чужой код (блокировщик) подменил `XMLHttpRequest` подклассом раньше нас.
+    page("subtitles-xhr-subclass"),
     page("subtitles-text-track"),
     // 12a: режим 2 «автозапуск» (сценарий `auto-handoff`): страницы ждут настоящего клика по Play.
     page("auto-film"),

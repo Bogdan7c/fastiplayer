@@ -19,7 +19,7 @@ const POPUP_POLL: Duration = Duration::from_millis(200);
 const LOADING_NOTICE: &str = "loading";
 
 /// Руки робота на невидимом экране одного прогона.
-pub(super) struct Robot<'env> {
+pub(in crate::scenarios) struct Robot<'env> {
     kind: BrowserKind,
     input: DesktopInput,
     screen: ScreenCapture<'env>,
@@ -28,7 +28,7 @@ pub(super) struct Robot<'env> {
 
 impl<'env> Robot<'env> {
     /// Подключается к невидимому экрану. Нужно окружение с правом на настоящий ввод.
-    pub(super) fn attach(
+    pub(in crate::scenarios) fn attach(
         stand: &Stand,
         environment: &'env BenchEnvironment,
         kind: BrowserKind,
@@ -58,7 +58,7 @@ impl<'env> Robot<'env> {
 
     /// Настоящий клик по значку экстеншена на панели браузера: найти по снимку и кликнуть.
     /// Перед этим браузер выводится вперёд — иначе клик попал бы в окно плеера.
-    pub(super) fn click_toolbar_button(&self) -> Result<(), ScenarioError> {
+    pub(in crate::scenarios) fn click_toolbar_button(&self) -> Result<(), ScenarioError> {
         self.bring_browser_forward()?;
         let icon = self.screen.find_settled_extension_icon()?;
         self.input.mouse().click_at(icon.center())?;
@@ -137,7 +137,7 @@ impl<'env> Robot<'env> {
 
 /// Ждёт попап с итоговым сообщением (не `loading`). Ошибка опроса не глотается: последняя
 /// попадает в текст провала.
-pub(super) fn wait_for_settled_popup(
+pub(in crate::scenarios) fn wait_for_settled_popup(
     browser: &mut dyn BrowserUnderTest,
     timeout: Duration,
 ) -> Result<PopupSnapshot, String> {
@@ -160,7 +160,7 @@ pub(super) fn wait_for_settled_popup(
 }
 
 /// Ждёт, пока попап закроется сам (`window.close()` после `started`).
-pub(super) fn wait_for_popup_closed(
+pub(in crate::scenarios) fn wait_for_popup_closed(
     browser: &mut dyn BrowserUnderTest,
     timeout: Duration,
 ) -> Result<(), String> {

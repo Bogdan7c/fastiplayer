@@ -10,21 +10,25 @@
 //!  4. `page-without-video`: переход на страницу того же origin без видео → через ~30 с прежний конец:
 //!     «Source tab closed» (`notice=finished cause=tab_gone`), окно закрылось;
 //!  5. `other-site`: переход на другой origin (`localhost` вместо `127.0.0.1`) → старый сеанс кончается сразу,
-//!     видео нового документа играет сам браузер.
+//!     видео нового документа играет сам браузер;
+//!  6. `other-site-paused-button`: то же, но окно плеера стоит на ПАУЗЕ: сеанс остаётся «сиротой», зритель
+//!     жмёт значок моста на новой странице → попап отдаёт видео, оно встаёт в то же окно заменой (ход —
+//!     в [`toolbar_button`]; нужна настоящая мышь).
 //!
 //! Страницу уводит она сама по команде робота `hook:navigate` (настоящая навигация сайта). Робот ничего не
 //! знает о вкладке: он смотрит на журнал плеера (окно, сеансы, полный экран, кадры, конец) и на журнал
 //! страницы (какие документы загрузились, играет ли браузер сам). Приговоры — чистые функции в [`judge`].
 
 mod judge;
+mod toolbar_button;
 
 use std::time::{Duration, Instant};
 
 use self::judge::{
     EndObservation, EndSignal, Expectation, ExpectedDocument, FULLSCREEN_MARKER,
     MIN_BROWSER_FRAMES, MIN_FRAMES_AFTER_REPLACEMENT, PAGE_STATE_MARKER, PLAYER_PROCESS_MARKER,
-    PlayerJournal, REPLACED_PREVIOUS_GRANT, ReloadEvidence, SESSION_OPENED_MARKER,
-    WINDOW_CREATED_MARKER, judge, parse_load, parse_state,
+    PlayerJournal, PopupObservation, REPLACED_PREVIOUS_GRANT, ReloadEvidence,
+    SESSION_OPENED_MARKER, WINDOW_CREATED_MARKER, judge, parse_load, parse_state,
 };
 use super::context::{ScenarioError, Stand};
 use super::evidence::{
@@ -38,7 +42,7 @@ use super::page_ends::start_of_session;
 use super::page_filter::PageFilter;
 use super::row_filter::row_admitted_by_environment;
 use crate::browsers::{BrowserKind, HandOffOutcome};
-use crate::environment::{BenchEnvironment, PlayerConfigProfile};
+use crate::environment::{BenchEnvironment, DesktopSetup, PlayerConfigProfile};
 use crate::observe::{
     FrameGrowthRule, ObserveError, PLAYBACK_GROWTH_WINDOW, PlayerLog, parse_end_notice,
     read_host_evidence,
@@ -96,7 +100,7 @@ const ONE_FILM: &[ExpectedDocument] = &[ExpectedDocument {
 }];
 
 /// Строки сценария в порядке прогона.
-const ROWS: [ReloadRow; 5] = [
+const ROWS: [ReloadRow; 6] = [
     ReloadRow {
         name: "reload-same-url",
         page_query: "&view=film&nav=reload",
@@ -147,6 +151,14 @@ const ROWS: [ReloadRow; 5] = [
         second_documents: ONE_FILM,
         origin_changes: true,
     },
+    // Бэклог п. 75: тот же уход на другой сайт, но окно на паузе и зритель жмёт значок моста.
+    ReloadRow {
+        name: "other-site-paused-button",
+        page_query: "&view=film&nav=other-site",
+        expectation: Expectation::ReplacementByToolbarButton,
+        second_documents: ONE_FILM,
+        origin_changes: true,
+    },
 ];
 
 impl ReloadRow {
@@ -159,7 +171,17 @@ impl ReloadRow {
     fn player_config(&self, bench_default: PlayerConfigProfile) -> PlayerConfigProfile {
         match self.expectation {
             Expectation::Replacement => PlayerConfigProfile::RememberedFullscreen,
-            Expectation::EndsAfterWait | Expectation::EndsAtOnce => bench_default,
+            Expectation::EndsAfterWait
+            | Expectation::EndsAtOnce
+            | Expectation::ReplacementByToolbarButton => bench_default,
+        }
+    }
+
+    /// Устройство экрана: строка с кликом по значку живёт на большом экране с настоящей мышью.
+    fn desktop(&self) -> DesktopSetup {
+        match self.expectation {
+            Expectation::ReplacementByToolbarButton => DesktopSetup::pointer_stand(),
+            _ => DesktopSetup::default(),
         }
     }
 }
@@ -192,7 +214,7 @@ pub(super) fn run_all(stand: &Stand, browser: BrowserKind, filter: &PageFilter) 
 fn run_row(stand: &Stand, browser: BrowserKind, row: ReloadRow) -> StepResult {
     let started = Instant::now();
     let profile = row.player_config(stand.settings.player_config);
-    let verdict = stand.with_environment_for_player_config(profile, |environment| {
+    let verdict = stand.with_environment_on_desktop(profile, row.desktop(), |environment| {
         drive(stand, environment, browser, row)
     });
     StepResult::new("page-reload", browser, row.name, verdict, started.elapsed())
@@ -279,6 +301,8 @@ fn apply_wait_override(run: &mut HandoffRun<'_>) -> Result<(), String> {
 struct RowOutcome {
     frame_growth: Option<Result<u64, String>>,
     end: Option<EndObservation>,
+    /// Что показал попап после клика по значку (только строка с кнопкой).
+    popup: Option<PopupObservation>,
 }
 
 fn drive(
@@ -299,7 +323,19 @@ fn drive(
         Err(reason) => Err(format!("session-granted: {reason}")),
     };
     match started {
-        Ok(()) => outcome = walk_row(&mut run, &control, &row, &mut failed_steps)?,
+        Ok(()) => {
+            outcome = match row.expectation {
+                Expectation::ReplacementByToolbarButton => toolbar_button::walk(
+                    stand,
+                    environment,
+                    browser_kind,
+                    &mut run,
+                    &control,
+                    &mut failed_steps,
+                )?,
+                _ => walk_row(&mut run, &control, &row, &mut failed_steps)?,
+            }
+        }
         Err(reason) => failed_steps.push(format!("hand-off: {reason}")),
     }
     let journal = read_journal(&mut run.player_log)?;
@@ -324,6 +360,7 @@ fn drive(
                 .collect(),
             frame_growth: outcome.frame_growth,
             end: outcome.end,
+            popup: outcome.popup,
             host: read_host_evidence(&exit.stderr_log)?,
             forbidden_player_lines,
             page_log: format_browser_log(&page_log),
@@ -368,6 +405,10 @@ fn walk_row(
                 failed_steps.push(format!("browser-plays-other-site: {reason}"));
             }
         }
+        // Эту строку ведёт `toolbar_button::walk` (ему нужна мышь), сюда она не попадает.
+        Expectation::ReplacementByToolbarButton => {
+            failed_steps.push("the toolbar-button row was routed to the plain walk".to_owned());
+        }
     }
     Ok(outcome)
 }
@@ -386,28 +427,27 @@ fn walk_replacement(
         failed_steps.push(format!("replacement-session-opened: {error}"));
         return;
     }
-    let growth = run
-        .player_log
-        .skip_history()
-        .map_err(|error| error.to_string())
-        .and_then(|()| {
-            run.player_log
-                .wait_for_frame_growth(
-                    FrameGrowthRule::frames_within(
-                        MIN_FRAMES_AFTER_REPLACEMENT,
-                        PLAYBACK_GROWTH_WINDOW,
-                    ),
-                    GROWTH_TIMEOUT,
-                )
-                .map(|growth| growth.frames_gained())
-                .map_err(|error| error.to_string())
-        });
+    let growth = wait_frames_grow_after_replacement(run);
     outcome.frame_growth = Some(growth);
     // Второму документу нужно пожить под тенью, чтобы его декодер можно было судить.
     std::thread::sleep(SHADOW_OBSERVE);
     if let Err(error) = control.wait_until_controllable(Duration::from_secs(5)) {
         failed_steps.push(format!("window-still-controllable: {error}"));
     }
+}
+
+/// После замены: сбросить прочитанное и дождаться прироста показанных кадров. `Ok` — сколько кадров прибавилось.
+fn wait_frames_grow_after_replacement(run: &mut HandoffRun<'_>) -> Result<u64, String> {
+    run.player_log
+        .skip_history()
+        .map_err(|error| error.to_string())?;
+    run.player_log
+        .wait_for_frame_growth(
+            FrameGrowthRule::frames_within(MIN_FRAMES_AFTER_REPLACEMENT, PLAYBACK_GROWTH_WINDOW),
+            GROWTH_TIMEOUT,
+        )
+        .map(|growth| growth.frames_gained())
+        .map_err(|error| error.to_string())
 }
 
 /// Старый сеанс кончается без замены: первый признак конца и срок, сообщение, закрытие окна.
@@ -488,7 +528,8 @@ mod tests {
                 "next-episode-new-url",
                 "iframe-player-reload",
                 "page-without-video",
-                "other-site"
+                "other-site",
+                "other-site-paused-button"
             ]
         );
         assert!(PAGE_SCENARIOS.iter().any(|scenario| scenario.id == PAGE));
@@ -509,7 +550,46 @@ mod tests {
                 PlayerConfigProfile::RememberedFullscreen,
                 PlayerConfigProfile::Clean,
                 PlayerConfigProfile::Clean,
+                PlayerConfigProfile::Clean,
             ]
+        );
+    }
+
+    #[test]
+    fn only_the_toolbar_button_row_gets_the_pointer_desktop() {
+        let wants_pointer: Vec<(&str, bool)> = ROWS
+            .iter()
+            .map(|row| (row.name, row.desktop() == DesktopSetup::pointer_stand()))
+            .collect();
+        assert_eq!(
+            wants_pointer.iter().filter(|(_, pointer)| *pointer).count(),
+            1
+        );
+        assert!(wants_pointer.contains(&("other-site-paused-button", true)));
+    }
+
+    #[test]
+    fn the_paused_button_row_leaves_for_the_same_other_site_as_the_plain_one() {
+        let plain = ROWS
+            .iter()
+            .find(|row| row.name == "other-site")
+            .expect("row");
+        let button = ROWS
+            .iter()
+            .find(|row| row.name == "other-site-paused-button")
+            .expect("row");
+        assert_eq!(button.page_query(), plain.page_query());
+        assert!(button.origin_changes);
+        assert_eq!(button.expectation, Expectation::ReplacementByToolbarButton);
+        // Существующая строка не тронута: окно играет, сеанс кончается сам.
+        assert_eq!(plain.expectation, Expectation::EndsAtOnce);
+        // Точное имя (`=other-site`) отбирает строку ровно по имени, подстрока `other-site` — обе.
+        assert!(
+            row_names()
+                .iter()
+                .filter(|name| name.contains("other-site"))
+                .count()
+                == 2
         );
     }
 
@@ -527,6 +607,7 @@ mod tests {
         assert!(ROWS[2].page_query().contains("&view=frame&"));
         assert!(ROWS[3].page_query().ends_with("&nav=empty"));
         assert!(ROWS[4].page_query().ends_with("&nav=other-site"));
+        assert!(ROWS[5].page_query().ends_with("&nav=other-site"));
     }
 
     #[test]

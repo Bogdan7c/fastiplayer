@@ -50,7 +50,23 @@ pub(super) enum Expectation {
     EndsAfterWait,
     /// Другой сайт: сеанс кончается сразу, видео играет браузер.
     EndsAtOnce,
+    /// Другой сайт, пока окно плеера на паузе: сеанс остаётся «сиротой», а зритель жмёт значок моста
+    /// на новой странице. Попап обязан отдать главное видео новой страницы, и оно встаёт в то же окно
+    /// заменой сеанса (бэклог п. 75).
+    ReplacementByToolbarButton,
 }
+
+/// Что показал попап моста на новой странице после настоящего клика по значку.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PopupObservation {
+    /// Попап открылся и назвал случай (`data-notice`).
+    Notice(String),
+    /// Попапа в итоге не нашли (закрылся раньше снимка: так бывает после `started`); причина — текст.
+    NotSeen(String),
+}
+
+/// Случай попапа «видео уже играет в плеере»: на новой странице он значит «видео не отдано».
+pub(super) const IN_PLAYER_NOTICE: &str = "in_player";
 
 /// Что должен показать второй документ строки: вид и номер серии (для проверки, что ушли именно туда).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +131,8 @@ pub(super) struct ReloadEvidence {
     pub(super) frame_growth: Option<Result<u64, String>>,
     /// Конец старого сеанса (`None` — строка его не ждала).
     pub(super) end: Option<EndObservation>,
+    /// Что показал попап после клика по значку (`None` — строка клика не делала).
+    pub(super) popup: Option<PopupObservation>,
     pub(super) host: HostLogEvidence,
     pub(super) forbidden_player_lines: Vec<String>,
     /// Хвост журнала страницы: главная улика при провале.
@@ -188,6 +206,10 @@ pub(super) fn judge(
             failures.extend(old_end_failures(evidence, WhenEnds::AtOnce));
             failures.extend(browser_plays_by_itself_failures(&evidence.states));
             end_summary(evidence)
+        }
+        Expectation::ReplacementByToolbarButton => {
+            failures.extend(toolbar_button_replacement_failures(evidence));
+            replacement_summary(evidence)
         }
     };
     let summary = if failures.is_empty() {
@@ -265,7 +287,32 @@ fn second_documents_failures(
 /// Замена: один раз `ReplacedPrevious`, ровно два сеанса, полный экран сохранён, кадры растут,
 /// браузер второй документ не декодирует.
 fn replacement_failures(evidence: &ReloadEvidence) -> Vec<String> {
-    let journal = &evidence.journal;
+    let mut failures = session_replacement_failures(&evidence.journal);
+    failures.extend(fullscreen_failures(&evidence.journal.fullscreen_changes));
+    failures.extend(frame_growth_failures(evidence));
+    failures.extend(second_document_not_decoded_failures(&evidence.states));
+    failures
+}
+
+/// Замена по значку на паузе: те же два сеанса и рост кадров, плюс попап НЕ сказал `in_player`.
+/// Полный экран и «браузер не декодирует» здесь не судятся: строка идёт с обычным профилем плеера, а
+/// другой сайт до клика играл в браузере сам, и его счётчик кадров накопился законно.
+fn toolbar_button_replacement_failures(evidence: &ReloadEvidence) -> Vec<String> {
+    let mut failures = session_replacement_failures(&evidence.journal);
+    match &evidence.popup {
+        Some(PopupObservation::Notice(notice)) if notice == IN_PLAYER_NOTICE => failures.push(format!(
+            "the toolbar popup on the new page said `{IN_PLAYER_NOTICE}` (\"Playing in Fastiplayer - Switch to it\"): \
+             the video of the new page was not offered and the paused window was not replaced"
+        )),
+        Some(_) => {}
+        None => failures.push("the row never clicked the toolbar button on the new page".to_owned()),
+    }
+    failures.extend(frame_growth_failures(evidence));
+    failures
+}
+
+/// Один раз `ReplacedPrevious` и ровно два сеанса (первый и его замена).
+fn session_replacement_failures(journal: &PlayerJournal) -> Vec<String> {
     let mut failures = Vec::new();
     let replaced = journal
         .session_opened
@@ -285,17 +332,19 @@ fn replacement_failures(evidence: &ReloadEvidence) -> Vec<String> {
             journal.session_opened
         ));
     }
-    failures.extend(fullscreen_failures(&journal.fullscreen_changes));
-    match &evidence.frame_growth {
-        Some(Ok(gained)) if *gained >= MIN_FRAMES_AFTER_REPLACEMENT => {}
-        Some(Ok(gained)) => failures.push(format!(
-            "after the replacement the player presented only {gained} new frames, expected {MIN_FRAMES_AFTER_REPLACEMENT}"
-        )),
-        Some(Err(reason)) => failures.push(format!("no frames after the replacement: {reason}")),
-        None => failures.push("the row never waited for frames after the replacement".to_owned()),
-    }
-    failures.extend(second_document_not_decoded_failures(&evidence.states));
     failures
+}
+
+/// После замены плеер показал достаточно новых кадров.
+fn frame_growth_failures(evidence: &ReloadEvidence) -> Vec<String> {
+    match &evidence.frame_growth {
+        Some(Ok(gained)) if *gained >= MIN_FRAMES_AFTER_REPLACEMENT => Vec::new(),
+        Some(Ok(gained)) => vec![format!(
+            "after the replacement the player presented only {gained} new frames, expected {MIN_FRAMES_AFTER_REPLACEMENT}"
+        )],
+        Some(Err(reason)) => vec![format!("no frames after the replacement: {reason}")],
+        None => vec!["the row never waited for frames after the replacement".to_owned()],
+    }
 }
 
 /// Полный экран был включён (из запомненного) и ни разу не выключен.

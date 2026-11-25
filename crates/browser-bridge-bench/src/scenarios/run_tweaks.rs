@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use super::extension_prelude::ExtensionPrelude;
 use crate::browsers::{ExtensionSource, WindowPrivacy};
 
 /// Кто из экстеншенов ставится в браузер первым (порядок влияет на то, чья обёртка
@@ -66,6 +67,8 @@ pub(super) struct RunTweaks {
     pub page_host: Option<String>,
     /// Окно браузера прогона: обычное или приватное (память выбора, 14b2).
     pub window_privacy: WindowPrivacy,
+    /// Чужой код, который встаёт в страницу РАНЬШЕ скрипта экстеншена (копия сборки с prelude).
+    pub extension_prelude: ExtensionPrelude,
 }
 
 /// Дополнительный экстеншен: распакованный каталог или пакет.

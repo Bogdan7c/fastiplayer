@@ -15,7 +15,7 @@
 //! устроена иначе и живёт в `typed_text`.
 
 mod beat;
-mod extension_copy;
+pub(in crate::scenarios) mod extension_copy;
 mod reload_row;
 mod steps;
 mod typed_text;

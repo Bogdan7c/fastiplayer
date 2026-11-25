@@ -20,6 +20,7 @@ mod context;
 mod entries;
 mod episodes;
 mod evidence;
+mod extension_prelude;
 mod extension_status;
 mod handoff_run;
 mod hls_live;

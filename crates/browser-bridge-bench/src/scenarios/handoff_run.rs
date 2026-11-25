@@ -209,7 +209,11 @@ impl<'a> HandoffRun<'a> {
                 }
                 // Установщик ДО запуска браузера: манифест посредника должен лежать в профиле.
                 environment.connect_browser(browser_kind)?;
-                vec![ExtensionSource::UnpackedDir(dist)]
+                // Prelude «чужой код раньше нашего»: ставится копия сборки; без него — сама сборка.
+                let installed = tweaks
+                    .extension_prelude
+                    .apply_to_build(&dist, environment.work_dir())?;
+                vec![ExtensionSource::UnpackedDir(installed)]
             }
             ExtensionMode::InstalledLater => {
                 environment.connect_browser(browser_kind)?;
