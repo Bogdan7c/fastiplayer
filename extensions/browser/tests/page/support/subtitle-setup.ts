@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import type { PageEvent } from "../../../src/shared/handoff-contract.ts";
 import type { PageSubtitleDocumentEvent, PageSubtitleEvent, PageSubtitleTrackSourceEvent } from "../../../src/shared/page-subtitle-contract.ts";
 import { startHarness, type BridgeHarness, type IsolatedSide } from "./bridge-harness.ts";
-import { createFakePage } from "./fake-page.ts";
+import { createFakePage, type FakePage } from "./fake-page.ts";
 import { addSubtitleEnvironment, type FakeNetworkReply } from "./fake-subtitle-environment.ts";
 
 export const SITE_ORIGIN = "https://site.example";
@@ -14,11 +14,59 @@ export interface SubtitlePage {
   readonly env: ReturnType<typeof addSubtitleEnvironment>;
 }
 
+/** Что сделать со страницей ДО сборки моста: так тест изображает чужой код, успевший раньше нас. */
+export interface SubtitlePageOptions {
+  readonly beforeBridge?: (page: FakePage) => void;
+}
+
 /** Страница с окружением субтитров и собранным мостом (хуки встают при сборке). */
-export function startSubtitlePage(): SubtitlePage {
+export function startSubtitlePage(options: SubtitlePageOptions = {}): SubtitlePage {
   const page = createFakePage({ origin: SITE_ORIGIN });
   const env = addSubtitleEnvironment(page);
+  options.beforeBridge?.(page);
   return { harness: startHarness({ page, useWindowClock: true }), env };
+}
+
+/** Что блокировщик отдаёт странице вместо настоящего текста ответа (он «чистит» ответы от рекламы). */
+export const BLOCKER_PRUNED_TEXT = "pruned by the blocker";
+
+/**
+ * Подменить `XMLHttpRequest` окна подклассом — так делают скриптлеты блокировщиков рекламы
+ * (`self.XMLHttpRequest = class extends self.XMLHttpRequest { open(…) { … super.open(…) } … }`).
+ * Форма снята с живого YouTube (16b5): у прототипа подкласса СВОИ `open`, `send`, `response`,
+ * `responseText`, `getResponseHeader`, а `status`, `responseURL` и `responseType` остались у родного.
+ */
+export function replaceXhrWithBlockerSubclass(page: FakePage): void {
+  const win = page.win as unknown as { XMLHttpRequest: new () => FakeXhrShape };
+  const NativeXhr = win.XMLHttpRequest;
+  win.XMLHttpRequest = class extends NativeXhr {
+    override open(method: string, url: string): void {
+      super.open(method, url);
+    }
+    override send(): void {
+      super.send();
+    }
+    override get response(): unknown {
+      return BLOCKER_PRUNED_TEXT;
+    }
+    override get responseText(): string {
+      return BLOCKER_PRUNED_TEXT;
+    }
+    override getResponseHeader(name: string): string | null {
+      return super.getResponseHeader(name);
+    }
+  };
+}
+
+/** Та часть поддельного XHR, которую трогают подкласс блокировщика и шаги тестов. */
+interface FakeXhrShape {
+  responseType: string;
+  open(method: string, url: string): void;
+  send(): void;
+  readonly response: unknown;
+  readonly responseText: string;
+  getResponseHeader(name: string): string | null;
+  testRespond(reply: FakeNetworkReply, value: { text?: string; json?: unknown; buffer?: ArrayBuffer }): void;
 }
 
 export const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -60,7 +108,9 @@ export async function pageXhrs(
   responseType: "" | "text" | "json" | "arraybuffer" | "blob",
   value: { text?: string; json?: unknown; buffer?: ArrayBuffer },
 ): Promise<void> {
-  const xhr = new subtitlePage.env.FakeXhr();
+  // Конструктор берём из окна, как страница: если его подменили до нас, запрос идёт через подмену.
+  const PageXhr = (subtitlePage.harness.page.win as unknown as { XMLHttpRequest: new () => FakeXhrShape }).XMLHttpRequest;
+  const xhr = new PageXhr();
   const opened = reply.url;
   xhr.open("GET", opened);
   xhr.responseType = responseType;

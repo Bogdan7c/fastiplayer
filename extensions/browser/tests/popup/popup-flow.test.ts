@@ -73,6 +73,17 @@ describe("попап: открытие", () => {
     assert.deepEqual(popup.surveyCalls, [7], "опрошена активная вкладка");
   });
 
+  // Бэклог п. 75 (16b5): окно досматривает видео прежней страницы, вкладка уже на другом сайте.
+  it("окно досматривает прежнюю страницу: попап не пишет «Playing», а отдаёт главное видео этой страницы в то же окно", async () => {
+    const popup = setupPopup({ surveys: [surveyed([1, 2], { kind: "previous_page_in_player" })], outcomes: [{ kind: "started", player_window: "already_open" }] });
+    await popup.flow.start();
+    assert.deepEqual(popup.calls, [{ tabId: 7 }], "ушла команда без выбранного видео: фон заменит сеанс главным видео страницы");
+    assert.notEqual(popup.last().notice.id, "in_player");
+    assert.equal(popup.last().notice.id, "switch_to_player", "окно уже было и может быть за браузером: попап остаётся и зовёт переключиться (решение 216)");
+    assert.equal(popup.closed(), 0);
+    assert.deepEqual(popup.last().rows.map((row) => row.labels), [[], []], "ни одна строка не помечена «in player»: видео этой страницы в плеере не было");
+  });
+
   it("сеанса нет: шлёт hand_off_tab главного видео вкладки, started закрывает попап", async () => {
     const popup = setupPopup({ outcomes: [{ kind: "started", player_window: "new" }] });
     await popup.flow.start();

@@ -75,7 +75,13 @@ export function installPageSubtitles(win: PageSubtitleWindow, tools: PageSubtitl
   });
   const xhrHooked = installSafely(reportOddity, "XHR", () => {
     const readers = captureXhrReaders(win);
-    return readers !== null && installXhrSubtitleHook({ readers, channel, bytes, intake, reportOddity });
+    if (readers === null) {
+      // XHR у окна есть, а читать его нечем: без записи это молчаливая потеря всех субтитров, скачанных
+      // через XHR (так мы неделями не видели корень бэклога п. 78). Окно без XHR — не странность.
+      if (win.XMLHttpRequest !== undefined) reportOddity("XHR subtitle capture is unavailable: the native XMLHttpRequest prototype was not found");
+      return false;
+    }
+    return installXhrSubtitleHook({ readers, channel, bytes, intake, reportOddity });
   });
   return { seam, store, fetchHooked, xhrHooked };
 }

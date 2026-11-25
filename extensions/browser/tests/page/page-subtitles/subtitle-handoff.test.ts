@@ -13,18 +13,24 @@ import {
   encode,
   onlyDocument,
   pageFetches,
+  pageXhrs,
+  replaceXhrWithBlockerSubclass,
   SITE_ORIGIN,
   startSubtitlePage,
   subtitleEventsOf,
   trackSourcesOf,
   VTT_DOCUMENT,
   type SubtitlePage,
+  type SubtitlePageOptions,
 } from "../support/subtitle-setup.ts";
 
 const VTT_URL = "https://cdn.example/subs/en.vtt";
 
-async function withHandoffPage(body: (subtitlePage: SubtitlePage, isolated: IsolatedSide, video: ReturnType<typeof addPlayingMseVideo>["video"]) => Promise<void>): Promise<void> {
-  const subtitlePage = startSubtitlePage();
+async function withHandoffPage(
+  body: (subtitlePage: SubtitlePage, isolated: IsolatedSide, video: ReturnType<typeof addPlayingMseVideo>["video"]) => Promise<void>,
+  options: SubtitlePageOptions = {},
+): Promise<void> {
+  const subtitlePage = startSubtitlePage(options);
   const { video } = addPlayingMseVideo(subtitlePage.harness);
   const isolated = handshake(subtitlePage.harness.page);
   try {
@@ -148,6 +154,28 @@ describe("пойманное во время и после передачи", ()
       assert.equal(sent.display, "showing");
       assert.equal(decode(sent.bytes), VTT_DOCUMENT);
     });
+  });
+
+  // Путь бэклога п. 78 (16b5): зритель выбрал строку в окне, YouTube качает timedtext через XHR — а
+  // `XMLHttpRequest` на странице уже подменён подклассом блокировщика рекламы.
+  it("документ, скачанный во время передачи через подменённый блокировщиком XHR, доходит до изолированного мира", async () => {
+    await withHandoffPage(
+      async (subtitlePage, isolated) => {
+        await describeAndBegin(isolated);
+        await isolated.settle();
+        const json3 = '{"wireMagic":"pb3","events":[{"tStartMs":0,"dDurationMs":1000,"segs":[{"utf8":"Hello"}]}]}';
+        const url = "https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en&fmt=json3";
+        await pageXhrs(subtitlePage, { url, contentType: "application/json; charset=UTF-8" }, "", { text: json3 });
+        await isolated.settle();
+        const sent = onlyDocument(isolated);
+        assert.equal(sent.display, "showing");
+        assert.equal(sent.format_hint, "json3");
+        assert.equal(decode(sent.bytes), json3, "плееру уходит настоящий текст ответа");
+        assert.deepEqual(sent.naming, { language: "en", label: "English", auto_generated: false });
+        assertAllAcceptedByBorder(subtitlePage);
+      },
+      { beforeBridge: replaceXhrWithBlockerSubclass },
+    );
   });
 
   it("после handoff_ended новые документы остаются на складе и никуда не уходят", async () => {

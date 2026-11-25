@@ -426,8 +426,11 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     return replaceSession(tabId, existing, consent, video, VIEWER_CHOICE_REPLACEMENT);
   }
 
-  /** Замена видео на той же вкладке (шапка файла, решение 215). */
-  async function replaceSession(tabId: number, previous: TabEntry, consent: LocalAddressConsent, video: VideoRef, terms: ReplacementTerms): Promise<HandOffTabOutcome> {
+  /**
+   * Замена видео на той же вкладке (шапка файла, решение 215). `video` — выбранное человеком или сторожем;
+   * `undefined` — главное видео страницы (кнопка на новой странице, пока окно досматривает прежнюю, п. 75).
+   */
+  async function replaceSession(tabId: number, previous: TabEntry, consent: LocalAddressConsent, video: VideoRef | undefined, terms: ReplacementTerms): Promise<HandOffTabOutcome> {
     const prepared = await prepareHandoff(tabId, previous, consent, video);
     if (prepared.kind === "refused") return prepared.outcome;
     if (previous.removed) return { kind: "failed", reason: "tab_closed" };
@@ -435,7 +438,7 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     // после перезагрузки — только замена (окна, которое она продолжала бы, уже нет).
     if (entries.get(tabId) !== previous) return terms.kind === "page_reload" ? PREVIOUS_SESSION_GONE : handOffTab(tabId, consent, video);
     // Сеанс сам переехал на выбранное видео (реклама кончилась), пока готовились.
-    if (isInPlayer(previous, video)) return STARTED_IN_OPEN_WINDOW;
+    if (video !== undefined && isInPlayer(previous, video)) return STARTED_IN_OPEN_WINDOW;
     const entry = createEntry(tabId);
     replaced.add(previous);
     const chosen = terms.kind === "page_reload" ? { ...prepared.video, ...terms.judged } : prepared.video;
@@ -483,10 +486,20 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
     if (current === undefined || current === failed) entries.set(tabId, previous);
   }
 
+  /**
+   * Окно плеера досматривает видео ПРЕЖНЕЙ страницы вкладки (сеанс-«сирота», 11b2): запись вкладки жива,
+   * но видео нынешней страницы в плеере нет. Один вопрос на оба читателя — опрос (`presenceOf`) и команду
+   * без выбранного видео (`handOffTab`): разойдись они, попап слал бы команду, а фон отвечал «уже в окне».
+   */
+  function windowOutlivedItsPage(entry: TabEntry): boolean {
+    return entry.started && entry.session !== undefined && entry.session.outlivedItsPage();
+  }
+
   /** Состояние вкладки с плеером для ответа на опрос. */
   function presenceOf(tabId: number): TabPlayerPresence {
     const entry = entries.get(tabId);
     if (entry === undefined || !entry.started || entry.session === undefined) return { kind: "no_session" };
+    if (windowOutlivedItsPage(entry)) return { kind: "previous_page_in_player" };
     return { kind: "in_player", video: entry.session.videoInPlayer() };
   }
 
@@ -510,6 +523,10 @@ export function createTabHandoffs(dependencies: TabHandoffsDependencies): TabHan
       return register(tabId, entry, () => startForTab(tabId, entry, consent, video));
     }
     if (video !== undefined) return handOffRequestedVideo(tabId, existing, consent, video);
+    // Окно досматривает прежнюю страницу, а кнопку нажали на новой (п. 75, решение 395): её главное видео
+    // встаёт в то же окно заменой сеанса — тем же путём, что строка списка попапа (215). Отказ до сеанса
+    // (видео нет, DRM, адрес) оставляет сироту как была: прежнюю страницу по-прежнему можно вернуть.
+    if (windowOutlivedItsPage(existing)) return replaceSession(tabId, existing, consent, undefined, VIEWER_CHOICE_REPLACEMENT);
     // Без выбранного видео: передача уже идёт — окно плеера открыто (решение 216); ещё стартует — исход той же
     // передачи (кнопку можно нажать дважды).
     return existing.started ? Promise.resolve(STARTED_IN_OPEN_WINDOW) : existing.outcome;

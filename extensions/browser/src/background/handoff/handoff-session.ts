@@ -790,5 +790,5 @@ export function startHandoffSession(
   }
 
   openPlayerSession().catch((error: unknown) => failStart({ kind: "failed", reason: `open_session_threw:${String(error)}` }));
-  return { outcome, notifyTabRemoved, heldVideo, pageReloadHandoverRefused: () => pageReload.handoverRefused(), adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), feedLeftPlace: () => feed.feedLeftPlace(), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
+  return { outcome, notifyTabRemoved, heldVideo, pageReloadHandoverRefused: () => pageReload.handoverRefused(), adOnScreen: () => relocation.adOnScreen(), videoInPlayer: () => (phase === "active" ? shownRef : null), outlivedItsPage: () => phase === "page_away", feedLeftPlace: () => feed.feedLeftPlace(), adWatchReport: siteAdapters.adWatchReport, variantWatchReport: siteAdapters.variantWatchReport };
 }

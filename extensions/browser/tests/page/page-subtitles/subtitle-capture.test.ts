@@ -1,7 +1,7 @@
 // Ловля документов субтитров хуками `fetch` и XHR (13b2) до передачи: что попадает на склад, а что не читается вовсе.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decode, encode, pageFetches, pageXhrs, settleReads, startSubtitlePage, VTT_DOCUMENT } from "../support/subtitle-setup.ts";
+import { decode, encode, pageFetches, pageXhrs, replaceXhrWithBlockerSubclass, settleReads, startSubtitlePage, VTT_DOCUMENT } from "../support/subtitle-setup.ts";
 
 const VTT_URL = "https://cdn.example/subs/en.vtt";
 
@@ -146,5 +146,37 @@ describe("хук XHR", () => {
     await settleReads();
     const [stored] = subtitlePage.harness.bridge.subtitles.store.snapshot();
     assert.deepEqual(stored?.naming, { language: "uk", label: null, auto_generated: false });
+  });
+});
+
+// Корень бэклога п. 78 (16b5): на живом YouTube блокировщик рекламы подменяет `XMLHttpRequest` подклассом
+// раньше нашего скрипта. Родные геттеры тогда лежат не на `XMLHttpRequest.prototype`, а выше по цепочке.
+describe("хук XHR: чужой код подменил XMLHttpRequest подклассом раньше нас", () => {
+  const TIMEDTEXT_URL = "https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en&fmt=json3";
+  const JSON3_DOCUMENT = '{"wireMagic":"pb3","events":[{"tStartMs":0,"dDurationMs":1000,"segs":[{"utf8":"Hello"}]}]}';
+
+  it("документ, скачанный через подкласс, попадает на склад с настоящим текстом ответа, а не с подменённым", async () => {
+    const subtitlePage = startSubtitlePage({ beforeBridge: replaceXhrWithBlockerSubclass });
+    await pageXhrs(subtitlePage, { url: TIMEDTEXT_URL, contentType: "application/json; charset=UTF-8" }, "", { text: JSON3_DOCUMENT });
+    const stored = subtitlePage.harness.bridge.subtitles.store.snapshot();
+    assert.equal(stored.length, 1, "хук встал на родной прототип и увидел ответ");
+    assert.equal(decode(stored[0]?.bytes ?? new Uint8Array()), JSON3_DOCUMENT, "байты родного ответа, не то, что блокировщик показывает странице");
+    assert.equal(stored[0]?.formatHint, "json3");
+    assert.deepEqual(stored[0]?.naming, { language: "en", label: "English", auto_generated: false });
+    assert.equal(subtitlePage.harness.debugLines.length, 0);
+  });
+
+  it("родного прототипа нет вовсе: хук не ставится, и об этом остаётся отладочная запись", async () => {
+    const subtitlePage = startSubtitlePage({
+      beforeBridge: (page) => {
+        // «XMLHttpRequest» без единого родного геттера: читать ответ нечем.
+        (page.win as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = class {
+          open(): void {}
+        };
+      },
+    });
+    assert.equal(subtitlePage.harness.bridge.subtitles.xhrHooked, false);
+    assert.equal(subtitlePage.harness.debugLines.length, 1, "молчаливой потери нет");
+    assert.match(subtitlePage.harness.debugLines[0] ?? "", /XHR/);
   });
 });
