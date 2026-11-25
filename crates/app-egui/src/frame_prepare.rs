@@ -1079,7 +1079,6 @@ pub(crate) fn render_frame(
             app_state.next_notification_wake_deadline(),
             app_state.fullscreen_chrome_wake_deadline(),
             app_state.timeline_inline_status_wake_deadline(),
-            app_state.page_document_wait_wake_deadline(),
             app_state.media_switch_hold_wake_deadline(),
             app_state.next_telemetry_refresh_deadline(),
             egui_request.deadline,

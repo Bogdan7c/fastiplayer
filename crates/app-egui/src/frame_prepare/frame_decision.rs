@@ -117,7 +117,6 @@ fn ui_deadline_is_due(
         app_state.next_notification_wake_deadline(),
         app_state.fullscreen_chrome_wake_deadline(),
         app_state.timeline_inline_status_wake_deadline(),
-        app_state.page_document_wait_wake_deadline(),
         settings_runtime.next_sidebar_resize_deadline(),
     ]
     .into_iter()

@@ -182,7 +182,9 @@ impl PageDocumentWait {
         matches!(self.phase, WaitPhase::Waiting { .. })
     }
 
-    /// Момент, когда ожидание истечёт (будит кадр); `None` — не ждём.
+    /// Момент, когда ожидание истечёт; `None` — не ждём (проверяют тесты: срок замечает обычный
+    /// проход окна, отдельного будильника кадра у него нет).
+    #[cfg(test)]
     pub(super) fn deadline(&self) -> Option<Instant> {
         match &self.phase {
             WaitPhase::Waiting { deadline, .. } => Some(*deadline),

@@ -136,11 +136,6 @@ impl AppState {
         }
     }
 
-    /// Момент, когда ожидание документа строки истечёт и кадр надо разбудить (`None` — не ждём).
-    pub(crate) fn page_document_wait_wake_deadline(&self) -> Option<Instant> {
-        self.subtitles.page_document_wait_deadline()
-    }
-
     /// Зритель запросил следующую серию: ожидание документа прежней серии больше не нужно.
     pub(in crate::state) fn cancel_page_document_wait(&mut self) {
         self.subtitles.cancel_page_document_wait();

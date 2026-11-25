@@ -145,6 +145,7 @@ impl PageViewerChoice {
     }
 
     /// Момент, когда истечёт ожидание документа строки (`None` — не ждём).
+    #[cfg(test)]
     pub(super) fn document_wait_deadline(&self) -> Option<Instant> {
         self.document_wait.deadline()
     }

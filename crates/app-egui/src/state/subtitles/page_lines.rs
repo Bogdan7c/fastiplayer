@@ -143,7 +143,8 @@ impl SubtitleOwner {
         self.page_viewer.expire_document_wait(now)
     }
 
-    /// Момент, когда истечёт ожидание документа строки: будит кадр (`None` — не ждём).
+    /// Момент, когда истечёт ожидание документа строки; `None` — не ждём (проверяют тесты).
+    #[cfg(test)]
     pub(super) fn page_document_wait_deadline(&self) -> Option<Instant> {
         self.page_viewer.document_wait_deadline()
     }
