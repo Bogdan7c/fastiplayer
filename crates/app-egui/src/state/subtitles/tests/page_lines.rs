@@ -4,6 +4,7 @@
 //! фоновый разбор → реплики на кадре; действия зрителя — те же intent-методы, что у меню CC.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use fastiplayer_config::SubtitlesConfig;
 
@@ -241,7 +242,7 @@ fn the_ad_availability_is_carried_to_the_lines() {
 #[test]
 fn the_document_that_follows_a_line_choice_becomes_the_viewers_choice_and_is_reported() {
     let (mut owner, mut shelf) = viewer_picked_english();
-    owner.expect_page_document("German");
+    owner.expect_page_document("German", Instant::now());
     // Пока документа нет, прежний показ не трогается.
     assert_eq!(shown_row(&owner).as_deref(), Some("English"));
     assert_eq!(displayed_texts_at(&owner, 2_000), ["HELLO"]);
@@ -265,7 +266,7 @@ fn a_late_document_of_another_line_does_not_answer_the_choice() {
     // (загрузки страницы обгоняют друг друга, зритель быстро жмёт V). Ответ — только документ
     // с подписью выбранной строки.
     let (mut owner, mut shelf) = viewer_picked_english();
-    owner.expect_page_document("German");
+    owner.expect_page_document("German", Instant::now());
 
     offer(
         &mut owner,
@@ -308,7 +309,7 @@ fn without_a_line_choice_a_showing_document_does_not_beat_the_viewers_own_pick()
 fn a_replacement_of_a_track_the_viewer_left_is_shown_when_the_line_is_chosen_again() {
     let (mut owner, mut shelf) = viewer_picked_english();
     // en -> de: документ немецкого пришёл, зритель на нём.
-    owner.expect_page_document("German");
+    owner.expect_page_document("German", Instant::now());
     offer(
         &mut owner,
         &shelf.store(downloaded(2, "de", SHOWING, "HALLO")),
@@ -325,7 +326,7 @@ fn a_replacement_of_a_track_the_viewer_left_is_shown_when_the_line_is_chosen_aga
 
     // de -> en: зритель выбрал строку английского, YouTube скачал документ заново, и он
     // заменил прежнюю дорожку на месте (тот же номер).
-    owner.expect_page_document("English");
+    owner.expect_page_document("English", Instant::now());
     offer(
         &mut owner,
         &shelf.store(downloaded(1, "en", SHOWING, "HELLO AGAIN")),
@@ -346,7 +347,7 @@ fn documents_seen_before_the_choice_never_answer_it_even_for_a_new_generation() 
     );
     assert_eq!(shown_row(&owner).as_deref(), Some("English"));
 
-    owner.expect_page_document("English");
+    owner.expect_page_document("English", Instant::now());
     // Тот же склад ещё раз и новое поколение медиа (после рекламы): всё это уже видели.
     assert_eq!(
         owner.attach_page_tracks(&shelf.view()),
@@ -365,7 +366,7 @@ fn documents_seen_before_the_choice_never_answer_it_even_for_a_new_generation() 
 #[test]
 fn only_shown_downloads_of_the_page_answer_the_choice() {
     let (mut owner, mut shelf) = viewer_picked_english();
-    owner.expect_page_document("Spanish");
+    owner.expect_page_document("Spanish", Instant::now());
 
     offer(
         &mut owner,
@@ -394,7 +395,7 @@ fn the_wait_ends_when_the_viewer_picks_another_track_or_turns_subtitles_off() {
             &mut owner,
             &shelf.store(from_track_element(2, "fr", NOT_SHOWING, "SALUT")),
         );
-        owner.expect_page_document("German");
+        owner.expect_page_document("German", Instant::now());
         match ending {
             "another track" => click_menu_row(&mut owner, "French"),
             _ => {
@@ -421,7 +422,7 @@ fn the_wait_ends_when_the_viewer_picks_another_track_or_turns_subtitles_off() {
 #[test]
 fn a_new_session_forgets_the_wait() {
     let (mut owner, shelf) = viewer_picked_english();
-    owner.expect_page_document("German");
+    owner.expect_page_document("German", Instant::now());
     let mut next_session = shelf.of_next_session();
 
     offer(
@@ -442,7 +443,7 @@ fn waiting_does_not_change_the_menu_text_of_the_tracks() {
     // Страховка «ожидание не владеет дорожками»: список дорожек до и после выбора строки один.
     let (mut owner, _shelf) = viewer_picked_english();
     let before = menu_texts(&owner);
-    owner.expect_page_document("German");
+    owner.expect_page_document("German", Instant::now());
     assert_eq!(menu_texts(&owner), before);
 }
 
@@ -459,10 +460,180 @@ fn only_a_queued_request_makes_the_owner_wait_for_the_document() {
     ];
     for outcome in refusals {
         let mut owner = browser_owner(&SubtitlesConfig::default(), instance(1));
-        expect_document_if_queued(outcome, &mut owner, "German");
+        expect_document_if_queued(outcome, &mut owner, "German", Instant::now());
         assert!(!owner.is_waiting_for_page_document(), "{outcome:?}");
     }
     let mut owner = browser_owner(&SubtitlesConfig::default(), instance(1));
-    expect_document_if_queued(PageVariantSelectOutcome::Queued, &mut owner, "German");
+    expect_document_if_queued(
+        PageVariantSelectOutcome::Queued,
+        &mut owner,
+        "German",
+        Instant::now(),
+    );
+    assert!(owner.is_waiting_for_page_document());
+}
+
+// ---- срок ожидания документа строки («окно ждёт и говорит») ----------------------------------
+
+/// Предел ожидания по умолчанию (10 с): тесты двигают время параметром, не засыпая.
+const WAIT_LIMIT: Duration = Duration::from_secs(10);
+
+/// Меню страницы, где она сама выбрала немецкую строку (просьба принята, документа нет).
+fn menu_with_german_picked() -> PageVariantMenuView {
+    page_menu(&["English", "German"], Some(1))
+}
+
+/// Зритель выбрал немецкую строку в момент `chosen_at`.
+fn viewer_asks_for_german(owner: &mut SubtitleOwner, chosen_at: Instant) {
+    owner.expect_page_document("German", chosen_at);
+}
+
+#[test]
+fn a_document_that_never_arrives_ends_the_wait_unmarks_the_line_and_is_reported_once() {
+    use crate::state::subtitles::page_line_wait::PageDocumentWaitExpiry;
+
+    let (mut owner, _shelf) = viewer_picked_english();
+    let chosen_at = Instant::now();
+    viewer_asks_for_german(&mut owner, chosen_at);
+    let menu = menu_with_german_picked();
+    assert_eq!(
+        page_rows(&menu_with(&owner, &menu)),
+        [("English".to_owned(), false), ("German".to_owned(), true)],
+        "while we wait the page's own mark is shown"
+    );
+
+    let early = owner.expire_page_document_wait(chosen_at + WAIT_LIMIT - Duration::from_millis(1));
+    assert_eq!(early, PageDocumentWaitExpiry::NotDue);
+    let expiry = owner.expire_page_document_wait(chosen_at + WAIT_LIMIT);
+
+    assert_eq!(
+        expiry,
+        PageDocumentWaitExpiry::TextNotArrived { waited: WAIT_LIMIT }
+    );
+    // Страница строку «выбрала», показ включён, но текста нет: отметки нет ни у одной строки.
+    assert_eq!(
+        page_rows(&menu_with(&owner, &menu)),
+        [("English".to_owned(), false), ("German".to_owned(), false)]
+    );
+    assert_eq!(
+        owner.expire_page_document_wait(chosen_at + WAIT_LIMIT * 2),
+        PageDocumentWaitExpiry::NotDue,
+        "reported exactly once"
+    );
+    assert!(!owner.is_waiting_for_page_document());
+}
+
+#[test]
+fn the_wait_deadline_exists_only_while_waiting() {
+    let (mut owner, _shelf) = viewer_picked_english();
+    assert_eq!(owner.page_document_wait_deadline(), None);
+    let chosen_at = Instant::now();
+    viewer_asks_for_german(&mut owner, chosen_at);
+    assert_eq!(
+        owner.page_document_wait_deadline(),
+        Some(chosen_at + WAIT_LIMIT)
+    );
+    let _ = owner.expire_page_document_wait(chosen_at + WAIT_LIMIT);
+    assert_eq!(owner.page_document_wait_deadline(), None, "expired");
+
+    viewer_asks_for_german(&mut owner, chosen_at);
+    owner.cancel_page_document_wait();
+    assert_eq!(owner.page_document_wait_deadline(), None, "cancelled");
+}
+
+#[test]
+fn a_late_document_is_not_the_viewers_choice_and_releases_the_line_mark() {
+    let (mut owner, mut shelf) = viewer_picked_english();
+    let chosen_at = Instant::now();
+    viewer_asks_for_german(&mut owner, chosen_at);
+    let _ = owner.expire_page_document_wait(chosen_at + WAIT_LIMIT);
+    let menu = menu_with_german_picked();
+
+    offer(
+        &mut owner,
+        &shelf.store(downloaded(2, "de", SHOWING, "HALLO")),
+    );
+
+    assert_eq!(
+        owner.take_viewer_page_choice_report(),
+        None,
+        "the wait was over: no viewer choice is made for them"
+    );
+    assert_eq!(
+        shown_row(&owner).as_deref(),
+        Some("English"),
+        "the viewer's earlier pick still wins over the page"
+    );
+    assert_eq!(
+        page_rows(&menu_with(&owner, &menu)),
+        [("English".to_owned(), false), ("German".to_owned(), true)],
+        "the mark follows the usual rule again"
+    );
+}
+
+#[test]
+fn a_document_before_the_deadline_is_the_viewers_choice_and_the_deadline_stays_silent() {
+    use crate::state::subtitles::page_line_wait::PageDocumentWaitExpiry;
+
+    let (mut owner, mut shelf) = viewer_picked_english();
+    let chosen_at = Instant::now();
+    viewer_asks_for_german(&mut owner, chosen_at);
+
+    offer(
+        &mut owner,
+        &shelf.store(downloaded(2, "de", SHOWING, "HALLO")),
+    );
+
+    assert_eq!(owner.take_viewer_page_choice_report(), page_track_report(2));
+    assert_eq!(shown_row(&owner).as_deref(), Some("German"));
+    assert_eq!(
+        owner.expire_page_document_wait(chosen_at + WAIT_LIMIT * 3),
+        PageDocumentWaitExpiry::NotDue
+    );
+    assert_eq!(
+        page_rows(&menu_with(&owner, &menu_with_german_picked())),
+        [("English".to_owned(), false), ("German".to_owned(), true)]
+    );
+}
+
+#[test]
+fn another_downloaded_document_by_the_deadline_keeps_the_mark_and_stays_out_of_the_viewers_face() {
+    use crate::state::subtitles::page_line_wait::PageDocumentWaitExpiry;
+
+    let (mut owner, mut shelf) = viewer_picked_english();
+    let chosen_at = Instant::now();
+    viewer_asks_for_german(&mut owner, chosen_at);
+    // Страница прислала документ с другой подписью (известное ограничение 15a2).
+    offer(
+        &mut owner,
+        &shelf.store(downloaded(2, "fr", SHOWING, "SALUT")),
+    );
+
+    let expiry = owner.expire_page_document_wait(chosen_at + WAIT_LIMIT);
+
+    assert_eq!(
+        expiry,
+        PageDocumentWaitExpiry::AnotherDocumentArrived { waited: WAIT_LIMIT }
+    );
+    assert_eq!(
+        page_rows(&menu_with(&owner, &menu_with_german_picked())),
+        [("English".to_owned(), false), ("German".to_owned(), true)],
+        "no lie about a missing text: the page marks the line as usual"
+    );
+}
+
+#[test]
+fn a_new_line_choice_clears_text_not_arrived() {
+    let (mut owner, _shelf) = viewer_picked_english();
+    let chosen_at = Instant::now();
+    viewer_asks_for_german(&mut owner, chosen_at);
+    let _ = owner.expire_page_document_wait(chosen_at + WAIT_LIMIT);
+
+    owner.expect_page_document("German", chosen_at + WAIT_LIMIT);
+
+    assert_eq!(
+        page_rows(&menu_with(&owner, &menu_with_german_picked())),
+        [("English".to_owned(), false), ("German".to_owned(), true)]
+    );
     assert!(owner.is_waiting_for_page_document());
 }

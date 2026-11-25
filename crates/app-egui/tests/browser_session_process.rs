@@ -923,6 +923,10 @@ mod tab_return;
 #[path = "browser_session_process/page_subtitles.rs"]
 mod page_subtitles;
 
+/// Срок ожидания текста выбранной строки субтитров страницы (16b5, решение 397).
+#[path = "browser_session_process/page_subtitle_line_wait.rs"]
+mod page_subtitle_line_wait;
+
 // Сессия 13c: кнопка качества окна — подпись «64p» → «96p» по картинке, которую видит зритель.
 #[path = "browser_session_process/quality_button.rs"]
 mod quality_button;

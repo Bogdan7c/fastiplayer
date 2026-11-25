@@ -50,7 +50,7 @@ fn audio_menu() -> Message {
 }
 
 /// Поколение 1: объявление и видео 0–4,8 с, звук 0–5 с; конца потока нет.
-fn first_generation_long_head() -> Vec<Message> {
+pub(super) fn first_generation_long_head() -> Vec<Message> {
     let audio = split_fmp4("audio-6s.mp4");
     let video = split_fmp4("video-64-6s.mp4");
     let mut page = PageSourceBuffers::new(1);

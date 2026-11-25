@@ -27,10 +27,12 @@
 //! ([`PageViewerChoice::note_report`]): дорожка страницы или «выключено». Свой файл и встроенная
 //! дорожка отчёта не дают — экстеншену их не запомнить.
 
+use std::time::Instant;
+
 use subtitle_core::SubtitleTrackId;
 
 use super::intents::SubtitleVisibility;
-use super::page_line_wait::PageDocumentWait;
+use super::page_line_wait::{PageDocumentWait, PageDocumentWaitExpiry};
 use crate::page_subtitles::{
     PageSubtitleArrival, PageSubtitlePreference, PageSubtitleShelfId, PageSubtitleTrackNumber,
     PageSubtitleViewerChoice, ShelvedPageSubtitle,
@@ -130,11 +132,26 @@ impl PageViewerChoice {
         self.latest_seen_arrival = latest;
     }
 
-    /// Зритель выбрал строку меню страницы с подписью `line_label`: ждём её документ, который
-    /// придёт после этого.
-    pub(super) fn expect_page_document(&mut self, line_label: &str) {
+    /// Зритель выбрал строку меню страницы с подписью `line_label` в момент `now`: ждём её
+    /// документ, который придёт после этого, не дольше срока ожидания.
+    pub(super) fn expect_page_document(&mut self, line_label: &str, now: Instant) {
         self.document_wait
-            .begin(self.latest_seen_arrival, line_label);
+            .begin(self.latest_seen_arrival, line_label, now);
+    }
+
+    /// Проверить срок ожидания документа строки в момент `now` (исход отдаётся один раз).
+    pub(super) fn expire_document_wait(&mut self, now: Instant) -> PageDocumentWaitExpiry {
+        self.document_wait.expire_if_due(now)
+    }
+
+    /// Момент, когда истечёт ожидание документа строки (`None` — не ждём).
+    pub(super) fn document_wait_deadline(&self) -> Option<Instant> {
+        self.document_wait.deadline()
+    }
+
+    /// Не отмечать строку с подписью `label` выбранной: её документ не пришёл в срок.
+    pub(super) fn withholds_line_mark(&self, label: &str) -> bool {
+        self.document_wait.withholds_line_mark(label)
     }
 
     /// Снять ожидание документа строки (следующая серия, отмена).
@@ -148,9 +165,10 @@ impl PageViewerChoice {
         self.document_wait.is_waiting()
     }
 
-    /// Дорожка страницы, которой отвечает ожидание среди новых документов склада.
+    /// Дорожка страницы, которой отвечает ожидание среди новых документов склада (заодно
+    /// ожидание отмечает, что скачанные страницей документы приходят).
     pub(super) fn track_answering_wait(
-        &self,
+        &mut self,
         fresh: &[&ShelvedPageSubtitle],
     ) -> Option<PageSubtitleTrackNumber> {
         self.document_wait.answering_track(fresh)

@@ -10,15 +10,22 @@
 //! - Клавиша V при меню страницы ходит по родным строкам ([`next_native_line_step`]).
 
 use std::sync::Arc;
+use std::time::Instant;
+
+use tracing::{info, warn};
 
 use super::SubtitleOwner;
 use super::control_actions::ControlActionFeedback;
+use super::page_line_wait::PageDocumentWaitExpiry;
 use super::page_lines::{NativeLineStep, next_native_line_step, page_toggle_step};
+use crate::page_subtitles::PageTracksUpdate;
 use crate::page_variants::PageVariantChoice;
 use crate::state::AppState;
 use crate::state::PageVariantSelectOutcome;
 use crate::state::notifications::TransientReplaceKey;
-use crate::subtitle_message::{SUBTITLES_OFF_MESSAGE, track_selected_toast};
+use crate::subtitle_message::{
+    PAGE_SUBTITLES_NOT_ARRIVED_MESSAGE, SUBTITLES_OFF_MESSAGE, track_selected_toast,
+};
 use crate::ui::player_controls::SubtitleControlAction;
 
 impl AppState {
@@ -42,7 +49,7 @@ impl AppState {
             .map(Arc::from);
         let outcome = self.select_page_variant(choice);
         if let Some(line_label) = line_label {
-            expect_document_if_queued(outcome, &mut self.subtitles, &line_label);
+            expect_document_if_queued(outcome, &mut self.subtitles, &line_label, Instant::now());
         }
         outcome
     }
@@ -98,6 +105,42 @@ impl AppState {
         }
     }
 
+    /// Проверить срок ожидания документа строки (каждый проход окна рядом с приёмом склада).
+    ///
+    /// Срок вышел, текста нет — зрителю тост (тем же ключом замены, что у тоста выбора) и
+    /// журнал; страница прислала другой документ — только журнал. Странице команд не шлём.
+    /// `Changed`: меню изменилось (строка перестала быть отмеченной), окно надо перерисовать.
+    pub(in crate::state) fn expire_page_document_wait(&mut self, now: Instant) -> PageTracksUpdate {
+        let expiry = self.subtitles.expire_page_document_wait(now);
+        match &expiry {
+            PageDocumentWaitExpiry::NotDue => {}
+            // Подпись строки в журнал не пишем: текст страницы остаётся у зрителя (инвариант 7).
+            PageDocumentWaitExpiry::TextNotArrived { waited } => warn!(
+                waited_ms = waited.as_millis(),
+                "Page subtitle line document did not arrive"
+            ),
+            PageDocumentWaitExpiry::AnotherDocumentArrived { waited } => info!(
+                waited_ms = waited.as_millis(),
+                "Page subtitle line wait ended: another page document arrived instead"
+            ),
+        }
+        match expiry_feedback(&expiry) {
+            ControlActionFeedback::ReplacingToast { key, text } => {
+                self.notifications
+                    .notify_transient_replacing(key, text, now);
+                PageTracksUpdate::Changed
+            }
+            ControlActionFeedback::Silent | ControlActionFeedback::Toast(_) => {
+                PageTracksUpdate::Unchanged
+            }
+        }
+    }
+
+    /// Момент, когда ожидание документа строки истечёт и кадр надо разбудить (`None` — не ждём).
+    pub(crate) fn page_document_wait_wake_deadline(&self) -> Option<Instant> {
+        self.subtitles.page_document_wait_deadline()
+    }
+
     /// Зритель запросил следующую серию: ожидание документа прежней серии больше не нужно.
     pub(in crate::state) fn cancel_page_document_wait(&mut self) {
         self.subtitles.cancel_page_document_wait();
@@ -111,8 +154,51 @@ pub(super) fn expect_document_if_queued(
     outcome: PageVariantSelectOutcome,
     owner: &mut SubtitleOwner,
     line_label: &str,
+    now: Instant,
 ) {
     if outcome == PageVariantSelectOutcome::Queued {
-        owner.expect_page_document(line_label);
+        owner.expect_page_document(line_label, now);
+    }
+}
+
+/// Что сказать зрителю об исходе проверки срока: только «текст не пришёл» заслуживает тоста.
+/// Тост заменяет тост выбора строки («Subtitles: German»), а не копится рядом с ним.
+pub(super) fn expiry_feedback(expiry: &PageDocumentWaitExpiry) -> ControlActionFeedback {
+    match expiry {
+        PageDocumentWaitExpiry::TextNotArrived { .. } => ControlActionFeedback::ReplacingToast {
+            key: TransientReplaceKey::SubtitleTrack,
+            text: PAGE_SUBTITLES_NOT_ARRIVED_MESSAGE.to_owned(),
+        },
+        PageDocumentWaitExpiry::NotDue | PageDocumentWaitExpiry::AnotherDocumentArrived { .. } => {
+            ControlActionFeedback::Silent
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Срок по умолчанию: исход проверки срока несёт только длительность ожидания.
+    const WAITED: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn only_a_missing_text_gets_a_toast_that_replaces_the_choice_toast() {
+        let missing = PageDocumentWaitExpiry::TextNotArrived { waited: WAITED };
+        assert_eq!(
+            expiry_feedback(&missing),
+            ControlActionFeedback::ReplacingToast {
+                key: TransientReplaceKey::SubtitleTrack,
+                text: "Subtitles didn't arrive from the page".to_owned(),
+            }
+        );
+        let other = PageDocumentWaitExpiry::AnotherDocumentArrived { waited: WAITED };
+        assert_eq!(expiry_feedback(&other), ControlActionFeedback::Silent);
+        assert_eq!(
+            expiry_feedback(&PageDocumentWaitExpiry::NotDue),
+            ControlActionFeedback::Silent
+        );
     }
 }

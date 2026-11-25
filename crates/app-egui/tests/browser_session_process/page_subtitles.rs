@@ -30,7 +30,7 @@ const TRACK_READY_LINE: &str = "Page subtitle track ready";
 const DOCUMENT: &str = "WEBVTT\n\n00:00:00.000 --> 00:01:00.000\nPAGE SUBTITLE\n";
 
 /// Предложение дорожки 1 (`showing`) и её документ одной рамкой вида 3.
-fn offered_document() -> Vec<Message> {
+pub(super) fn offered_document() -> Vec<Message> {
     let offer = format!(
         r#"{{"type":"subtitle_track_offered","track":1,"language":{{"kind":"known","tag":"en"}},"label":{{"kind":"text","text":"English"}},"format_hint":"web_vtt","origin":"page_download","page_display":"showing","byte_length":{}}}"#,
         DOCUMENT.len()

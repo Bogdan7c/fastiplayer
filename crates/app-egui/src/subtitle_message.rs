@@ -26,6 +26,9 @@ pub(crate) const SUBTITLES_OFF_MESSAGE: &str = "Subtitles: off";
 pub(crate) const STREAM_SUBTITLES_UNAVAILABLE_MESSAGE: &str =
     "Subtitles for this stream are unavailable right now.";
 
+/// Тост, когда зритель выбрал строку субтитров страницы, а текст так и не пришёл в срок.
+pub(crate) const PAGE_SUBTITLES_NOT_ARRIVED_MESSAGE: &str = "Subtitles didn't arrive from the page";
+
 /// Номер дорожки в меню, считая с единицы: для дорожек без языка («Track 3»).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrackNumber(usize);

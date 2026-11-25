@@ -5,6 +5,7 @@
 //! wake-событию, а overlay кадра — в `frame_prepare/submit.rs`.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use media_source_open::web_subtitle_fetch::WebSubtitleFetchError;
 use player_core::MediaInstanceId;
@@ -218,6 +219,9 @@ impl AppState {
             self.subtitles
                 .attach_page_tracks(&shelf.clone().with_preference(preference))
         };
+        // Срок ожидания документа выбранной строки (после приёма склада: документ, пришедший в
+        // этом же проходе, успевает ответить на ожидание раньше проверки срока).
+        let expiry_update = self.expire_page_document_wait(Instant::now());
         if update == PageTracksUpdate::Changed {
             // Документ, которого ждали после выбора строки меню (15a2), стал выбором зрителя
             // внутри владельца: его итог — странице (`subtitle_choice`), его след — в памяти
@@ -226,7 +230,12 @@ impl AppState {
             self.capture_user_subtitle_choices();
             self.forward_viewer_subtitle_choice_to_page();
         }
-        update
+        match (update, expiry_update) {
+            (PageTracksUpdate::Unchanged, PageTracksUpdate::Unchanged) => {
+                PageTracksUpdate::Unchanged
+            }
+            _ => PageTracksUpdate::Changed,
+        }
     }
 
     /// Итог последнего действия зрителя с субтитрами для памяти экстеншена (один раз).

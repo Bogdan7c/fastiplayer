@@ -5,7 +5,8 @@
 //!   строки страницы идут перед дорожками, а дорожки, которые скачала сама страница
 //!   (`page_download`), из списка убираются: их представляет строка меню, дубль не нужен.
 //!   Свои файлы, встроенные дорожки и дорожки страницы другого происхождения остаются.
-//! - [`SubtitleOwner::expect_page_document`] / [`SubtitleOwner::cancel_page_document_wait`] —
+//! - [`SubtitleOwner::expect_page_document`] / [`SubtitleOwner::cancel_page_document_wait`] /
+//!   [`SubtitleOwner::expire_page_document_wait`] —
 //!   «жду документ выбранной строки» (`page_line_wait`): читает его `attach_page_tracks`.
 //! - [`next_native_line_step`] — чистое правило клавиши V по родным строкам страницы.
 //!
@@ -20,12 +21,14 @@
 //! (общая функция подписей экстеншена, план 15a2). Подпись без такой отметки — родная строка.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use subtitle_core::SubtitleTrackId;
 
 use super::SubtitleOwner;
 use super::intents::SubtitleVisibility;
 use super::menu_view::{PageSubtitleLine, SubtitleMenuView};
+use super::page_line_wait::PageDocumentWaitExpiry;
 use crate::page_variants::{PageVariantAvailability, PageVariantMenuView, PageVariantSelection};
 
 /// Отметка подписи автоперевода (регистр не важен).
@@ -117,8 +120,10 @@ impl SubtitleOwner {
                 Some(PageSubtitleLine {
                     choice: page_menu.choice(option.index)?,
                     label: option.label.into(),
+                    // Страница строку выбрала, но её текст не пришёл в срок: отмечать нечего.
                     is_selected: marks_page_line
-                        && option.selection == PageVariantSelection::Selected,
+                        && option.selection == PageVariantSelection::Selected
+                        && !self.page_viewer.withholds_line_mark(option.label),
                     is_auto_translation: is_auto_translated_label(option.label),
                 })
             })
@@ -127,10 +132,20 @@ impl SubtitleOwner {
         view
     }
 
-    /// Зритель выбрал строку меню страницы и просьба ушла: ждём её документ (правила —
-    /// `page_line_wait`). Показ до прихода документа не трогается.
-    pub(super) fn expect_page_document(&mut self, line_label: &str) {
-        self.page_viewer.expect_page_document(line_label);
+    /// Зритель выбрал строку меню страницы в момент `now` и просьба ушла: ждём её документ
+    /// (правила и срок — `page_line_wait`). Показ до прихода документа не трогается.
+    pub(super) fn expect_page_document(&mut self, line_label: &str, now: Instant) {
+        self.page_viewer.expect_page_document(line_label, now);
+    }
+
+    /// Проверить срок ожидания документа строки: исход отдаётся один раз.
+    pub(super) fn expire_page_document_wait(&mut self, now: Instant) -> PageDocumentWaitExpiry {
+        self.page_viewer.expire_document_wait(now)
+    }
+
+    /// Момент, когда истечёт ожидание документа строки: будит кадр (`None` — не ждём).
+    pub(super) fn page_document_wait_deadline(&self) -> Option<Instant> {
+        self.page_viewer.document_wait_deadline()
     }
 
     /// Снять ожидание документа строки (зритель запросил следующую серию).
